@@ -70,7 +70,15 @@ where
 
         let p_map = periodic[0];
         let p_final = periodic[1 + POSEIDON_ROUNDS];
-        let not_final = E::ONE - p_final;
+        let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
+
+        // carry across rows whose NEXT
+        // is not final within level:
+        // map rows, rounds 0..R-2, and pad rows
+        let mut g_hold = p_map + p_pad;
+        for j in 0..(POSEIDON_ROUNDS - 1) {
+            g_hold += periodic[1 + j];
+        }
 
         // mixers: s1 ~ deg1, s2 ~ deg2,
         // s3 ~ deg3 (after dividing by z).
@@ -129,8 +137,8 @@ where
         result[*ix] = expect_enabled * p_final * kv_fin * (cur[ctx.cols.kv_acc] - fin_exp) + s1;
         *ix += 1;
 
-        // carry acc across non-final rows
-        result[*ix] = not_final * (next[ctx.cols.kv_acc] - cur[ctx.cols.kv_acc]) + s1;
+        // carry acc across rows whose next is NOT final
+        result[*ix] = g_hold * (next[ctx.cols.kv_acc] - cur[ctx.cols.kv_acc]) + s1;
         *ix += 1;
     }
 

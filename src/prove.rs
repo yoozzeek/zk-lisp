@@ -239,8 +239,8 @@ fn preflight(
             let pose_constraints = 4 * crate::layout::POSEIDON_ROUNDS;
             if i < pose_constraints {
                 let j = i / 4; // which round
-                let mm = crate::poseidon::mds_matrix();
-                let rc = crate::poseidon::round_constants();
+                let mm = crate::poseidon::derive_poseidon_mds_cauchy_4x4(&pub_inputs.program_commitment);
+                let rc = crate::poseidon::derive_poseidon_round_constants(&pub_inputs.program_commitment);
                 let sl = frame.current()[cols.lane_l];
                 let sr = frame.current()[cols.lane_r];
                 let sc0 = frame.current()[cols.lane_c0];

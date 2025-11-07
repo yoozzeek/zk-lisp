@@ -6,15 +6,21 @@ use crate::{poseidon, schedule};
 
 // map row: sets lane_l=left, lane_r=right, lane_c0/c1=domain tags;
 // then applies R rounds: next = MDS * cubic(cur) + RC[j].
-pub fn apply_level(trace: &mut TraceTable<BE>, level: usize, left: BE, right: BE) {
+pub fn apply_level(
+    trace: &mut TraceTable<BE>,
+    suite_id: &[u8; 32],
+    level: usize,
+    left: BE,
+    right: BE,
+) {
     let cols = Columns::baseline();
     let steps = layout::STEPS_PER_LEVEL_P2;
     let base = level * steps;
     let row_map = base + schedule::pos_map();
 
-    let dom = poseidon::domain_tags();
-    let mds = poseidon::mds_matrix();
-    let rc = poseidon::round_constants();
+    let dom = poseidon::derive_poseidon_domain_tags(suite_id);
+    let mds = poseidon::derive_poseidon_mds_cauchy_4x4(suite_id);
+    let rc = poseidon::derive_poseidon_round_constants(suite_id);
 
     // map row
     trace.set(cols.lane_l, row_map, left);

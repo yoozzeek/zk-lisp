@@ -114,10 +114,10 @@ mod tests {
         };
 
         let air_all = air::ZkLispAir::new(info, pi_all, opts);
-        // poseidon (4*R=32) + vm(55) + kv(8) = 95
+        // poseidon (4*R) + vm(55) + kv(8)
         assert_eq!(
             air_all.context().num_main_transition_constraints(),
-            32 + 55 + 8
+            4 * layout::POSEIDON_ROUNDS + 55 + 8
         );
         assert_eq!(air_all.get_assertions().len(), sched_asserts + 1);
     }

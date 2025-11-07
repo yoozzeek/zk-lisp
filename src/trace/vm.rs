@@ -1,6 +1,7 @@
 use crate::ir::Op;
 use crate::layout::{Columns, NR, STEPS_PER_LEVEL_P2};
 use crate::pi;
+use crate::poseidon as poseidon_core;
 use crate::schedule;
 use crate::trace::poseidon;
 
@@ -37,6 +38,12 @@ impl TraceBuilder {
             let base = lvl * steps;
             let row_map = base + schedule::pos_map();
             let row_final = base + schedule::pos_final();
+
+            // set Poseidon domain tags
+            // at map row for all levels
+            let dom = poseidon_core::derive_poseidon_domain_tags(&p.commitment);
+            trace.set(cols.lane_c0, row_map, dom[0]);
+            trace.set(cols.lane_c1, row_map, dom[1]);
 
             // carry register file into
             // the new level at map row.
@@ -203,7 +210,7 @@ impl TraceBuilder {
 
                     let left = regs[a as usize];
                     let right = regs[b as usize];
-                    poseidon::apply_level(&mut trace, lvl, left, right);
+                    poseidon::apply_level(&mut trace, &p.commitment, lvl, left, right);
 
                     let out = trace.get(cols.lane_l, row_final);
                     next_regs[dst as usize] = out;
@@ -222,7 +229,7 @@ impl TraceBuilder {
                     let left = (BE::ONE - d) * acc_cur + d * sib;
                     let right = (BE::ONE - d) * sib + d * acc_cur;
 
-                    poseidon::apply_level(&mut trace, lvl, left, right);
+                    poseidon::apply_level(&mut trace, &p.commitment, lvl, left, right);
 
                     // Mark final and set acc at/after final
                     trace.set(cols.kv_g_final, row_final, BE::ONE);
@@ -232,7 +239,8 @@ impl TraceBuilder {
                         trace.set(cols.kv_acc, r, out);
                     }
 
-                    // Version: hold before/at final, bump after final
+                    // Version: hold before/at final,
+                    // bump after final
                     let ver = trace.get(cols.kv_version, row_map);
 
                     for r in base..=row_final {
@@ -278,6 +286,32 @@ impl TraceBuilder {
             // commit next_regs to
             // regs for next level.
             regs = next_regs;
+        }
+
+        // Ensure Poseidon domain tags are
+        // present on map rows for all levels.
+        let dom_all = poseidon_core::derive_poseidon_domain_tags(&p.commitment);
+
+        for lvl in 0..total_levels {
+            let base = lvl * steps;
+            let row_map = base + schedule::pos_map();
+            trace.set(cols.lane_c0, row_map, dom_all[0]);
+            trace.set(cols.lane_c1, row_map, dom_all[1]);
+        }
+
+        // For levels without Poseidon activity:
+        // no Hash2 and no KV map/final;
+        for lvl in 0..total_levels {
+            let base = lvl * steps;
+            let row_map = base + schedule::pos_map();
+            let is_hash = trace.get(cols.op_hash2, row_map) == BE::ONE;
+            let is_kv_map = trace.get(cols.kv_g_map, row_map) == BE::ONE;
+
+            if is_hash || is_kv_map {
+                continue;
+            }
+
+            poseidon::apply_level(&mut trace, &p.commitment, lvl, BE::ZERO, BE::ZERO);
         }
 
         Ok(trace)
@@ -384,8 +418,8 @@ mod tests {
 
     #[test]
     fn hash2_simple() {
-        // With placeholder Poseidon (MDS=I, RC=0), lane_l_final = left^(3^R)
-        // Choose left=1, so final stays 1, regardless of R.
+        // Check that VM Hash2 writes
+        // Poseidon(left,right) into dst.
         let mut b = crate::ir::ProgramBuilder::new();
         b.push(Op::Const { dst: 0, imm: 1 });
         b.push(Op::Const { dst: 1, imm: 2 });
@@ -403,7 +437,12 @@ mod tests {
         let row2_fin = base2 + schedule::pos_final();
 
         assert_eq!(trace.get(cols.op_hash2, row2_map), BE::ONE);
-        assert_eq!(trace.get(cols.r_index(3), row2_fin + 1), BE::from(1u64));
+
+        let left = trace.get(cols.r_index(0), row2_map);
+        let right = trace.get(cols.r_index(1), row2_map);
+        let expected = poseidon_core::poseidon_hash_two_lanes(&p.commitment, left, right);
+
+        assert_eq!(trace.get(cols.r_index(3), row2_fin + 1), expected);
     }
 
     #[test]

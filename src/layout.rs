@@ -1,7 +1,7 @@
 use winterfell::math::fields::f128::BaseElement as BE;
 
-pub const POSEIDON_ROUNDS: usize = 8;
-pub const STEPS_PER_LEVEL_P2: usize = 16;
+pub const POSEIDON_ROUNDS: usize = 27;
+pub const STEPS_PER_LEVEL_P2: usize = 32;
 
 pub const NR: usize = 8;
 

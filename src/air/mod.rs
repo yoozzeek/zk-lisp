@@ -9,9 +9,8 @@ use crate::air::{
     vm_ctrl::VmCtrlBlock,
 };
 use crate::layout::{Columns, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
-use crate::logging;
 use crate::pi::{FeaturesMap, PublicInputs};
-use crate::poseidon::{domain_tags, mds_matrix, round_constants};
+use crate::poseidon as poseidon_core;
 use crate::schedule as schedule_core;
 
 use core::marker::PhantomData;
@@ -124,9 +123,10 @@ impl Air for ZkLispAir {
 
         Self::print_degrees_debug(&ctx, &pub_inputs, &features);
 
-        let rc = round_constants();
-        let mds = mds_matrix();
-        let dom = domain_tags();
+        let suite = &pub_inputs.program_commitment;
+        let rc = poseidon_core::derive_poseidon_round_constants(suite);
+        let mds = poseidon_core::derive_poseidon_mds_cauchy_4x4(suite);
+        let dom = poseidon_core::derive_poseidon_domain_tags(suite);
 
         Self {
             ctx,
@@ -185,7 +185,7 @@ impl Air for ZkLispAir {
             &self.poseidon_mds,
             &self.poseidon_dom,
         );
-        schedule::ScheduleBlock::append_assertions(&bctx_sched, &mut out, last);
+        ScheduleBlock::append_assertions(&bctx_sched, &mut out, last);
 
         // Kv per-level boundary assertions
         if self.features.kv {
@@ -196,7 +196,7 @@ impl Air for ZkLispAir {
                 &self.poseidon_mds,
                 &self.poseidon_dom,
             );
-            kv::KvBlock::append_assertions(&bctx, &mut out, last);
+            KvBlock::append_assertions(&bctx, &mut out, last);
         }
 
         if out.is_empty() {
@@ -245,9 +245,6 @@ impl Air for ZkLispAir {
     }
 
     fn get_periodic_column_polys(&self) -> Vec<Vec<Self::BaseField>> {
-        // Build per-cycle polynomials for periodic
-        // columns via FFT interpolation
-        // p_map, p_r[0..R-1], p_final, p_pad, p_last
         let n = self.ctx.trace_len();
         let cycle = STEPS_PER_LEVEL_P2;
         let cols_len = 1 + POSEIDON_ROUNDS + 1 + 1 + 1;
@@ -386,7 +383,6 @@ impl ZkLispAir {
             ranges.push(("poseidon", ofs, ofs + len));
             ofs += len;
         }
-
         if features.vm {
             let len = 37;
             ranges.push(("vm_ctrl", ofs, ofs + len));
