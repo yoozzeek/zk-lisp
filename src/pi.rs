@@ -72,7 +72,7 @@ mod tests {
         let info = TraceInfo::new(width, steps);
         let opts = ProofOptions::new(
             1,
-            4,
+            8,
             0,
             winterfell::FieldExtension::None,
             2,

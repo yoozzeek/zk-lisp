@@ -12,7 +12,7 @@ impl VmCtrlBlock {
         // selector bits booleanity (4*NR)
         for _ in 0..(4 * NR) {
             out.push(TransitionConstraintDegree::with_cycles(
-                1,
+                2,
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
@@ -47,14 +47,14 @@ where
         let cur = frame.current();
         let p_map = periodic[0];
 
-        // Add p_last to each constraint. p_last is 1 only at the
-        // very last row of the entire trace and 0 elsewhere. Since
-        // transition constraints are exempted at the last row, adding
-        // p_last preserves validity on enforced rows, but guarantees
-        // non-zero CE quotients in debug (after dividing by the
-        // transition divisor (x^n - 1)/(x - g^{n-1})).
+        // Mixer terms:
+        // - s_low = p_last * p_map yields CE quotient degree ~120;
+        // - s_high = s_low * pi_prog raises CE quotient degree to ~247
+        //   (deg(p_last)=~127, deg(p_map)=~120, deg(pi_prog)=~127; minus z-degree 127).
         let p_last = periodic[1 + crate::layout::POSEIDON_ROUNDS + 2];
-        let s = p_last * p_map;
+        let s_low = p_last * p_map;
+        let pi_prog = cur[ctx.cols.pi_prog];
+        let s_high = s_low * pi_prog;
 
         let b_const = cur[ctx.cols.op_const];
         let b_mov = cur[ctx.cols.op_mov];
@@ -82,13 +82,13 @@ where
             sum_b += sb;
             sum_c += sc;
 
-            result[*ix] = p_map * sd * (sd - E::ONE) + s;
+            result[*ix] = p_map * sd * (sd - E::ONE) + s_high;
             *ix += 1;
-            result[*ix] = p_map * sa * (sa - E::ONE) + s;
+            result[*ix] = p_map * sa * (sa - E::ONE) + s_high;
             *ix += 1;
-            result[*ix] = p_map * sb * (sb - E::ONE) + s;
+            result[*ix] = p_map * sb * (sb - E::ONE) + s_high;
             *ix += 1;
-            result[*ix] = p_map * sc * (sc - E::ONE) + s;
+            result[*ix] = p_map * sc * (sc - E::ONE) + s_high;
             *ix += 1;
         }
 
@@ -101,13 +101,13 @@ where
 
         // dst required only when an
         // op is present at this map row.
-        result[*ix] = p_map * (sum_dst - op_any) + s;
+        result[*ix] = p_map * (sum_dst - op_any) + s_low;
         *ix += 1;
-        result[*ix] = p_map * (sum_a - uses_a) + s;
+        result[*ix] = p_map * (sum_a - uses_a) + s_low;
         *ix += 1;
-        result[*ix] = p_map * (sum_b - uses_b) + s;
+        result[*ix] = p_map * (sum_b - uses_b) + s_low;
         *ix += 1;
-        result[*ix] = p_map * (sum_c - uses_c) + s;
+        result[*ix] = p_map * (sum_c - uses_c) + s_low;
         *ix += 1;
 
         // Select cond booleanity at map
@@ -118,7 +118,7 @@ where
             c_val += cur[ctx.cols.sel_c_index(i)] * r;
         }
 
-        result[*ix] = p_map * b_sel * c_val * (c_val - E::ONE) + s;
+        result[*ix] = p_map * b_sel * c_val * (c_val - E::ONE) + s_high;
         *ix += 1;
     }
 }

@@ -19,15 +19,14 @@ impl VmAluBlock {
         // write registers at final (op-gated)
         for _ in 0..NR {
             out.push(TransitionConstraintDegree::with_cycles(
-                3,
+                4,
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
         // equality ties (dst reflects [a==b])
-        // degree 2: dst_next * diff and (1 - dst_next) - diff*inv
         for _ in 0..2 {
             out.push(TransitionConstraintDegree::with_cycles(
-                2,
+                5,
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
@@ -53,6 +52,7 @@ where
         let p_map = periodic[0];
         let p_final = periodic[1 + POSEIDON_ROUNDS];
         let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
+        let p_last = periodic[1 + POSEIDON_ROUNDS + 2];
 
         // carry when next row is not final within the level:
         // map rows, rounds 0..R-2, and all pad rows
@@ -60,6 +60,12 @@ where
         for j in 0..(POSEIDON_ROUNDS - 1) {
             g_carry += periodic[1 + j];
         }
+
+        // mixers
+        let s_low = p_last * p_map;
+        let pi = cur[ctx.cols.pi_prog];
+        let s_write = s_low * pi * pi * pi;
+        let s_eq = s_write * pi;
 
         // reconstruct a/b/c from
         // role selectors and regs.
@@ -76,7 +82,7 @@ where
 
         // carry r[i] across rows where next is not final
         for i in 0..NR {
-            result[*ix] = g_carry * (next[ctx.cols.r_index(i)] - cur[ctx.cols.r_index(i)]);
+            result[*ix] = g_carry * (next[ctx.cols.r_index(i)] - cur[ctx.cols.r_index(i)]) + s_low;
             *ix += 1;
         }
 
@@ -115,7 +121,8 @@ where
             let dsti = cur[ctx.cols.sel_dst_index(i)];
             result[*ix] = p_final
                 * (next[ctx.cols.r_index(i)]
-                    - ((E::ONE - dsti) * cur[ctx.cols.r_index(i)] + dsti * res));
+                    - ((E::ONE - dsti) * cur[ctx.cols.r_index(i)] + dsti * res))
+                + s_write;
             *ix += 1;
         }
 
@@ -123,11 +130,12 @@ where
         let inv = cur[ctx.cols.eq_inv];
 
         // if dst_next==1 => diff==0
-        result[*ix] = p_final * b_eq * (dst_next * diff);
+        result[*ix] = p_final * b_eq * (dst_next * diff) + s_eq;
         *ix += 1;
+
         // if diff!=0 => dst_next==0
         // via (1 - dst_next) - diff*inv == 0
-        result[*ix] = p_final * b_eq * ((E::ONE - dst_next) - diff * inv);
+        result[*ix] = p_final * b_eq * ((E::ONE - dst_next) - diff * inv) + s_eq;
         *ix += 1;
     }
 }
