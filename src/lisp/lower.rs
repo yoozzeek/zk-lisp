@@ -1,6 +1,33 @@
 use crate::ir::{Op, ProgramBuilder};
 use crate::layout::NR;
-use crate::lisp::{Ast, Atom, BinOp, Env, Error, compile_str};
+use crate::lisp::{Env, Error};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ast {
+    Atom(Atom),
+    List(Vec<Ast>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Atom {
+    Int(u64),
+    Sym(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tok {
+    LParen,
+    RParen,
+    Int(u64),
+    Sym(String),
+    Eof,
+}
+
+enum BinOp {
+    Add,
+    Sub,
+    Mul,
+}
 
 #[derive(Debug)]
 pub struct LowerCtx<'a> {
@@ -376,25 +403,4 @@ fn lower_call(cx: &mut LowerCtx, name: &str, args: &[Ast]) -> Result<u8, Error> 
     }
 
     Ok(res)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lower_arith_and_select() {
-        let src = "(def (add2 x y) (+ x y)) (let ((a 7) (b 9)) (select (= a b) (add2 a b) 0))";
-        let p = compile_str(src).unwrap();
-        assert!(!p.ops.is_empty());
-    }
-
-    #[test]
-    fn lower_hash2_and_kv() {
-        let src = "(let ((x 1) (y 2)) (hash2 x y)) (kv-step 0 7) (kv-final)";
-        let p = compile_str(src).unwrap();
-        assert!(p.ops.iter().any(|op| matches!(op, Op::Hash2 { .. })));
-        assert!(p.ops.iter().any(|op| matches!(op, Op::KvMap { .. })));
-        assert!(p.ops.iter().any(|op| matches!(op, Op::KvFinal)));
-    }
 }

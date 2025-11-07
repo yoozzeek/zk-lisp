@@ -1,36 +1,10 @@
-mod lexer;
 mod lower;
 
 use crate::ir::{Op, Program};
-use lower::LowerCtx;
+
+use lower::{Ast, Atom, LowerCtx, Tok};
 use std::collections::{BTreeMap, VecDeque};
 use thiserror::Error;
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Ast {
-    Atom(Atom),
-    List(Vec<Ast>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Atom {
-    Int(u64),
-    Sym(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Tok {
-    LParen,
-    RParen,
-    Int(u64),
-    Sym(String),
-    Eof,
-}
-
-enum BinOp {
-    Add,
-    Sub,
-    Mul,
-}
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -63,7 +37,7 @@ struct Env {
 impl Env {}
 
 pub fn compile_str(src: &str) -> Result<Program, Error> {
-    let toks = lexer::lex(src)?;
+    let toks = lex(src)?;
     let forms = parse(&toks)?;
     let mut cx = LowerCtx::new();
 
@@ -74,6 +48,81 @@ pub fn compile_str(src: &str) -> Result<Program, Error> {
     cx.b.push(Op::End);
 
     Ok(cx.b.finalize())
+}
+
+// Lexer
+pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
+    let mut out = Vec::new();
+    let mut it = src.chars().peekable();
+    let mut i = 0usize;
+
+    while let Some(&ch) = it.peek() {
+        match ch {
+            '(' => {
+                out.push(Tok::LParen);
+                it.next();
+
+                i += 1;
+            }
+            ')' => {
+                out.push(Tok::RParen);
+                it.next();
+
+                i += 1;
+            }
+            ' ' | '\n' | '\r' | '\t' => {
+                it.next();
+                i += 1;
+            }
+            '0'..='9' => {
+                let mut s = String::new();
+                while let Some(&c2) = it.peek() {
+                    if c2.is_ascii_digit() {
+                        s.push(c2);
+                        it.next();
+
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let v = s.parse::<u64>().unwrap();
+                out.push(Tok::Int(v));
+            }
+            _ => {
+                if is_sym_start(ch) {
+                    let mut s = String::new();
+                    while let Some(&c2) = it.peek() {
+                        if is_sym_continue(c2) {
+                            s.push(c2);
+                            it.next();
+
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    out.push(Tok::Sym(s));
+                } else {
+                    return Err(Error::Lex(ch, i));
+                }
+            }
+        }
+    }
+
+    out.push(Tok::Eof);
+
+    Ok(out)
+}
+
+fn is_sym_start(c: char) -> bool {
+    matches!(c, 'a'..='z' | 'A'..='Z' | '_' | '+' | '-' | '*' | '=' | '<' | '>' )
+}
+
+fn is_sym_continue(c: char) -> bool {
+    is_sym_start(c) || matches!(c, '0'..='9' | '/' | ':')
 }
 
 // Parser: program := forms*
@@ -119,7 +168,6 @@ fn parse_one(q: &mut VecDeque<Tok>) -> Result<Ast, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lisp::lexer::lex;
 
     #[test]
     fn parse_atoms_lists() {
@@ -127,5 +175,21 @@ mod tests {
         let toks = lex(s).unwrap();
         let ast = parse(&toks).unwrap();
         assert_eq!(ast.len(), 2);
+    }
+
+    #[test]
+    fn lower_arith_and_select() {
+        let src = "(def (add2 x y) (+ x y)) (let ((a 7) (b 9)) (select (= a b) (add2 a b) 0))";
+        let p = compile_str(src).unwrap();
+        assert!(!p.ops.is_empty());
+    }
+
+    #[test]
+    fn lower_hash2_and_kv() {
+        let src = "(let ((x 1) (y 2)) (hash2 x y)) (kv-step 0 7) (kv-final)";
+        let p = compile_str(src).unwrap();
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Hash2 { .. })));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::KvMap { .. })));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::KvFinal)));
     }
 }
