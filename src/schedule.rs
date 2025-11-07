@@ -60,3 +60,20 @@ pub fn build_periodic_selectors(n: usize) -> Vec<Vec<u8>> {
 
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::schedule;
+
+    #[test]
+    fn schedule_shapes() {
+        let n = 32;
+        let cols = schedule::build_periodic_selectors(n);
+
+        assert!(!cols.is_empty());
+
+        for c in cols.iter() {
+            assert_eq!(c.len(), n);
+        }
+    }
+}

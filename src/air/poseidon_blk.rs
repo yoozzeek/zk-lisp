@@ -1,0 +1,85 @@
+use winterfell::math::FieldElement;
+use winterfell::math::fields::f128::BaseElement as BE;
+use winterfell::{EvaluationFrame, TransitionConstraintDegree};
+
+use super::{AirBlock, BlockCtx};
+use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+
+pub struct PoseidonBlock;
+
+impl PoseidonBlock {
+    pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
+        for _ in 0..POSEIDON_ROUNDS {
+            for _ in 0..4 {
+                out.push(TransitionConstraintDegree::with_cycles(
+                    3,
+                    vec![STEPS_PER_LEVEL_P2],
+                ));
+            }
+        }
+    }
+}
+
+impl<E> AirBlock<E> for PoseidonBlock
+where
+    E: FieldElement<BaseField = BE> + From<BE>,
+{
+    fn push_degrees(_out: &mut Vec<TransitionConstraintDegree>) {}
+
+    fn eval_block(
+        ctx: &BlockCtx<E>,
+        frame: &EvaluationFrame<E>,
+        periodic: &[E],
+        result: &mut [E],
+        ix: &mut usize,
+    ) {
+        let cur = frame.current();
+        let next = frame.next();
+        let mm = ctx.poseidon_mds;
+
+        for j in 0..POSEIDON_ROUNDS {
+            let gr = periodic[1 + j];
+
+            let sl = cur[ctx.cols.lane_l];
+            let sr = cur[ctx.cols.lane_r];
+            let sc0 = cur[ctx.cols.lane_c0];
+            let sc1 = cur[ctx.cols.lane_c1];
+
+            let sl3 = sl * sl * sl;
+            let sr3 = sr * sr * sr;
+            let sc03 = sc0 * sc0 * sc0;
+            let sc13 = sc1 * sc1 * sc1;
+
+            let rc = &ctx.poseidon_rc[j];
+            let yl = E::from(mm[0][0]) * sl3
+                + E::from(mm[0][1]) * sr3
+                + E::from(mm[0][2]) * sc03
+                + E::from(mm[0][3]) * sc13
+                + E::from(rc[0]);
+            let yr = E::from(mm[1][0]) * sl3
+                + E::from(mm[1][1]) * sr3
+                + E::from(mm[1][2]) * sc03
+                + E::from(mm[1][3]) * sc13
+                + E::from(rc[1]);
+            let yc0 = E::from(mm[2][0]) * sl3
+                + E::from(mm[2][1]) * sr3
+                + E::from(mm[2][2]) * sc03
+                + E::from(mm[2][3]) * sc13
+                + E::from(rc[2]);
+            let yc1 = E::from(mm[3][0]) * sl3
+                + E::from(mm[3][1]) * sr3
+                + E::from(mm[3][2]) * sc03
+                + E::from(mm[3][3]) * sc13
+                + E::from(rc[3]);
+
+            result[*ix] = gr * (next[ctx.cols.lane_l] - yl);
+            *ix += 1;
+            result[*ix] = gr * (next[ctx.cols.lane_r] - yr);
+            *ix += 1;
+            result[*ix] = gr * (next[ctx.cols.lane_c0] - yc0);
+            *ix += 1;
+            result[*ix] = gr * (next[ctx.cols.lane_c1] - yc1);
+            *ix += 1;
+        }
+    }
+}

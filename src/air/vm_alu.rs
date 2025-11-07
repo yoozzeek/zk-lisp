@@ -1,0 +1,133 @@
+use winterfell::math::FieldElement;
+use winterfell::math::fields::f128::BaseElement as BE;
+use winterfell::{EvaluationFrame, TransitionConstraintDegree};
+
+use super::{AirBlock, BlockCtx};
+use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+
+pub struct VmAluBlock;
+
+impl VmAluBlock {
+    pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
+        // carry registers on non-final rows
+        for _ in 0..NR {
+            out.push(TransitionConstraintDegree::with_cycles(
+                1,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+        // write registers at final (op-gated)
+        for _ in 0..NR {
+            out.push(TransitionConstraintDegree::with_cycles(
+                3,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+        // equality ties (dst reflects [a==b])
+        for _ in 0..2 {
+            out.push(TransitionConstraintDegree::with_cycles(
+                2,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+    }
+}
+
+impl<E> AirBlock<E> for VmAluBlock
+where
+    E: FieldElement<BaseField = BE> + From<BE>,
+{
+    fn push_degrees(_out: &mut Vec<TransitionConstraintDegree>) {}
+
+    fn eval_block(
+        ctx: &BlockCtx<E>,
+        frame: &EvaluationFrame<E>,
+        periodic: &[E],
+        result: &mut [E],
+        ix: &mut usize,
+    ) {
+        let cur = frame.current();
+        let next = frame.next();
+
+        let p_map = periodic[0];
+        let p_final = periodic[1 + POSEIDON_ROUNDS];
+        let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
+        
+        // carry when next row is not final within the level:
+        // map rows, rounds 0..R-2, and all pad rows
+        let mut g_carry = p_map + p_pad;
+        for j in 0..(POSEIDON_ROUNDS - 1) {
+            g_carry += periodic[1 + j];
+        }
+
+        // reconstruct a/b/c from
+        // role selectors and regs.
+        let mut a_val = E::ZERO;
+        let mut b_val = E::ZERO;
+        let mut c_val = E::ZERO;
+
+        for i in 0..NR {
+            let r = cur[ctx.cols.r_index(i)];
+            a_val += cur[ctx.cols.sel_a_index(i)] * r;
+            b_val += cur[ctx.cols.sel_b_index(i)] * r;
+            c_val += cur[ctx.cols.sel_c_index(i)] * r;
+        }
+
+        // carry r[i] across rows where next is not final
+        for i in 0..NR {
+            result[*ix] = g_carry * (next[ctx.cols.r_index(i)] - cur[ctx.cols.r_index(i)]);
+            *ix += 1;
+        }
+
+        // compute op result (excluding Eq),
+        // including Hash2 via lane_l.
+        let imm = cur[ctx.cols.imm];
+        let b_const = cur[ctx.cols.op_const];
+        let b_mov = cur[ctx.cols.op_mov];
+        let b_add = cur[ctx.cols.op_add];
+        let b_sub = cur[ctx.cols.op_sub];
+        let b_mul = cur[ctx.cols.op_mul];
+        let b_neg = cur[ctx.cols.op_neg];
+        let b_eq = cur[ctx.cols.op_eq];
+        let b_sel = cur[ctx.cols.op_select];
+        let b_hash = cur[ctx.cols.op_hash2];
+
+        let res = b_const * imm
+            + b_mov * a_val
+            + b_add * (a_val + b_val)
+            + b_sub * (a_val - b_val)
+            + b_mul * (a_val * b_val)
+            + b_neg * (E::ZERO - a_val)
+            + b_sel * (c_val * a_val + (E::ONE - c_val) * b_val)
+            + b_hash * cur[ctx.cols.lane_l];
+
+        // write at final: r' = (1-dst)*r + dst*res
+        // (masked by non-Eq).
+        for i in 0..NR {
+            let dsti = cur[ctx.cols.sel_dst_index(i)];
+            result[*ix] = p_final
+                * (E::ONE - b_eq)
+                * (next[ctx.cols.r_index(i)]
+                    - ((E::ONE - dsti) * cur[ctx.cols.r_index(i)] + dsti * res));
+            *ix += 1;
+        }
+
+        // Eq ties: dst_next implies diff==0;
+        // otherwise encode inverse.
+        let mut dst_next = E::ZERO; // sum dst_i * r_i_next
+        for i in 0..NR {
+            dst_next += cur[ctx.cols.sel_dst_index(i)] * next[ctx.cols.r_index(i)];
+        }
+
+        let diff = a_val - b_val;
+        let inv = cur[ctx.cols.eq_inv];
+
+        // if dst_next==1 => diff==0
+        result[*ix] = p_final * b_eq * (dst_next * diff);
+        *ix += 1;
+        // if diff!=0 => dst_next==0
+        // via (1 - dst_next) - diff*inv == 0
+        result[*ix] = p_final * b_eq * ((E::ONE - dst_next) - diff * inv);
+        *ix += 1;
+    }
+}

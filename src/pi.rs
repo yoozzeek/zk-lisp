@@ -51,9 +51,74 @@ impl winterfell::math::ToElements<BE> for PublicInputs {
     }
 }
 
-fn be_from_le8(bytes32: &[u8; 32]) -> BE {
+pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {
     let mut le = [0u8; 8];
     le.copy_from_slice(&bytes32[0..8]);
 
     BE::from(u64::from_le_bytes(le))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{air, layout};
+    use winterfell::{Air, ProofOptions, TraceInfo};
+
+    #[test]
+    fn pi_feature_gating_counts() {
+        let cols = layout::Columns::baseline();
+        let width = cols.width(0);
+        let steps = layout::STEPS_PER_LEVEL_P2;
+        let info = TraceInfo::new(width, steps);
+        let opts = ProofOptions::new(
+            1,
+            4,
+            0,
+            winterfell::FieldExtension::None,
+            2,
+            1,
+            winterfell::BatchingMethod::Linear,
+            winterfell::BatchingMethod::Linear,
+        );
+
+        let sched_asserts = layout::POSEIDON_ROUNDS + 4;
+
+        // Case A: Poseidon only
+        let pi_pose = PublicInputs {
+            feature_mask: FM_POSEIDON,
+            ..Default::default()
+        };
+
+        let air_pose = air::ZkLispAir::new(info.clone(), pi_pose, opts.clone());
+        assert_eq!(
+            air_pose.context().num_main_transition_constraints(),
+            4 * layout::POSEIDON_ROUNDS
+        );
+        assert_eq!(air_pose.get_assertions().len(), sched_asserts);
+
+        // Case B: VM only
+        let pi_vm = PublicInputs {
+            feature_mask: FM_VM,
+            ..Default::default()
+        };
+
+        let air_vm = air::ZkLispAir::new(info.clone(), pi_vm, opts.clone());
+        // vm_ctrl (37) + vm_alu (18) = 55
+        assert_eq!(air_vm.context().num_main_transition_constraints(), 55);
+        assert_eq!(air_vm.get_assertions().len(), sched_asserts + 1);
+
+        // Case C: all features
+        let pi_all = PublicInputs {
+            feature_mask: FM_POSEIDON | FM_VM | FM_KV,
+            ..Default::default()
+        };
+
+        let air_all = air::ZkLispAir::new(info, pi_all, opts);
+        // poseidon (4*R=32) + vm(55) + kv(8) = 95
+        assert_eq!(
+            air_all.context().num_main_transition_constraints(),
+            32 + 55 + 8
+        );
+        assert_eq!(air_all.get_assertions().len(), sched_asserts + 1 + 4);
+    }
 }

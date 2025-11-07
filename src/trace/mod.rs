@@ -1,4 +1,8 @@
-//! Trace builder
+//! Trace builder orchestrator
+
+pub mod kv;
+pub mod poseidon;
+pub mod vm;
 
 use winterfell::TraceTable;
 use winterfell::math::FieldElement;
@@ -34,11 +38,14 @@ impl TraceBuilder {
     pub fn tie_schedule_gates_for_rows(trace: &mut TraceTable<BE>, n_rows: usize) {
         let cols = Columns::baseline();
         let steps = STEPS_PER_LEVEL_P2;
+        let dom = crate::poseidon::domain_tags();
 
         for row in 0..n_rows {
             let pos = row % steps;
             if pos == schedule::pos_map() {
                 trace.set(cols.g_map, row, BE::ONE);
+                trace.set(cols.lane_c0, row, dom[0]);
+                trace.set(cols.lane_c1, row, dom[1]);
             }
 
             if pos == schedule::pos_final() {

@@ -42,7 +42,7 @@ impl Program {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ProgramBuilder {
     ops: Vec<Op>,
     reg_max: u8,
