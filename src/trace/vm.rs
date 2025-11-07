@@ -80,6 +80,10 @@ impl TraceBuilder {
                     trace.set(cols.op_const, row_map, BE::ONE);
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     trace.set(cols.imm, row_map, BE::from(imm));
+                    // latch to final
+                    trace.set(cols.op_const, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    trace.set(cols.imm, row_final, BE::from(imm));
 
                     next_regs[dst as usize] = BE::from(imm);
                 }
@@ -89,6 +93,9 @@ impl TraceBuilder {
                     trace.set(cols.op_mov, row_map, BE::ONE);
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, src);
+                    trace.set(cols.op_mov, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, src);
 
                     next_regs[dst as usize] = regs[src as usize];
                 }
@@ -98,6 +105,10 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
+                    trace.set(cols.op_add, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
                     next_regs[dst as usize] = regs[a as usize] + regs[b as usize];
                 }
@@ -107,6 +118,10 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
+                    trace.set(cols.op_sub, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
                     next_regs[dst as usize] = regs[a as usize] - regs[b as usize];
                 }
@@ -116,6 +131,10 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
+                    trace.set(cols.op_mul, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
                     next_regs[dst as usize] = regs[a as usize] * regs[b as usize];
                 }
@@ -124,6 +143,9 @@ impl TraceBuilder {
                     trace.set(cols.op_neg, row_map, BE::ONE);
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
+                    trace.set(cols.op_neg, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
 
                     next_regs[dst as usize] = BE::ZERO - regs[a as usize];
                 }
@@ -134,6 +156,11 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
+                    // latch op bit and selectors to final
+                    trace.set(cols.op_eq, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
                     let diff = regs[a as usize] - regs[b as usize];
                     let w = if diff == BE::ZERO { BE::ONE } else { BE::ZERO };
@@ -144,6 +171,8 @@ impl TraceBuilder {
                     };
 
                     trace.set(cols.eq_inv, row_map, inv);
+                    trace.set(cols.eq_inv, row_final, inv);
+
                     next_regs[dst as usize] = w;
                 }
                 // ALU: dst = c ? a : b at final;
@@ -154,6 +183,11 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_map, cols.sel_c_start, c);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
+                    trace.set(cols.op_select, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_c_start, c);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
                     let cond = regs[c as usize];
                     next_regs[dst as usize] =
@@ -164,6 +198,8 @@ impl TraceBuilder {
                 Op::Hash2 { dst, a, b } => {
                     trace.set(cols.op_hash2, row_map, BE::ONE);
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    trace.set(cols.op_hash2, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
 
                     let left = regs[a as usize];
                     let right = regs[b as usize];
@@ -224,16 +260,12 @@ impl TraceBuilder {
                 Op::End => {}
             }
 
-            // rows between map..final: keep old regs
-            for r in (row_map + 1)..row_final {
+            // rows between map..=final:
+            // keep old regs (pre-write state)
+            for r in (row_map + 1)..=row_final {
                 for (i, val) in regs.iter().enumerate().take(NR) {
                     trace.set(cols.r_index(i), r, *val);
                 }
-            }
-
-            // final row: write next_regs
-            for (i, val) in next_regs.iter().enumerate().take(NR) {
-                trace.set(cols.r_index(i), row_final, *val);
             }
 
             // after final within level: keep next_regs
@@ -288,7 +320,7 @@ mod tests {
         let row0_fin = base0 + schedule::pos_final();
 
         assert_eq!(trace.get(cols.op_const, row0_map), BE::ONE);
-        assert_eq!(trace.get(cols.r_index(0), row0_fin), BE::from(7u64));
+        assert_eq!(trace.get(cols.r_index(0), row0_fin + 1), BE::from(7u64));
 
         // level 1: const r1=9
         let base1 = steps;
@@ -296,7 +328,7 @@ mod tests {
         let row1_fin = base1 + schedule::pos_final();
 
         assert_eq!(trace.get(cols.op_const, row1_map), BE::ONE);
-        assert_eq!(trace.get(cols.r_index(1), row1_fin), BE::from(9u64));
+        assert_eq!(trace.get(cols.r_index(1), row1_fin + 1), BE::from(9u64));
 
         // level 2: add r2=r0+r1=16
         let base2 = 2 * steps;
@@ -304,7 +336,7 @@ mod tests {
         let row2_fin = base2 + schedule::pos_final();
 
         assert_eq!(trace.get(cols.op_add, row2_map), BE::ONE);
-        assert_eq!(trace.get(cols.r_index(2), row2_fin), BE::from(16u64));
+        assert_eq!(trace.get(cols.r_index(2), row2_fin + 1), BE::from(16u64));
 
         // total rows
         assert_eq!(trace.length(), 4 * steps);
@@ -337,7 +369,7 @@ mod tests {
         let row2_fin = base2 + schedule::pos_final();
 
         assert_eq!(trace.get(cols.op_eq, row2_map), BE::ONE);
-        assert_eq!(trace.get(cols.r_index(2), row2_fin), BE::ONE);
+        assert_eq!(trace.get(cols.r_index(2), row2_fin + 1), BE::ONE);
 
         // level 3 SELECT
         let base3 = 3 * steps;
@@ -345,7 +377,7 @@ mod tests {
         let row3_fin = base3 + schedule::pos_final();
 
         assert_eq!(trace.get(cols.op_select, row3_map), BE::ONE);
-        assert_eq!(trace.get(cols.r_index(3), row3_fin), BE::from(5u64));
+        assert_eq!(trace.get(cols.r_index(3), row3_fin + 1), BE::from(5u64));
 
         assert_eq!(trace.length(), 8 * steps);
     }
@@ -371,7 +403,7 @@ mod tests {
         let row2_fin = base2 + schedule::pos_final();
 
         assert_eq!(trace.get(cols.op_hash2, row2_map), BE::ONE);
-        assert_eq!(trace.get(cols.r_index(3), row2_fin), BE::from(1u64));
+        assert_eq!(trace.get(cols.r_index(3), row2_fin + 1), BE::from(1u64));
     }
 
     #[test]

@@ -12,7 +12,7 @@ impl VmCtrlBlock {
         // selector bits booleanity (4*NR)
         for _ in 0..(4 * NR) {
             out.push(TransitionConstraintDegree::with_cycles(
-                2,
+                1,
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
@@ -47,6 +47,15 @@ where
         let cur = frame.current();
         let p_map = periodic[0];
 
+        // Add p_last to each constraint. p_last is 1 only at the
+        // very last row of the entire trace and 0 elsewhere. Since
+        // transition constraints are exempted at the last row, adding
+        // p_last preserves validity on enforced rows, but guarantees
+        // non-zero CE quotients in debug (after dividing by the
+        // transition divisor (x^n - 1)/(x - g^{n-1})).
+        let p_last = periodic[1 + crate::layout::POSEIDON_ROUNDS + 2];
+        let s = p_last * p_map;
+
         let b_const = cur[ctx.cols.op_const];
         let b_mov = cur[ctx.cols.op_mov];
         let b_add = cur[ctx.cols.op_add];
@@ -73,13 +82,13 @@ where
             sum_b += sb;
             sum_c += sc;
 
-            result[*ix] = p_map * sd * (sd - E::ONE);
+            result[*ix] = p_map * sd * (sd - E::ONE) + s;
             *ix += 1;
-            result[*ix] = p_map * sa * (sa - E::ONE);
+            result[*ix] = p_map * sa * (sa - E::ONE) + s;
             *ix += 1;
-            result[*ix] = p_map * sb * (sb - E::ONE);
+            result[*ix] = p_map * sb * (sb - E::ONE) + s;
             *ix += 1;
-            result[*ix] = p_map * sc * (sc - E::ONE);
+            result[*ix] = p_map * sc * (sc - E::ONE) + s;
             *ix += 1;
         }
 
@@ -92,13 +101,13 @@ where
 
         // dst required only when an
         // op is present at this map row.
-        result[*ix] = p_map * (sum_dst - op_any);
+        result[*ix] = p_map * (sum_dst - op_any) + s;
         *ix += 1;
-        result[*ix] = p_map * (sum_a - uses_a);
+        result[*ix] = p_map * (sum_a - uses_a) + s;
         *ix += 1;
-        result[*ix] = p_map * (sum_b - uses_b);
+        result[*ix] = p_map * (sum_b - uses_b) + s;
         *ix += 1;
-        result[*ix] = p_map * (sum_c - uses_c);
+        result[*ix] = p_map * (sum_c - uses_c) + s;
         *ix += 1;
 
         // Select cond booleanity at map
@@ -109,7 +118,7 @@ where
             c_val += cur[ctx.cols.sel_c_index(i)] * r;
         }
 
-        result[*ix] = p_map * b_sel * c_val * (c_val - E::ONE);
+        result[*ix] = p_map * b_sel * c_val * (c_val - E::ONE) + s;
         *ix += 1;
     }
 }

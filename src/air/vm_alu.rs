@@ -24,6 +24,7 @@ impl VmAluBlock {
             ));
         }
         // equality ties (dst reflects [a==b])
+        // degree 2: dst_next * diff and (1 - dst_next) - diff*inv
         for _ in 0..2 {
             out.push(TransitionConstraintDegree::with_cycles(
                 2,
@@ -52,7 +53,7 @@ where
         let p_map = periodic[0];
         let p_final = periodic[1 + POSEIDON_ROUNDS];
         let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
-        
+
         // carry when next row is not final within the level:
         // map rows, rounds 0..R-2, and all pad rows
         let mut g_carry = p_map + p_pad;
@@ -92,6 +93,13 @@ where
         let b_sel = cur[ctx.cols.op_select];
         let b_hash = cur[ctx.cols.op_hash2];
 
+        // include Eq via dst_next so
+        // generic write can be uniform.
+        let mut dst_next = E::ZERO; // sum dst_i * r_i_next
+        for i in 0..NR {
+            dst_next += cur[ctx.cols.sel_dst_index(i)] * next[ctx.cols.r_index(i)];
+        }
+
         let res = b_const * imm
             + b_mov * a_val
             + b_add * (a_val + b_val)
@@ -99,24 +107,16 @@ where
             + b_mul * (a_val * b_val)
             + b_neg * (E::ZERO - a_val)
             + b_sel * (c_val * a_val + (E::ONE - c_val) * b_val)
-            + b_hash * cur[ctx.cols.lane_l];
+            + b_hash * cur[ctx.cols.lane_l]
+            + b_eq * dst_next;
 
-        // write at final: r' = (1-dst)*r + dst*res
-        // (masked by non-Eq).
+        // write at final: r' = (1-dst)*r + dst*res (uniform for all ops)
         for i in 0..NR {
             let dsti = cur[ctx.cols.sel_dst_index(i)];
             result[*ix] = p_final
-                * (E::ONE - b_eq)
                 * (next[ctx.cols.r_index(i)]
                     - ((E::ONE - dsti) * cur[ctx.cols.r_index(i)] + dsti * res));
             *ix += 1;
-        }
-
-        // Eq ties: dst_next implies diff==0;
-        // otherwise encode inverse.
-        let mut dst_next = E::ZERO; // sum dst_i * r_i_next
-        for i in 0..NR {
-            dst_next += cur[ctx.cols.sel_dst_index(i)] * next[ctx.cols.r_index(i)];
         }
 
         let diff = a_val - b_val;

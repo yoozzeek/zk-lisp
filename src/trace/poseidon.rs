@@ -30,7 +30,7 @@ pub fn apply_level(trace: &mut TraceTable<BE>, level: usize, left: BE, right: BE
 
     for (j, rcj) in rc.iter().enumerate().take(POSEIDON_ROUNDS) {
         let r = base + 1 + j; // round row
-        
+
         // set current state on round row (s_j)
         trace.set(cols.lane_l, r, sl);
         trace.set(cols.lane_r, r, sr);
@@ -61,12 +61,11 @@ pub fn apply_level(trace: &mut TraceTable<BE>, level: usize, left: BE, right: BE
     trace.set(cols.lane_r, row_fin, sr);
     trace.set(cols.lane_c0, row_fin, sc0);
     trace.set(cols.lane_c1, row_fin, sc1);
-    
+
     #[cfg(debug_assertions)]
     {
         println!(
-            "[poseidon.apply_level] level={} map_row={} fin_row={} final=(l:{:?} r:{:?} c0:{:?} c1:{:?})",
-            level, row_map, row_fin, sl, sr, sc0, sc1
+            "[poseidon.apply_level] level={level} map_row={row_map} fin_row={row_fin} final=(l:{sl:?} r:{sr:?} c0:{sc0:?} c1:{sc1:?})"
         );
     }
 }

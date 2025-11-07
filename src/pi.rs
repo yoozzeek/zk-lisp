@@ -119,6 +119,6 @@ mod tests {
             air_all.context().num_main_transition_constraints(),
             32 + 55 + 8
         );
-        assert_eq!(air_all.get_assertions().len(), sched_asserts + 1 + 4);
+        assert_eq!(air_all.get_assertions().len(), sched_asserts + 1);
     }
 }

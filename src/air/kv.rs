@@ -90,15 +90,16 @@ where
         result[*ix] = p_map * kv_map * (cur[ctx.cols.lane_r] - right_sel);
         *ix += 1;
 
-        // version transition: hold on map, bump on final
+        // version transition: hold on map
+        // (kv_map), bump on final (kv_fin)
         let ver = cur[ctx.cols.kv_version];
         let ver_next = next[ctx.cols.kv_version];
         result[*ix] =
             (p_map * kv_map) * (ver_next - ver) + (p_final * kv_fin) * (ver_next - (ver + E::ONE));
         *ix += 1;
 
-        // final tie acc == lane_l only when both map
-        // and final flags present (same level)
+        // final tie acc == lane_l only
+        // for KV map-final levels.
         result[*ix] = p_final * kv_fin * kv_map * (cur[ctx.cols.kv_acc] - cur[ctx.cols.lane_l]);
         *ix += 1;
 
@@ -124,40 +125,11 @@ where
     }
 
     fn append_assertions(
-        ctx: &BlockCtx<E>,
-        out: &mut Vec<Assertion<<E as FieldElement>::BaseField>>,
-        last: usize,
+        _ctx: &BlockCtx<E>,
+        _out: &mut Vec<Assertion<<E as FieldElement>::BaseField>>,
+        _last: usize,
     ) {
-        // per-level gate one-hot at map/final
-        let steps = STEPS_PER_LEVEL_P2;
-        let lvls = if steps == 0 { 0 } else { (last + 1) / steps };
-
-        for lvl in 0..lvls {
-            let base = lvl * steps;
-            let row_map = base + crate::schedule::pos_map();
-            let row_final = base + crate::schedule::pos_final();
-
-            out.push(Assertion::single(
-                ctx.cols.kv_g_map,
-                row_map,
-                BE::from(1u32),
-            ));
-            out.push(Assertion::single(
-                ctx.cols.kv_g_final,
-                row_map,
-                BE::from(0u32),
-            ));
-            out.push(Assertion::single(
-                ctx.cols.kv_g_final,
-                row_final,
-                BE::from(1u32),
-            ));
-            out.push(Assertion::single(
-                ctx.cols.kv_g_map,
-                row_final,
-                BE::from(0u32),
-            ));
-        }
+        // No KV gate boundary assertions by default.
     }
 }
 

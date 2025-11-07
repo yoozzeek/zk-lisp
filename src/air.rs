@@ -80,6 +80,7 @@ impl Air for ZkLispAir {
     type PublicInputs = PublicInputs;
 
     fn new(info: TraceInfo, pub_inputs: Self::PublicInputs, options: ProofOptions) -> Self {
+        crate::logging::init();
         let mut degrees = Vec::new();
 
         let features = pub_inputs.get_features();
@@ -102,24 +103,22 @@ impl Air for ZkLispAir {
         // per level
         let mut num_assertions = (4 + POSEIDON_ROUNDS) * levels;
 
-        // KV gate one-hot
-        // per level (4 per level)
-        if features.kv {
-            num_assertions += 4 * levels;
-        }
-
         // Program commitment
         // bound once (level 0 map)
         if features.vm {
             num_assertions += 1;
         }
-
         if num_assertions == 0 {
             num_assertions = 1;
         }
 
+        // Debug: print expected evals and context
+        Self::print_evals_debug(&pub_inputs, &info, &features, &degrees);
+
         let ctx = AirContext::new(info, degrees, num_assertions, options);
         let cols = Columns::baseline();
+
+        Self::print_degrees_debug(&ctx, &pub_inputs, &features);
 
         let rc = round_constants();
         let mds = mds_matrix();
@@ -200,6 +199,30 @@ impl Air for ZkLispAir {
             out.push(Assertion::single(self.cols.mask, last, BE::from(0u32)));
         }
 
+        // Debug: validate assertion columns
+        let width = self.cols.width(self.pub_inputs.feature_mask);
+        let mut bad = 0usize;
+        let mut max_col = 0usize;
+
+        for a in &out {
+            let c = a.column();
+            if c > max_col {
+                max_col = c;
+            }
+            if c >= width {
+                bad += 1;
+            }
+        }
+
+        tracing::info!(
+            target="proof.air",
+            assertions_len=%out.len(),
+            width=%width,
+            last=%last,
+            bad_cols=%bad,
+            max_col=%max_col,
+        );
+
         out
     }
 
@@ -218,39 +241,59 @@ impl Air for ZkLispAir {
     }
 
     fn get_periodic_column_polys(&self) -> Vec<Vec<Self::BaseField>> {
-        // Build per-cycle polynomials for periodic 
+        // Build per-cycle polynomials for periodic
         // columns via FFT interpolation
         // p_map, p_r[0..R-1], p_final, p_pad, p_last
         let n = self.ctx.trace_len();
         let cycle = STEPS_PER_LEVEL_P2;
         let cols_len = 1 + POSEIDON_ROUNDS + 1 + 1 + 1;
-        
+
         let mut values: Vec<Vec<BE>> = (0..cols_len).map(|_| Vec::new()).collect();
 
         for pos in 0..cycle {
             // p_map
-            values[0].push(if pos == schedule::pos_map() { BE::ONE } else { BE::ZERO });
-            
+            values[0].push(if pos == schedule::pos_map() {
+                BE::ONE
+            } else {
+                BE::ZERO
+            });
+
             // rounds
             for j in 0..POSEIDON_ROUNDS {
                 values[1 + j].push(if pos == 1 + j { BE::ONE } else { BE::ZERO });
             }
-            
+
             // p_final
-            values[1 + POSEIDON_ROUNDS].push(if pos == schedule::pos_final() { BE::ONE } else { BE::ZERO });
-            
+            values[1 + POSEIDON_ROUNDS].push(if pos == schedule::pos_final() {
+                BE::ONE
+            } else {
+                BE::ZERO
+            });
+
             // p_pad
-            let is_pad = pos != schedule::pos_map() && pos != schedule::pos_final() && !schedule::is_round_pos(pos);
+            let is_pad = pos != schedule::pos_map()
+                && pos != schedule::pos_final()
+                && !schedule::is_round_pos(pos);
             values[1 + POSEIDON_ROUNDS + 1].push(if is_pad { BE::ONE } else { BE::ZERO });
         }
 
-        // p_last over full n
+        // p_last over full n as a true
+        // polynomial over the full trace domain.
         let mut p_last = vec![BE::ZERO; n];
-        if n > 0 { p_last[n - 1] = BE::ONE; }
-        
+        if n > 0 {
+            p_last[n - 1] = BE::ONE;
+        }
+
+        // interpolate to polynomial
+        // coefficients over size-n domain.
+        if n > 0 {
+            let inv_twiddles_n = fft::get_inv_twiddles::<BE>(n);
+            fft::interpolate_poly(&mut p_last, &inv_twiddles_n);
+        }
+
         values[1 + POSEIDON_ROUNDS + 2] = p_last;
 
-        // interpolate first (1 + R + 1 + 1) 
+        // interpolate first (1 + R + 1 + 1)
         // columns to polys over cycle
         for col in values.iter_mut().take(1 + POSEIDON_ROUNDS + 1 + 1) {
             let inv_twiddles = fft::get_inv_twiddles::<BE>(col.len());
@@ -258,5 +301,104 @@ impl Air for ZkLispAir {
         }
 
         values
+    }
+}
+
+impl ZkLispAir {
+    #[inline]
+    fn print_evals_debug(
+        _pub_inputs: &PublicInputs,
+        info: &TraceInfo,
+        features: &FeaturesMap,
+        degrees: &[TransitionConstraintDegree],
+    ) {
+        let trace_len = info.length();
+        let evals: Vec<usize> = degrees
+            .iter()
+            .map(|d| d.get_evaluation_degree(trace_len) - (trace_len - 1))
+            .collect();
+
+        tracing::info!(
+            target = "proof.air",
+            "expected_eval_degrees_len={} evals={:?}",
+            evals.len(),
+            evals
+        );
+
+        // print per-block slices for easier debugging
+        let mut ofs = 0usize;
+        let mut dbg: Vec<(&str, Vec<usize>)> = Vec::new();
+
+        if features.poseidon {
+            let len = 4 * POSEIDON_ROUNDS;
+            dbg.push(("poseidon", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+        }
+        if features.vm {
+            // vm_ctrl (37)
+            let len = 37;
+            dbg.push(("vm_ctrl", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+
+            // vm_alu (18)
+            let len = 18;
+            dbg.push(("vm_alu", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+        }
+        if features.kv {
+            let len = 8;
+            dbg.push(("kv", evals[ofs..ofs + len].to_vec()));
+        }
+
+        tracing::info!(target = "proof.air", "per_block_evals: {:?}", dbg);
+    }
+
+    #[inline]
+    fn print_degrees_debug(
+        ctx: &AirContext<BE>,
+        _pub_inputs: &PublicInputs,
+        features: &FeaturesMap,
+    ) {
+        let tl = ctx.trace_len();
+        let ce = ctx.ce_domain_size();
+        let lde = ctx.lde_domain_size();
+        let blow_ce = ce / tl;
+
+        tracing::info!(
+            target = "proof.air",
+            "ctx: trace_len={} ce_domain_size={} lde_domain_size={} ce_blowup={} exemptions={}",
+            tl,
+            ce,
+            lde,
+            blow_ce,
+            ctx.num_transition_exemptions()
+        );
+
+        let mut ofs = 0usize;
+        let mut ranges = Vec::new();
+
+        if features.poseidon {
+            let len = 4 * POSEIDON_ROUNDS;
+            ranges.push(("poseidon", ofs, ofs + len));
+            ofs += len;
+        }
+
+        if features.vm {
+            let len = 37;
+            ranges.push(("vm_ctrl", ofs, ofs + len));
+            ofs += len;
+
+            let len2 = 18;
+            ranges.push(("vm_alu", ofs, ofs + len2));
+            ofs += len2;
+        }
+        if features.kv {
+            let len = 8;
+            ranges.push(("kv", ofs, ofs + len));
+            ofs += len;
+        }
+
+        tracing::info!(target = "proof.air", "deg_ranges: {:?}", ranges);
+        tracing::info!(target = "proof.air", "deg_len={} (computed)", ofs);
     }
 }

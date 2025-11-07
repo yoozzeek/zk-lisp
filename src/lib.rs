@@ -1,12 +1,13 @@
 pub mod air;
 pub mod commit;
+pub mod debug;
 pub mod error;
 pub mod ir;
 pub mod layout;
+pub mod lisp;
+pub mod logging;
 pub mod pi;
 pub mod poseidon;
+pub mod prove;
 pub mod schedule;
 pub mod trace;
-pub mod lisp;
-pub mod prove;
-pub mod debug;

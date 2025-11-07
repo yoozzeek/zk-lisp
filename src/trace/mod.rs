@@ -52,7 +52,6 @@ impl TraceBuilder {
                 trace.set(cols.g_final, row, BE::ONE);
             }
 
-            // rounds
             for j in 0..POSEIDON_ROUNDS {
                 let rj = 1 + j;
                 if pos == rj {
