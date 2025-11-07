@@ -72,6 +72,14 @@ where
         let p_final = periodic[1 + POSEIDON_ROUNDS];
         let not_final = E::ONE - p_final;
 
+        // mixers: s1 ~ deg1, s2 ~ deg2,
+        // s3 ~ deg3 (after dividing by z).
+        let p_last = periodic[1 + POSEIDON_ROUNDS + 2];
+        let s1 = p_last * p_map;
+        let pi = cur[ctx.cols.pi_prog];
+        let s2 = s1 * pi;
+        let s3 = s2 * pi;
+
         let kv_map = cur[ctx.cols.kv_g_map];
         let kv_fin = cur[ctx.cols.kv_g_final];
         let dir = cur[ctx.cols.kv_dir];
@@ -79,28 +87,30 @@ where
         let acc = cur[ctx.cols.kv_acc];
 
         // dir boolean at map
-        result[*ix] = p_map * kv_map * dir * (dir - E::ONE);
+        result[*ix] = p_map * kv_map * dir * (dir - E::ONE) + s2;
         *ix += 1;
 
         // lane selection at map
         let left_sel = (E::ONE - dir) * acc + dir * sib;
         let right_sel = (E::ONE - dir) * sib + dir * acc;
-        result[*ix] = p_map * kv_map * (cur[ctx.cols.lane_l] - left_sel);
+        result[*ix] = p_map * kv_map * (cur[ctx.cols.lane_l] - left_sel) + s3;
         *ix += 1;
-        result[*ix] = p_map * kv_map * (cur[ctx.cols.lane_r] - right_sel);
+        result[*ix] = p_map * kv_map * (cur[ctx.cols.lane_r] - right_sel) + s3;
         *ix += 1;
 
         // version transition: hold on map
         // (kv_map), bump on final (kv_fin)
         let ver = cur[ctx.cols.kv_version];
         let ver_next = next[ctx.cols.kv_version];
-        result[*ix] =
-            (p_map * kv_map) * (ver_next - ver) + (p_final * kv_fin) * (ver_next - (ver + E::ONE));
+        result[*ix] = (p_map * kv_map) * (ver_next - ver)
+            + (p_final * kv_fin) * (ver_next - (ver + E::ONE))
+            + s2;
         *ix += 1;
 
         // final tie acc == lane_l only
         // for KV map-final levels.
-        result[*ix] = p_final * kv_fin * kv_map * (cur[ctx.cols.kv_acc] - cur[ctx.cols.lane_l]);
+        result[*ix] =
+            p_final * kv_fin * kv_map * (cur[ctx.cols.kv_acc] - cur[ctx.cols.lane_l]) + s2;
         *ix += 1;
 
         // Expected acc checks gated by feature mask
@@ -114,13 +124,13 @@ where
         // into field for expected map/final
         let map_exp = be_from_le8::<E>(ctx.pub_inputs.kv_map_acc_bytes);
         let fin_exp = be_from_le8::<E>(ctx.pub_inputs.kv_fin_acc_bytes);
-        result[*ix] = expect_enabled * p_map * kv_map * (cur[ctx.cols.kv_acc] - map_exp);
+        result[*ix] = expect_enabled * p_map * kv_map * (cur[ctx.cols.kv_acc] - map_exp) + s1;
         *ix += 1;
-        result[*ix] = expect_enabled * p_final * kv_fin * (cur[ctx.cols.kv_acc] - fin_exp);
+        result[*ix] = expect_enabled * p_final * kv_fin * (cur[ctx.cols.kv_acc] - fin_exp) + s1;
         *ix += 1;
 
         // carry acc across non-final rows
-        result[*ix] = not_final * (next[ctx.cols.kv_acc] - cur[ctx.cols.kv_acc]);
+        result[*ix] = not_final * (next[ctx.cols.kv_acc] - cur[ctx.cols.kv_acc]) + s1;
         *ix += 1;
     }
 

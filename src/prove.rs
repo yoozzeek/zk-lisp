@@ -10,6 +10,7 @@ use winterfell::{
 };
 
 use crate::air::ZkLispAir;
+use crate::logging;
 use crate::pi::PublicInputs;
 use crate::trace::TraceBuilder;
 
@@ -33,7 +34,7 @@ impl ZkProver {
     }
 
     pub fn prove(&self, trace: TraceTable<BE>) -> Result<Proof, Error> {
-        crate::logging::init();
+        logging::init();
 
         tracing::info!(
             target = "proof.prove",

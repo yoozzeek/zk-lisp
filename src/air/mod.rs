@@ -1,3 +1,19 @@
+mod kv;
+mod poseidon;
+mod schedule;
+mod vm_alu;
+mod vm_ctrl;
+
+use crate::air::{
+    kv::KvBlock, poseidon::PoseidonBlock, schedule::ScheduleBlock, vm_alu::VmAluBlock,
+    vm_ctrl::VmCtrlBlock,
+};
+use crate::layout::{Columns, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::logging;
+use crate::pi::{FeaturesMap, PublicInputs};
+use crate::poseidon::{domain_tags, mds_matrix, round_constants};
+use crate::schedule as schedule_core;
+
 use core::marker::PhantomData;
 use winterfell::math::FieldElement;
 use winterfell::math::fft;
@@ -6,17 +22,6 @@ use winterfell::{
     Air, AirContext, Assertion, EvaluationFrame, ProofOptions, TraceInfo,
     TransitionConstraintDegree,
 };
-
-use crate::layout::{Columns, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
-use crate::pi::{FeaturesMap, PublicInputs};
-use crate::poseidon::{domain_tags, mds_matrix, round_constants};
-use crate::schedule;
-
-pub mod kv;
-pub mod poseidon_blk;
-pub mod schedule_blk;
-pub mod vm_alu;
-pub mod vm_ctrl;
 
 pub struct BlockCtx<'a, E: FieldElement> {
     pub cols: &'a Columns,
@@ -80,19 +85,18 @@ impl Air for ZkLispAir {
     type PublicInputs = PublicInputs;
 
     fn new(info: TraceInfo, pub_inputs: Self::PublicInputs, options: ProofOptions) -> Self {
-        crate::logging::init();
         let mut degrees = Vec::new();
 
         let features = pub_inputs.get_features();
         if features.poseidon {
-            poseidon_blk::PoseidonBlock::push_degrees(&mut degrees);
+            PoseidonBlock::push_degrees(&mut degrees);
         }
         if features.vm {
-            vm_ctrl::VmCtrlBlock::push_degrees(&mut degrees);
-            vm_alu::VmAluBlock::push_degrees(&mut degrees);
+            VmCtrlBlock::push_degrees(&mut degrees);
+            VmAluBlock::push_degrees(&mut degrees);
         }
         if features.kv {
-            kv::KvBlock::push_degrees(&mut degrees);
+            KvBlock::push_degrees(&mut degrees);
         }
 
         // Boundary assertions count per level:
@@ -156,7 +160,7 @@ impl Air for ZkLispAir {
         let mut ix = 0usize;
 
         if self.features.poseidon {
-            poseidon_blk::PoseidonBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+            PoseidonBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
         }
         if self.features.vm {
             vm_ctrl::VmCtrlBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
@@ -181,7 +185,7 @@ impl Air for ZkLispAir {
             &self.poseidon_mds,
             &self.poseidon_dom,
         );
-        schedule_blk::ScheduleBlock::append_assertions(&bctx_sched, &mut out, last);
+        schedule::ScheduleBlock::append_assertions(&bctx_sched, &mut out, last);
 
         // Kv per-level boundary assertions
         if self.features.kv {
@@ -228,7 +232,7 @@ impl Air for ZkLispAir {
 
     fn get_periodic_column_values(&self) -> Vec<Vec<Self::BaseField>> {
         let n = self.ctx.trace_len();
-        let sels_u8 = schedule::build_periodic_selectors(n);
+        let sels_u8 = schedule_core::build_periodic_selectors(n);
 
         sels_u8
             .into_iter()
@@ -252,7 +256,7 @@ impl Air for ZkLispAir {
 
         for pos in 0..cycle {
             // p_map
-            values[0].push(if pos == schedule::pos_map() {
+            values[0].push(if pos == schedule_core::pos_map() {
                 BE::ONE
             } else {
                 BE::ZERO
@@ -264,16 +268,16 @@ impl Air for ZkLispAir {
             }
 
             // p_final
-            values[1 + POSEIDON_ROUNDS].push(if pos == schedule::pos_final() {
+            values[1 + POSEIDON_ROUNDS].push(if pos == schedule_core::pos_final() {
                 BE::ONE
             } else {
                 BE::ZERO
             });
 
             // p_pad
-            let is_pad = pos != schedule::pos_map()
-                && pos != schedule::pos_final()
-                && !schedule::is_round_pos(pos);
+            let is_pad = pos != schedule_core::pos_map()
+                && pos != schedule_core::pos_final()
+                && !schedule_core::is_round_pos(pos);
             values[1 + POSEIDON_ROUNDS + 1].push(if is_pad { BE::ONE } else { BE::ZERO });
         }
 

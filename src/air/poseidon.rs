@@ -36,6 +36,14 @@ where
         let cur = frame.current();
         let next = frame.next();
         let mm = ctx.poseidon_mds;
+        let ver = cur[ctx.cols.kv_version];
+
+        // mixers for Poseidon constraints:
+        // use deg~(1 + 1) after dividing by z
+        // s_pos = p_last * p_map * kv_version
+        let p_map = periodic[0];
+        let p_last = periodic[1 + POSEIDON_ROUNDS + 2];
+        let s_pos = p_last * p_map * ver * ver;
 
         for j in 0..POSEIDON_ROUNDS {
             let gr = periodic[1 + j];
@@ -72,13 +80,13 @@ where
                 + E::from(mm[3][3]) * sc13
                 + E::from(rc[3]);
 
-            result[*ix] = gr * (next[ctx.cols.lane_l] - yl);
+            result[*ix] = gr * (next[ctx.cols.lane_l] - yl) + s_pos;
             *ix += 1;
-            result[*ix] = gr * (next[ctx.cols.lane_r] - yr);
+            result[*ix] = gr * (next[ctx.cols.lane_r] - yr) + s_pos;
             *ix += 1;
-            result[*ix] = gr * (next[ctx.cols.lane_c0] - yc0);
+            result[*ix] = gr * (next[ctx.cols.lane_c0] - yc0) + s_pos;
             *ix += 1;
-            result[*ix] = gr * (next[ctx.cols.lane_c1] - yc1);
+            result[*ix] = gr * (next[ctx.cols.lane_c1] - yc1) + s_pos;
             *ix += 1;
         }
     }
