@@ -178,7 +178,7 @@ fn preflight(
         let p_map0 = periodic_poly_vals[0];
         let p_fin0 = periodic_poly_vals[1 + crate::layout::POSEIDON_ROUNDS];
         let p_pad0 = periodic_poly_vals[1 + crate::layout::POSEIDON_ROUNDS + 1];
-        let p_last0 = periodic_poly_vals[1 + crate::layout::POSEIDON_ROUNDS + 2];
+        let p_last0 = periodic_poly_vals[1 + crate::layout::POSEIDON_ROUNDS + 3];
 
         println!(
             "[preflight poly step0] first 8: {:?}",
@@ -231,8 +231,14 @@ fn preflight(
             let p_final = pc[1 + crate::layout::POSEIDON_ROUNDS][r];
             let kv_ver = frame.current()[cols.kv_version];
             let kv_ver_next = frame.next()[cols.kv_version];
+            let kv_acc_cur = frame.current()[cols.kv_acc];
+            let kv_acc_next = frame.next()[cols.kv_acc];
+            let exp_map = crate::pi::be_from_le8(&pub_inputs.kv_map_acc_bytes);
+            let exp_fin = crate::pi::be_from_le8(&pub_inputs.kv_fin_acc_bytes);
+            let exp_en = if (pub_inputs.feature_mask & crate::pi::FM_KV_EXPECT) != 0 { 1 } else { 0 };
+            
             println!(
-                "  kv: p_map={p_map:?} p_final={p_final:?} ver_cur={kv_ver:?} ver_next={kv_ver_next:?}"
+                "  kv: p_map={p_map:?} p_final={p_final:?} ver_cur={kv_ver:?} ver_next={kv_ver_next:?} acc_cur={kv_acc_cur:?} acc_next={kv_acc_next:?} exp_en={exp_en} exp_map={exp_map:?} exp_fin={exp_fin:?}"
             );
 
             // If in Poseidon block, dump lane values and expected next

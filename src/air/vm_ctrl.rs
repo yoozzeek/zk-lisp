@@ -51,7 +51,7 @@ where
         // - s_low = p_last * p_map yields CE quotient degree ~120;
         // - s_high = s_low * pi_prog raises CE quotient degree to ~247
         //   (deg(p_last)=~127, deg(p_map)=~120, deg(pi_prog)=~127; minus z-degree 127).
-        let p_last = periodic[1 + crate::layout::POSEIDON_ROUNDS + 2];
+        let p_last = periodic[1 + crate::layout::POSEIDON_ROUNDS + 3];
         let s_low = p_last * p_map;
         let pi_prog = cur[ctx.cols.pi_prog];
         let s_high = s_low * pi_prog;

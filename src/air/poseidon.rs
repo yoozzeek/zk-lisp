@@ -42,7 +42,7 @@ where
         // use deg~(1 + 1) after dividing by z
         // s_pos = p_last * p_map * kv_version
         let p_map = periodic[0];
-        let p_last = periodic[1 + POSEIDON_ROUNDS + 2];
+        let p_last = periodic[1 + POSEIDON_ROUNDS + 3];
         let s_pos = p_last * p_map * ver * ver;
 
         for j in 0..POSEIDON_ROUNDS {

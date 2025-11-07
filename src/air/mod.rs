@@ -247,7 +247,10 @@ impl Air for ZkLispAir {
     fn get_periodic_column_polys(&self) -> Vec<Vec<Self::BaseField>> {
         let n = self.ctx.trace_len();
         let cycle = STEPS_PER_LEVEL_P2;
-        let cols_len = 1 + POSEIDON_ROUNDS + 1 + 1 + 1;
+
+        // p_map, p_rounds[R], p_final,
+        // p_pad, p_pad_last, p_last.
+        let cols_len = 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1;
 
         let mut values: Vec<Vec<BE>> = (0..cols_len).map(|_| Vec::new()).collect();
 
@@ -276,6 +279,13 @@ impl Air for ZkLispAir {
                 && pos != schedule_core::pos_final()
                 && !schedule_core::is_round_pos(pos);
             values[1 + POSEIDON_ROUNDS + 1].push(if is_pad { BE::ONE } else { BE::ZERO });
+
+            // p_pad_last (last position in level)
+            values[1 + POSEIDON_ROUNDS + 2].push(if pos == (cycle - 1) {
+                BE::ONE
+            } else {
+                BE::ZERO
+            });
         }
 
         // p_last over full n as a true
@@ -292,11 +302,11 @@ impl Air for ZkLispAir {
             fft::interpolate_poly(&mut p_last, &inv_twiddles_n);
         }
 
-        values[1 + POSEIDON_ROUNDS + 2] = p_last;
+        values[1 + POSEIDON_ROUNDS + 3] = p_last;
 
-        // interpolate first (1 + R + 1 + 1)
-        // columns to polys over cycle
-        for col in values.iter_mut().take(1 + POSEIDON_ROUNDS + 1 + 1) {
+        // interpolate first (1 + R + 1 + 1 + 1)
+        // columns (excluding p_last) to polys over cycle
+        for col in values.iter_mut().take(1 + POSEIDON_ROUNDS + 1 + 1 + 1) {
             let inv_twiddles = fft::get_inv_twiddles::<BE>(col.len());
             fft::interpolate_poly(col, &inv_twiddles);
         }

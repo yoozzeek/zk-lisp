@@ -52,7 +52,7 @@ where
         let p_map = periodic[0];
         let p_final = periodic[1 + POSEIDON_ROUNDS];
         let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
-        let p_last = periodic[1 + POSEIDON_ROUNDS + 2];
+        let p_last = periodic[1 + POSEIDON_ROUNDS + 3];
 
         // carry when next row is not final within the level:
         // map rows, rounds 0..R-2, and all pad rows

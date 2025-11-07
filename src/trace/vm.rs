@@ -314,6 +314,19 @@ impl TraceBuilder {
             poseidon::apply_level(&mut trace, &p.commitment, lvl, BE::ZERO, BE::ZERO);
         }
 
+        #[cfg(debug_assertions)]
+        {
+            let cols_dbg = Columns::baseline();
+            for lvl in 0..total_levels {
+                let base = lvl * steps;
+                let rm = base + schedule::pos_map();
+                let rf = base + schedule::pos_final();
+                let acc_m = trace.get(cols_dbg.kv_acc, rm);
+                let acc_f = trace.get(cols_dbg.kv_acc, rf);
+                println!("[trace.vm] lvl={lvl} acc_map={acc_m:?} acc_fin={acc_f:?}");
+            }
+        }
+
         Ok(trace)
     }
 }

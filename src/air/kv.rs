@@ -32,7 +32,7 @@ impl KvBlock {
         ));
         // final tie acc==lane_l (gated by fin & map)
         out.push(TransitionConstraintDegree::with_cycles(
-            2,
+            3,
             vec![STEPS_PER_LEVEL_P2],
         ));
         // Expected acc checks when enabled
@@ -41,7 +41,7 @@ impl KvBlock {
             vec![STEPS_PER_LEVEL_P2],
         ));
         out.push(TransitionConstraintDegree::with_cycles(
-            1,
+            3,
             vec![STEPS_PER_LEVEL_P2],
         ));
         // carry acc on non-final rows
@@ -71,18 +71,18 @@ where
         let p_map = periodic[0];
         let p_final = periodic[1 + POSEIDON_ROUNDS];
         let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
+        let p_pad_last = periodic[1 + POSEIDON_ROUNDS + 2];
 
-        // carry across rows whose NEXT
-        // is not final within level:
-        // map rows, rounds 0..R-2, and pad rows
-        let mut g_hold = p_map + p_pad;
+        // Carry within the level except across
+        // (last round -> final) and (last pad -> next map)
+        let mut g_hold = p_map + (p_pad - p_pad_last);
         for j in 0..(POSEIDON_ROUNDS - 1) {
             g_hold += periodic[1 + j];
         }
 
         // mixers: s1 ~ deg1, s2 ~ deg2,
         // s3 ~ deg3 (after dividing by z).
-        let p_last = periodic[1 + POSEIDON_ROUNDS + 2];
+        let p_last = periodic[1 + POSEIDON_ROUNDS + 3];
         let s1 = p_last * p_map;
         let pi = cur[ctx.cols.pi_prog];
         let s2 = s1 * pi;
@@ -132,9 +132,10 @@ where
         // into field for expected map/final
         let map_exp = be_from_le8::<E>(ctx.pub_inputs.kv_map_acc_bytes);
         let fin_exp = be_from_le8::<E>(ctx.pub_inputs.kv_fin_acc_bytes);
-        result[*ix] = expect_enabled * p_map * kv_map * (cur[ctx.cols.kv_acc] - map_exp) + s1;
+        result[*ix] = expect_enabled * p_map * (cur[ctx.cols.kv_acc] - map_exp) + s1;
         *ix += 1;
-        result[*ix] = expect_enabled * p_final * kv_fin * (cur[ctx.cols.kv_acc] - fin_exp) + s1;
+        // Final expectation only on levels which performed KV map
+        result[*ix] = expect_enabled * p_final * kv_fin * kv_map * (cur[ctx.cols.kv_acc] - fin_exp) + s1;
         *ix += 1;
 
         // carry acc across rows whose next is NOT final
@@ -167,7 +168,7 @@ mod tests {
     fn dir_non_boolean_fails_at_map() {
         let cols = Columns::baseline();
         let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
-        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1];
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
         let rc_box = Box::new([[BE::ZERO; 4]; POSEIDON_ROUNDS]);
@@ -211,7 +212,7 @@ mod tests {
     fn expected_map_mismatch_fails_only_expected_constraint() {
         let cols = Columns::baseline();
         let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
-        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1];
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         // enable KV_EXPECT
         let mut pi = pi::PublicInputs::default();
@@ -278,7 +279,7 @@ mod tests {
     fn version_wrong_at_final_fails() {
         let cols = Columns::baseline();
         let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
-        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1];
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
         let rc_box = Box::new([[BE::ZERO; 4]; POSEIDON_ROUNDS]);
@@ -316,7 +317,7 @@ mod tests {
     fn final_tie_acc_vs_lane_mismatch_fails() {
         let cols = Columns::baseline();
         let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
-        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1];
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
         let rc_box = Box::new([[BE::ZERO; 4]; POSEIDON_ROUNDS]);
