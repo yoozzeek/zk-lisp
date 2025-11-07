@@ -39,7 +39,7 @@ impl PublicInputs {
 
 // PI encoding for Winterfell
 impl winterfell::math::ToElements<BE> for PublicInputs {
-    fn to_elements(&self) -> Vec<BE> {        
+    fn to_elements(&self) -> Vec<BE> {
         let out = vec![
             BE::from(self.feature_mask),
             be_from_le8(&self.program_commitment),
@@ -51,9 +51,9 @@ impl winterfell::math::ToElements<BE> for PublicInputs {
     }
 }
 
-fn be_from_le8(bytes32: &[u8;32]) -> BE {
-    let mut le = [0u8;8];
+fn be_from_le8(bytes32: &[u8; 32]) -> BE {
+    let mut le = [0u8; 8];
     le.copy_from_slice(&bytes32[0..8]);
-            
+
     BE::from(u64::from_le_bytes(le))
 }

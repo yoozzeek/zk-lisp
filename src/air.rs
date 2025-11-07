@@ -61,15 +61,22 @@ impl Air for ZkLispAir {
         let mut degrees = Vec::new();
         let features = pub_inputs.get_features();
 
-        if degrees.is_empty() {
-            degrees.push(TransitionConstraintDegree::new(1));
+        // Poseidon round transition degrees:
+        // 4 constraints per round, gated by level-cycle.
+        for _ in 0..POSEIDON_ROUNDS {
+            for _ in 0..4 {
+                degrees.push(TransitionConstraintDegree::with_cycles(
+                    3,
+                    vec![STEPS_PER_LEVEL_P2],
+                ));
+            }
         }
 
-        // Minimal assertions: g_map/g_final/g_r[j]
-        // ties per level (reserved count).
+        // Boundary assertions count per level:
+        // schedule ties + domain tags (2 per level)
         let levels = (info.length() / STEPS_PER_LEVEL_P2).max(1);
 
-        let mut num_assertions = (2 + POSEIDON_ROUNDS) * levels; // schedule ties
+        let mut num_assertions = (2 + POSEIDON_ROUNDS + 2) * levels;
 
         if num_assertions == 0 {
             num_assertions = 1;
@@ -99,13 +106,62 @@ impl Air for ZkLispAir {
 
     fn evaluate_transition<E: FieldElement<BaseField = Self::BaseField>>(
         &self,
-        _frame: &EvaluationFrame<E>,
-        _periodic_values: &[E],
+        frame: &EvaluationFrame<E>,
+        periodic_values: &[E],
         result: &mut [E],
     ) {
-        for r in result.iter_mut() {
-            *r = E::ZERO;
+        let cur = frame.current();
+        let next = frame.next();
+        let mm = self.poseidon_mds;
+
+        let mut ix = 0usize;
+
+        for j in 0..POSEIDON_ROUNDS {
+            let gr = periodic_values[1 + j];
+
+            let sl = cur[self.cols.lane_l];
+            let sr = cur[self.cols.lane_r];
+            let sc0 = cur[self.cols.lane_c0];
+            let sc1 = cur[self.cols.lane_c1];
+
+            let sl3 = sl * sl * sl;
+            let sr3 = sr * sr * sr;
+            let sc03 = sc0 * sc0 * sc0;
+            let sc13 = sc1 * sc1 * sc1;
+
+            let rc = &self.poseidon_rc[j];
+            let yl = E::from(mm[0][0]) * sl3
+                + E::from(mm[0][1]) * sr3
+                + E::from(mm[0][2]) * sc03
+                + E::from(mm[0][3]) * sc13
+                + E::from(rc[0]);
+            let yr = E::from(mm[1][0]) * sl3
+                + E::from(mm[1][1]) * sr3
+                + E::from(mm[1][2]) * sc03
+                + E::from(mm[1][3]) * sc13
+                + E::from(rc[1]);
+            let yc0 = E::from(mm[2][0]) * sl3
+                + E::from(mm[2][1]) * sr3
+                + E::from(mm[2][2]) * sc03
+                + E::from(mm[2][3]) * sc13
+                + E::from(rc[2]);
+            let yc1 = E::from(mm[3][0]) * sl3
+                + E::from(mm[3][1]) * sr3
+                + E::from(mm[3][2]) * sc03
+                + E::from(mm[3][3]) * sc13
+                + E::from(rc[3]);
+
+            result[ix] = gr * (next[self.cols.lane_l] - yl);
+            ix += 1;
+            result[ix] = gr * (next[self.cols.lane_r] - yr);
+            ix += 1;
+            result[ix] = gr * (next[self.cols.lane_c0] - yc0);
+            ix += 1;
+            result[ix] = gr * (next[self.cols.lane_c1] - yc1);
+            ix += 1;
         }
+
+        debug_assert_eq!(ix, result.len());
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {
@@ -127,6 +183,19 @@ impl Air for ZkLispAir {
             let row_map = base + schedule::pos_map();
             let row_final = base + schedule::pos_final();
 
+            // Domain tags at map row
+            out.push(Assertion::single(
+                self.cols.lane_c0,
+                row_map,
+                self.poseidon_dom[0],
+            ));
+            out.push(Assertion::single(
+                self.cols.lane_c1,
+                row_map,
+                self.poseidon_dom[1],
+            ));
+
+            // Schedule gate ties
             out.push(Assertion::single(self.cols.g_map, row_map, BE::from(1u32)));
             out.push(Assertion::single(
                 self.cols.g_final,

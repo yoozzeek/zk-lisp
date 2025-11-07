@@ -1,9 +1,12 @@
 pub mod air;
+pub mod commit;
 pub mod error;
+pub mod ir;
 pub mod layout;
 pub mod pi;
 pub mod poseidon;
 pub mod schedule;
+pub mod trace;
 
 #[cfg(test)]
 mod tests {
