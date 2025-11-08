@@ -34,6 +34,7 @@ pub struct Columns {
     pub op_eq: usize,
     pub op_select: usize,
     pub op_hash2: usize,
+    pub op_assert: usize,
 
     // Operand selectors one-hot per role (8 each)
     pub sel_dst_start: usize,
@@ -83,8 +84,9 @@ impl Columns {
         let op_eq = op_neg + 1;
         let op_select = op_eq + 1;
         let op_hash2 = op_select + 1;
+        let op_assert = op_hash2 + 1;
 
-        let sel_dst_start = op_hash2 + 1; // 8 cols
+        let sel_dst_start = op_assert + 1; // 8 cols
         let sel_a_start = sel_dst_start + NR; // 8 cols
         let sel_b_start = sel_a_start + NR; // 8 cols
         let sel_c_start = sel_b_start + NR; // 8 cols
@@ -124,6 +126,7 @@ impl Columns {
             op_eq,
             op_select,
             op_hash2,
+            op_assert,
             sel_dst_start,
             sel_a_start,
             sel_b_start,

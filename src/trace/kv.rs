@@ -13,6 +13,7 @@ pub enum KvEvent {
 }
 
 pub struct KvOverlayConfig {
+    pub suite_id: [u8; 32],
     pub start_version: BE,
     pub acc0: BE,
 }
@@ -22,6 +23,16 @@ impl KvOverlayConfig {
         Self {
             start_version: BE::from(start_version),
             acc0: BE::from(acc0),
+            suite_id: [0u8; 32],
+        }
+    }
+
+    pub fn new_with_suite(start_version: u64, acc0: u64, suite_id: [u8; 32]) -> Self {
+        Self {
+            start_version: BE::from(start_version),
+            acc0: BE::from(acc0),
+
+            suite_id,
         }
     }
 }
@@ -69,9 +80,8 @@ pub fn overlay_kv(trace: &mut TraceTable<BE>, events: &[KvEvent], cfg: KvOverlay
                 let left = (BE::ONE - d) * acc + d * sib;
                 let right = (BE::ONE - d) * sib + d * acc;
 
-                // Use a fixed suite id for KV overlay operations TODO Maybe use programm id here?
-                let suite: [u8; 32] = [0u8; 32];
-                poseidon::apply_level(trace, &suite, level, left, right);
+                // Poseidon with provided suite_id
+                poseidon::apply_level(trace, &cfg.suite_id, level, left, right);
 
                 let out = trace.get(cols.lane_l, row_fin);
                 for r in row_fin..(base + steps) {

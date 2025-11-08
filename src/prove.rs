@@ -36,6 +36,10 @@ impl ZkProver {
     pub fn prove(&self, trace: TraceTable<BE>) -> Result<Proof, Error> {
         logging::init();
 
+        self.pub_inputs
+            .validate_flags()
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
         tracing::info!(
             target = "proof.prove",
             q = %self.options.num_queries(),
@@ -143,6 +147,13 @@ impl WProver for ZkWinterfellProver {
 
 pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Result<(), Error> {
     let acceptable = winterfell::AcceptableOptions::OptionSet(vec![opts.clone()]);
+
+    // Validate PI
+    {
+        pi.validate_flags()
+            .map_err(|e| Error::Backend(e.to_string()))?;
+    }
+
     winterfell::verify::<
         ZkLispAir,
         Blake3_256<BE>,

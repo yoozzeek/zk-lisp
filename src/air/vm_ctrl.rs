@@ -16,6 +16,7 @@ impl VmCtrlBlock {
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
+
         // selector sums (4)
         for _ in 0..4 {
             out.push(TransitionConstraintDegree::with_cycles(
@@ -23,7 +24,22 @@ impl VmCtrlBlock {
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
+
         // select cond boolean (1)
+        out.push(TransitionConstraintDegree::with_cycles(
+            2,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
+        // op_* booleans (10)
+        for _ in 0..10 {
+            out.push(TransitionConstraintDegree::with_cycles(
+                2,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+
+        // one-hot across ops: sum is boolean (1)
         out.push(TransitionConstraintDegree::with_cycles(
             2,
             vec![STEPS_PER_LEVEL_P2],
@@ -47,7 +63,7 @@ where
         let cur = frame.current();
         let p_map = periodic[0];
 
-        // Mixer terms:
+        // Mixer:
         // - s_low = p_last * p_map yields CE quotient degree ~120;
         // - s_high = s_low * pi_prog raises CE quotient degree to ~247
         //   (deg(p_last)=~127, deg(p_map)=~120, deg(pi_prog)=~127; minus z-degree 127).
@@ -65,6 +81,7 @@ where
         let b_eq = cur[ctx.cols.op_eq];
         let b_sel = cur[ctx.cols.op_select];
         let b_hash = cur[ctx.cols.op_hash2];
+        let b_assert = cur[ctx.cols.op_assert];
 
         let mut sum_dst = E::ZERO;
         let mut sum_a = E::ZERO;
@@ -96,8 +113,9 @@ where
         // must select exactly one src.
         let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel;
         let uses_b = b_add + b_sub + b_mul + b_eq + b_sel;
-        let uses_c = b_sel;
-        let op_any = b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash;
+        let uses_c = b_sel + b_assert;
+        let op_any =
+            b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash + b_assert;
 
         // dst required only when an
         // op is present at this map row.
@@ -119,6 +137,20 @@ where
         }
 
         result[*ix] = p_map * b_sel * c_val * (c_val - E::ONE) + s_high;
+        *ix += 1;
+
+        // op_* booleanity and one-hot,
+        // at most one op per map row.
+        for b in [
+            b_const, b_mov, b_add, b_sub, b_mul, b_neg, b_eq, b_sel, b_hash, b_assert,
+        ] {
+            result[*ix] = p_map * b * (b - E::ONE) + s_high;
+            *ix += 1;
+        }
+
+        let op_sum =
+            b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash + b_assert;
+        result[*ix] = p_map * op_sum * (op_sum - E::ONE) + s_low;
         *ix += 1;
     }
 }

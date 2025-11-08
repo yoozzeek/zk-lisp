@@ -16,6 +16,7 @@ impl VmAluBlock {
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
+
         // write registers at final (op-gated)
         for _ in 0..NR {
             out.push(TransitionConstraintDegree::with_cycles(
@@ -23,6 +24,7 @@ impl VmAluBlock {
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
+
         // equality ties (dst reflects [a==b])
         for _ in 0..2 {
             out.push(TransitionConstraintDegree::with_cycles(
@@ -30,6 +32,12 @@ impl VmAluBlock {
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
+
+        // assert enforcer (c==1 at final)
+        out.push(TransitionConstraintDegree::with_cycles(
+            5,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
     }
 }
 
@@ -54,18 +62,18 @@ where
         let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
         let p_last = periodic[1 + POSEIDON_ROUNDS + 3];
 
+        // mixers
+        let s_low = p_last * p_map;
+        let pi = cur[ctx.cols.pi_prog];
+        let s_write = s_low * pi * pi * pi;
+        let s_eq = s_write * pi;
+
         // carry when next row is not final within the level:
         // map rows, rounds 0..R-2, and all pad rows
         let mut g_carry = p_map + p_pad;
         for j in 0..(POSEIDON_ROUNDS - 1) {
             g_carry += periodic[1 + j];
         }
-
-        // mixers
-        let s_low = p_last * p_map;
-        let pi = cur[ctx.cols.pi_prog];
-        let s_write = s_low * pi * pi * pi;
-        let s_eq = s_write * pi;
 
         // reconstruct a/b/c from
         // role selectors and regs.
@@ -98,6 +106,7 @@ where
         let b_eq = cur[ctx.cols.op_eq];
         let b_sel = cur[ctx.cols.op_select];
         let b_hash = cur[ctx.cols.op_hash2];
+        let b_assert = cur[ctx.cols.op_assert];
 
         // include Eq via dst_next so
         // generic write can be uniform.
@@ -114,7 +123,8 @@ where
             + b_neg * (E::ZERO - a_val)
             + b_sel * (c_val * a_val + (E::ONE - c_val) * b_val)
             + b_hash * cur[ctx.cols.lane_l]
-            + b_eq * dst_next;
+            + b_eq * dst_next
+            + b_assert * E::ONE;
 
         // write at final: r' = (1-dst)*r + dst*res (uniform for all ops)
         for i in 0..NR {
@@ -136,6 +146,10 @@ where
         // if diff!=0 => dst_next==0
         // via (1 - dst_next) - diff*inv == 0
         result[*ix] = p_final * b_eq * ((E::ONE - dst_next) - diff * inv) + s_eq;
+        *ix += 1;
+
+        // assert: require c_val == 1 at final
+        result[*ix] = p_final * b_assert * (c_val - E::ONE) + s_eq;
         *ix += 1;
     }
 }

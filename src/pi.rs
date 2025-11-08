@@ -1,5 +1,6 @@
 // Public inputs and features
 
+use crate::error::{Error, Result};
 use winterfell::math::fields::f128::BaseElement as BE;
 
 // Feature bits
@@ -36,12 +37,36 @@ impl PublicInputs {
             kv_expect: (m & FM_KV_EXPECT) != 0,
         }
     }
+
+    pub fn validate_flags(&self) -> Result<()> {
+        if (self.feature_mask & FM_KV_EXPECT) != 0 && (self.feature_mask & FM_KV) == 0 {
+            return Err(Error::InvalidInput("FM_KV_EXPECT requires FM_KV"));
+        }
+
+        if (self.feature_mask & FM_KV) == 0 && self.kv_levels_mask != 0 {
+            return Err(Error::InvalidInput(
+                "kv_levels_mask must be zero when FM_KV is disabled",
+            ));
+        }
+
+
+        if ((self.feature_mask & FM_VM) != 0 || (self.feature_mask & FM_POSEIDON) != 0)
+            && self.program_commitment.iter().all(|b| *b == 0)
+        {
+            return Err(Error::InvalidInput(
+                "program_commitment must be non-zero when VM or POSEIDON is enabled",
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 // PI encoding for Winterfell
 impl winterfell::math::ToElements<BE> for PublicInputs {
     fn to_elements(&self) -> Vec<BE> {
-        // encode kv_levels_mask into one field element (lo + hi*2^64)
+        // encode kv_levels_mask into
+        // one field element (lo + hi*2^64)
         let lo = (self.kv_levels_mask & 0xFFFF_FFFF_FFFF_FFFFu128) as u64;
         let hi = (self.kv_levels_mask >> 64) as u64;
         let kv_mask_fe = BE::from(lo) + BE::from(hi) * pow2_64_fe();
@@ -54,6 +79,7 @@ impl winterfell::math::ToElements<BE> for PublicInputs {
             be_from_le8(&self.cn_root),
             kv_mask_fe,
         ];
+
         out
     }
 }
@@ -85,6 +111,74 @@ mod tests {
     use super::*;
     use crate::{air, layout};
     use winterfell::{Air, ProofOptions, TraceInfo};
+
+    fn non_zero32(x: u8) -> [u8; 32] {
+        [x; 32]
+    }
+
+    #[test]
+    fn validate_expect_requires_kv() {
+        let pi = PublicInputs {
+            feature_mask: FM_KV_EXPECT,
+            ..Default::default()
+        };
+        let err = pi
+            .validate_flags()
+            .expect_err("EXPECT without KV must error");
+
+        let Error::InvalidInput(msg) = err;
+        assert!(msg.contains("FM_KV_EXPECT requires FM_KV"));
+    }
+
+    #[test]
+    fn validate_expect_with_zero_accs_allowed() {
+        let pi = PublicInputs {
+            feature_mask: FM_KV | FM_KV_EXPECT,
+            ..Default::default()
+        };
+        
+        // Zero expected accs are allowed:
+        // 0 is a valid field value
+        pi.validate_flags().expect("ok with zero accs");
+    }
+
+    #[test]
+    fn validate_kv_levels_mask_requires_kv() {
+        let mut pi = PublicInputs {
+            feature_mask: 0,
+            ..Default::default()
+        };
+        pi.kv_levels_mask = 1;
+
+        let err = pi
+            .validate_flags()
+            .expect_err("kv_levels_mask without KV must error");
+
+        let Error::InvalidInput(msg) = err;
+        assert!(msg.contains("kv_levels_mask must be zero"));
+    }
+
+    #[test]
+    fn validate_prog_commit_non_zero_when_vm_or_poseidon() {
+        let pi_vm = PublicInputs {
+            feature_mask: FM_VM,
+            ..Default::default()
+        };
+        assert!(pi_vm.validate_flags().is_err());
+
+        let pi_pose = PublicInputs {
+            feature_mask: FM_POSEIDON,
+            ..Default::default()
+        };
+        assert!(pi_pose.validate_flags().is_err());
+
+        let pi_ok = PublicInputs {
+            feature_mask: FM_VM | FM_POSEIDON,
+            program_commitment: non_zero32(1),
+            ..Default::default()
+        };
+        pi_ok.validate_flags().expect("ok");
+    }
 
     #[test]
     fn pi_feature_gating_counts() {
@@ -125,8 +219,8 @@ mod tests {
         };
 
         let air_vm = air::ZkLispAir::new(info.clone(), pi_vm, opts.clone());
-        // vm_ctrl (37) + vm_alu (18) = 55
-        assert_eq!(air_vm.context().num_main_transition_constraints(), 55);
+        // vm_ctrl (48) + vm_alu (19) = 67
+        assert_eq!(air_vm.context().num_main_transition_constraints(), 67);
         assert_eq!(air_vm.get_assertions().len(), sched_asserts + 1);
 
         // Case C: all features
@@ -136,10 +230,10 @@ mod tests {
         };
 
         let air_all = air::ZkLispAir::new(info, pi_all, opts);
-        // poseidon (4*R) + vm(55) + kv(6)
+        // poseidon (4*R) + vm(67) + kv(6)
         assert_eq!(
             air_all.context().num_main_transition_constraints(),
-            4 * layout::POSEIDON_ROUNDS + 55 + 6
+            4 * layout::POSEIDON_ROUNDS + 67 + 6
         );
         assert_eq!(air_all.get_assertions().len(), sched_asserts + 1);
     }

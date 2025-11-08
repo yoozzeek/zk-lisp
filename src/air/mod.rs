@@ -102,17 +102,17 @@ impl Air for ZkLispAir {
         let levels = (info.length() / STEPS_PER_LEVEL_P2).max(1);
 
         // schedule/domain
-        // (4 + POSEIDON_ROUNDS)
-        // per level
         let mut num_assertions = (4 + POSEIDON_ROUNDS) * levels;
 
         // Program commitment
-        // bound once (level 0 map)
         if features.vm {
             num_assertions += 1;
         }
         if features.kv && features.kv_expect {
             num_assertions += 2 * (pub_inputs.kv_levels_mask.count_ones() as usize);
+        }
+        if features.kv {
+            num_assertions += 4 * (pub_inputs.kv_levels_mask.count_ones() as usize);
         }
         if num_assertions == 0 {
             num_assertions = 1;
@@ -349,13 +349,13 @@ impl ZkLispAir {
             ofs += len;
         }
         if features.vm {
-            // vm_ctrl (37)
-            let len = 37;
+            // vm_ctrl (48)
+            let len = 48;
             dbg.push(("vm_ctrl", evals[ofs..ofs + len].to_vec()));
             ofs += len;
 
-            // vm_alu (18)
-            let len = 18;
+            // vm_alu (19)
+            let len = 19;
             dbg.push(("vm_alu", evals[ofs..ofs + len].to_vec()));
             ofs += len;
         }
@@ -397,11 +397,11 @@ impl ZkLispAir {
             ofs += len;
         }
         if features.vm {
-            let len = 37;
+            let len = 48;
             ranges.push(("vm_ctrl", ofs, ofs + len));
             ofs += len;
 
-            let len2 = 18;
+            let len2 = 19;
             ranges.push(("vm_alu", ofs, ofs + len2));
             ofs += len2;
         }

@@ -24,6 +24,8 @@ pub enum Error {
     InvalidForm(String),
     #[error("lower: invalid kv-step dir '{0}' (expected 0 or 1)")]
     InvalidDir(u64),
+    #[error("lower: recursion detected in call '{0}'")]
+    Recursion(String),
 }
 
 #[derive(Default, Debug, Clone)]

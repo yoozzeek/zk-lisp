@@ -33,8 +33,9 @@ enum BinOp {
 pub struct LowerCtx<'a> {
     pub b: ProgramBuilder,
 
-    free: Vec<u8>,
     env: Env,
+    free: Vec<u8>,
+    call_stack: Vec<String>,
     _m: core::marker::PhantomData<&'a ()>,
 }
 
@@ -48,6 +49,7 @@ impl<'a> LowerCtx<'a> {
             b: ProgramBuilder::new(),
             free,
             env: Env::default(),
+            call_stack: Vec::new(),
             _m: core::marker::PhantomData,
         }
     }
@@ -176,6 +178,8 @@ fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<u8, Error> {
             Ast::Atom(Atom::Sym(s)) if s == "kv-final" => {
                 lower_kv_final(cx, &items[1..]).map(|_| cx.get_var("_kv_last").unwrap_or(0))
             }
+            Ast::Atom(Atom::Sym(s)) if s == "assert" => lower_assert(cx, &items[1..]),
+            Ast::Atom(Atom::Sym(s)) if s == "if" => lower_if(cx, &items[1..]),
             Ast::Atom(Atom::Sym(name)) => {
                 // user function call: (f a b ...)
                 lower_call(cx, name, &items[1..])
@@ -245,6 +249,7 @@ fn lower_select(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     let b = lower_expr(cx, rest[2].clone())?;
 
     let dst = cx.alloc()?;
+
     cx.b.push(Op::Select { dst, c, a, b });
 
     // free temps (keep dst)
@@ -264,6 +269,7 @@ fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<u8, Error> {
     let b = lower_expr(cx, rest[1].clone())?;
 
     let dst = cx.alloc()?;
+
     match op {
         BinOp::Add => cx.b.push(Op::Add { dst, a, b }),
         BinOp::Sub => cx.b.push(Op::Sub { dst, a, b }),
@@ -290,15 +296,52 @@ fn lower_neg(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     Ok(dst)
 }
 
+fn lower_assert(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+    if rest.len() != 1 {
+        return Err(Error::InvalidForm("assert".into()));
+    }
+
+    let c = lower_expr(cx, rest[0].clone())?;
+    let dst = cx.alloc()?;
+
+    cx.b.push(Op::Assert { dst, c });
+    cx.free_reg(c);
+
+    Ok(dst)
+}
+
+fn lower_if(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+    if rest.len() != 3 {
+        return Err(Error::InvalidForm("if".into()));
+    }
+
+    let c = lower_expr(cx, rest[0].clone())?;
+    let t = lower_expr(cx, rest[1].clone())?;
+    let e = lower_expr(cx, rest[2].clone())?;
+
+    let dst = cx.alloc()?;
+
+    cx.b.push(Op::Select { dst, c, a: t, b: e });
+
+    cx.free_reg(c);
+    cx.free_reg(t);
+    cx.free_reg(e);
+
+    Ok(dst)
+}
+
 fn lower_eq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     if rest.len() != 2 {
         return Err(Error::InvalidForm("=".into()));
     }
+
     let a = lower_expr(cx, rest[0].clone())?;
     let b = lower_expr(cx, rest[1].clone())?;
+
     let dst = cx.alloc()?;
 
     cx.b.push(Op::Eq { dst, a, b });
+
     cx.free_reg(a);
     cx.free_reg(b);
 
@@ -314,6 +357,7 @@ fn lower_hash2(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     let dst = cx.alloc()?;
 
     cx.b.push(Op::Hash2 { dst, a, b });
+
     cx.free_reg(a);
     cx.free_reg(b);
 
@@ -321,7 +365,6 @@ fn lower_hash2(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
 }
 
 fn lower_kv_step(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
-    // (kv-step dir sib)
     if rest.len() != 2 {
         return Err(Error::InvalidForm("kv-step".into()));
     }
@@ -366,6 +409,13 @@ fn lower_call(cx: &mut LowerCtx, name: &str, args: &[Ast]) -> Result<u8, Error> 
         .cloned()
         .ok_or_else(|| Error::UnknownSymbol(name.to_string()))?;
 
+    // Recursion/DAG guard detects re-entry
+    if cx.call_stack.iter().any(|s| s == name) {
+        return Err(Error::Recursion(name.to_string()));
+    }
+
+    cx.call_stack.push(name.to_string());
+
     if params.len() != args.len() {
         return Err(Error::InvalidForm(format!(
             "call: {} expects {} args",
@@ -401,6 +451,8 @@ fn lower_call(cx: &mut LowerCtx, name: &str, args: &[Ast]) -> Result<u8, Error> 
             cx.free_reg(r);
         }
     }
+
+    cx.call_stack.pop();
 
     Ok(res)
 }

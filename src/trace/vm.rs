@@ -73,6 +73,7 @@ impl TraceBuilder {
                 cols.op_eq,
                 cols.op_select,
                 cols.op_hash2,
+                cols.op_assert,
             ];
 
             for &c in &ops {
@@ -200,6 +201,17 @@ impl TraceBuilder {
                     next_regs[dst as usize] =
                         cond * regs[a as usize] + (BE::ONE - cond) * regs[b as usize];
                 }
+                Op::Assert { dst, c } => {
+                    trace.set(cols.op_assert, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_c_start, c);
+                    trace.set(cols.op_assert, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_c_start, c);
+
+                    // write 1 at final
+                    next_regs[dst as usize] = BE::ONE;
+                }
                 // HASH2: set op+dst; feed lanes from regs a,b;
                 // run Poseidon for level; dst <= lane_l(final)
                 Op::Hash2 { dst, a, b } => {
@@ -312,19 +324,6 @@ impl TraceBuilder {
             }
 
             poseidon::apply_level(&mut trace, &p.commitment, lvl, BE::ZERO, BE::ZERO);
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            let cols_dbg = Columns::baseline();
-            for lvl in 0..total_levels {
-                let base = lvl * steps;
-                let rm = base + schedule::pos_map();
-                let rf = base + schedule::pos_final();
-                let acc_m = trace.get(cols_dbg.kv_acc, rm);
-                let acc_f = trace.get(cols_dbg.kv_acc, rf);
-                println!("[trace.vm] lvl={lvl} acc_map={acc_m:?} acc_fin={acc_f:?}");
-            }
         }
 
         Ok(trace)

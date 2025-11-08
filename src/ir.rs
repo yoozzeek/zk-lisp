@@ -13,6 +13,7 @@ pub enum Op {
     Neg { dst: u8, a: u8 },
     Eq { dst: u8, a: u8, b: u8 },            // 0/1 result
     Select { dst: u8, c: u8, a: u8, b: u8 }, // dst = c?a:b, c ∈ {0,1}
+    Assert { dst: u8, c: u8 },               // enforces c==1 and writes 1 to dst
 
     // CRYPTO
     Hash2 { dst: u8, a: u8, b: u8 }, // Poseidon2 map/final within one level
@@ -90,6 +91,10 @@ impl ProgramBuilder {
                 self.touch_reg(c);
                 self.touch_reg(a);
                 self.touch_reg(b);
+            }
+            Assert { dst, c } => {
+                self.touch_reg(dst);
+                self.touch_reg(c);
             }
             Hash2 { dst, a, b } => {
                 self.touch_reg(dst);
@@ -187,6 +192,11 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
             }
             End => {
                 out.push(0x0C);
+            }
+            Assert { dst, c } => {
+                out.push(0x0D);
+                out.push(dst);
+                out.push(c);
             }
         }
     }

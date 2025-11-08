@@ -72,7 +72,7 @@ where
         }
 
         // mixers: s1 ~ deg1, s2 ~ deg2,
-        // s3 ~ deg3 (after dividing by z).
+        // s3 ~ deg3 (after dividing by z)
         let p_last = periodic[1 + POSEIDON_ROUNDS + 3];
         let s1 = p_last * p_map;
         let pi = cur[ctx.cols.pi_prog];
@@ -111,7 +111,6 @@ where
         result[*ix] =
             p_final * kv_fin * kv_map * (cur[ctx.cols.kv_acc] - cur[ctx.cols.lane_l]) + s2;
         *ix += 1;
-
         // carry acc across rows whose next is NOT final
         result[*ix] = g_hold * (next[ctx.cols.kv_acc] - cur[ctx.cols.kv_acc]) + s1;
         *ix += 1;
@@ -122,29 +121,50 @@ where
         out: &mut Vec<Assertion<<E as FieldElement>::BaseField>>,
         last: usize,
     ) {
-        // EXPECT checks via boundary
-        // per KV level (map and final rows)
         if (ctx.pub_inputs.feature_mask & pi::FM_KV) == 0 {
-            return;
-        }
-        if (ctx.pub_inputs.feature_mask & pi::FM_KV_EXPECT) == 0 {
             return;
         }
 
         let steps = STEPS_PER_LEVEL_P2;
         let lvls = (last + 1) / steps;
-        let map_exp = crate::pi::be_from_le8(&ctx.pub_inputs.kv_map_acc_bytes);
-        let fin_exp = crate::pi::be_from_le8(&ctx.pub_inputs.kv_fin_acc_bytes);
         let cols = ctx.cols;
 
+        // Enforce KV gate one-hot via boundary
+        // assertions at map/final per level.
         for lvl in 0..lvls {
-            let base = lvl * steps;
-            let row_map = base + crate::schedule::pos_map();
-            let row_final = base + crate::schedule::pos_final();
-
             if ((ctx.pub_inputs.kv_levels_mask >> lvl) & 1) == 1 {
-                out.push(Assertion::single(cols.kv_acc, row_map, map_exp));
-                out.push(Assertion::single(cols.kv_acc, row_final, fin_exp));
+                let base = lvl * steps;
+                let row_map = base + crate::schedule::pos_map();
+                let row_final = base + crate::schedule::pos_final();
+
+                // At map: kv_g_map=1, kv_g_final=0
+                out.push(Assertion::single(cols.kv_g_map, row_map, BE::from(1u32)));
+                out.push(Assertion::single(cols.kv_g_final, row_map, BE::from(0u32)));
+
+                // At final: kv_g_final=1, kv_g_map=0
+                out.push(Assertion::single(
+                    cols.kv_g_final,
+                    row_final,
+                    BE::from(1u32),
+                ));
+                out.push(Assertion::single(cols.kv_g_map, row_final, BE::from(0u32)));
+            }
+        }
+
+        // EXPECT ties via boundary per marked KV level
+        if (ctx.pub_inputs.feature_mask & pi::FM_KV_EXPECT) != 0 {
+            let map_exp = crate::pi::be_from_le8(&ctx.pub_inputs.kv_map_acc_bytes);
+            let fin_exp = crate::pi::be_from_le8(&ctx.pub_inputs.kv_fin_acc_bytes);
+
+            for lvl in 0..lvls {
+                if ((ctx.pub_inputs.kv_levels_mask >> lvl) & 1) == 1 {
+                    let base = lvl * steps;
+                    let row_map = base + crate::schedule::pos_map();
+                    let row_final = base + crate::schedule::pos_final();
+
+                    out.push(Assertion::single(cols.kv_acc, row_map, map_exp));
+                    out.push(Assertion::single(cols.kv_acc, row_final, fin_exp));
+                }
             }
         }
     }
