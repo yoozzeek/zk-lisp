@@ -129,6 +129,12 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
 
                 i += 1;
             }
+            '\'' => {
+                out.push(Tok::Quote);
+                it.next();
+                
+                i += 1;
+            }
             ' ' | '\n' | '\r' | '\t' => {
                 it.next();
                 i += 1;
@@ -217,6 +223,11 @@ fn parse_one(q: &mut VecDeque<Tok>) -> Result<Ast, Error> {
 
             Ok(Ast::List(items))
         }
+        Tok::Quote => {
+            // 'X  => (quote X)
+            let quoted = parse_one(q)?;
+            Ok(Ast::List(vec![Ast::Atom(Atom::Sym("quote".to_string())), quoted]))
+        }
         Tok::RParen => Err(Error::Unmatched),
         Tok::Int(v) => Ok(Ast::Atom(Atom::Int(v))),
         Tok::Sym(s) => Ok(Ast::Atom(Atom::Sym(s))),
@@ -250,5 +261,18 @@ mod tests {
         assert!(p.ops.iter().any(|op| matches!(op, Op::Hash2 { .. })));
         assert!(p.ops.iter().any(|op| matches!(op, Op::KvMap { .. })));
         assert!(p.ops.iter().any(|op| matches!(op, Op::KvFinal)));
+    }
+
+    #[test]
+    fn lower_deftype_member() {
+        let src = "
+            (deftype fruit () '(member apple orange banana))
+            (def (main x)
+              (if (fruit:is x) x 0))
+            (main (fruit:apple))
+        ";
+        let p = compile_str(src).unwrap();
+        // Ensure some ops were generated (ALU + function structure)
+        assert!(!p.ops.is_empty());
     }
 }

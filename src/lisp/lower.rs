@@ -18,6 +18,7 @@ pub enum Atom {
 pub enum Tok {
     LParen,
     RParen,
+    Quote,
     Int(u64),
     Sym(String),
     Eof,
@@ -90,6 +91,7 @@ pub fn lower_top(cx: &mut LowerCtx, ast: Ast) -> Result<(), Error> {
         Ast::List(ref items) if !items.is_empty() => {
             match &items[0] {
                 Ast::Atom(Atom::Sym(s)) if s == "def" => lower_def(cx, &items[1..]),
+                Ast::Atom(Atom::Sym(s)) if s == "deftype" => lower_deftype(cx, &items[1..]),
                 _ => {
                     // treat as expression; compute and discard
                     let r = lower_expr(cx, ast)?;
@@ -455,4 +457,120 @@ fn lower_call(cx: &mut LowerCtx, name: &str, args: &[Ast]) -> Result<u8, Error> 
     cx.call_stack.pop();
 
     Ok(res)
+}
+
+fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
+    // Supported forms:
+    // (deftype T () '(member a b c))
+    // (deftype T '(member a b c))
+    if rest.is_empty() {
+        return Err(Error::InvalidForm("deftype".into()));
+    }
+
+    let tname = match &rest[0] {
+        Ast::Atom(Atom::Sym(s)) => s.clone(),
+        _ => return Err(Error::InvalidForm("deftype: name".into())),
+    };
+
+    let mut member_form: Option<&Ast> = None;
+    if let Some(f1) = rest.get(1) {
+        member_form = extract_member_from_quote(f1);
+    }
+    if member_form.is_none() {
+        if let Some(f2) = rest.get(2) {
+            member_form = extract_member_from_quote(f2);
+        }
+    }
+
+    let member_form = member_form.ok_or_else(|| Error::InvalidForm("deftype: member must be quoted".into()))?;
+
+    let variants: Vec<String> = if let Ast::List(items) = member_form {
+        if items.is_empty() {
+            return Err(Error::InvalidForm("deftype: member empty".into()));
+        }
+
+        // items[0] == "member"
+        let mut vs = Vec::new();
+
+        for it in &items[1..] {
+            match it {
+                Ast::Atom(Atom::Sym(s)) => vs.push(s.clone()),
+                _ => return Err(Error::InvalidForm("deftype: member item".into())),
+            }
+        }
+
+        vs
+    } else {
+        return Err(Error::InvalidForm("deftype: member form".into()));
+    };
+
+    // Define constant functions for 
+    // each variant: (def variant 0), etc.
+    for (i, v) in variants.iter().enumerate() {
+        let cname = format!("{tname}:{v}");
+        cx.define_fun(&cname, Vec::new(), Ast::Atom(Atom::Int(i as u64)));
+    }
+
+    // Define predicate function: 
+    // (def (T:is x) (= (* (- x a0) (- x a1) ...) 0)).
+    let pred_name = format!("{tname}:is");
+    let x_sym = Ast::Atom(Atom::Sym("x".to_string()));
+
+    // build terms: (- x ai)
+    let mut terms: Vec<Ast> = Vec::with_capacity(variants.len());
+    for (i, _) in variants.iter().enumerate() {
+        let ai = Ast::Atom(Atom::Int(i as u64));
+        let term = Ast::List(vec![Ast::Atom(Atom::Sym("-".to_string())), x_sym.clone(), ai]);
+        
+        terms.push(term);
+    }
+
+    // fold product: (* t1 (* t2 (* t3 ...)))
+    let prod = if terms.is_empty() {
+        Ast::Atom(Atom::Int(0)) // empty set: always false
+    } else {
+        let mut it = terms.into_iter();
+        let mut acc = it.next().unwrap();
+        
+        for t in it {
+            acc = Ast::List(vec![Ast::Atom(Atom::Sym("*".to_string())), acc, t]);
+        }
+        
+        acc
+    };
+
+    let eq0 = Ast::List(vec![Ast::Atom(Atom::Sym("=".to_string())), prod.clone(), Ast::Atom(Atom::Int(0))]);
+    cx.define_fun(&pred_name, vec!["x".to_string()], eq0.clone());
+
+    // Define assert helper: (def (T:assert x) (assert (= prod 0)))
+    let assert_name = format!("{tname}:assert");
+    let assert_body = Ast::List(vec![Ast::Atom(Atom::Sym("assert".to_string())), eq0]);
+    
+    cx.define_fun(&assert_name, vec!["x".to_string()], assert_body);
+
+    Ok(())
+}
+
+// find the quoted (member ...)
+// list at rest[1] or rest[2]
+fn extract_member_from_quote(ast: &Ast) -> Option<&Ast> {
+    if let Ast::List(items) = ast {
+        if items.len() == 2 {
+            if let Ast::Atom(Atom::Sym(h)) = &items[0] {
+                if h == "quote" {
+                    if let Ast::List(inner) = &items[1] {
+                        if !inner.is_empty() {
+                            if let Ast::Atom(Atom::Sym(m)) = &inner[0] {
+                                if m == "member" {
+                                    return Some(&items[1]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+        
+    None
 }
