@@ -1,12 +1,10 @@
 use std::env;
 use winterfell::ProofOptions;
-use winterfell::Trace;
-use winterfell::math::FieldElement;
 use winterfell::math::StarkField;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp::lisp::compile_entry;
 use zk_lisp::logging;
-use zk_lisp::pi::{self, PublicInputs};
+use zk_lisp::pi::{PublicInputsBuilder};
 use zk_lisp::poseidon::poseidon_hash_two_lanes;
 use zk_lisp::prove::{ZkProver, verify_proof};
 
@@ -95,7 +93,7 @@ fn main() {
         match hex128_to_bytes32(&hex) {
             Ok(b) => b,
             Err(e) => {
-                tracing::error!(target = "examples.hash_chain", "invalid expected_hex: {e}");
+                tracing::error!(target = "examples.hash_chain", "invalid expected_hex: {e}",);
                 return;
             }
         }
@@ -107,58 +105,14 @@ fn main() {
         b
     };
 
-    // Build trace with VM args bound at level 0 map row via PI
-    let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_VM | pi::FM_VM_EXPECT;
-    pi.program_commitment = program.commitment;
-    pi.vm_args = vec![x, y, z];
+    // Build PI and trace using ProgramMeta
+    let pi = PublicInputsBuilder::for_program(&program)
+        .vm_args(&[x, y, z])
+        .vm_expect_from_meta(&program, &expected_bytes)
+        .build()
+        .expect("pi");
 
     let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi);
-
-    // Detect output location (dst reg at last op final row)
-    let cols = zk_lisp::layout::Columns::baseline();
-    let steps = zk_lisp::layout::STEPS_PER_LEVEL_P2;
-    let lvls = trace.length() / steps;
-    let op_bits = [
-        cols.op_const,
-        cols.op_mov,
-        cols.op_add,
-        cols.op_sub,
-        cols.op_mul,
-        cols.op_neg,
-        cols.op_eq,
-        cols.op_select,
-        cols.op_hash2,
-        cols.op_assert,
-    ];
-
-    let mut last_op_lvl = 0usize;
-    for lvl in (0..lvls).rev() {
-        let base = lvl * steps;
-        let row_map = base + zk_lisp::schedule::pos_map();
-
-        if op_bits.iter().any(|&c| trace.get(c, row_map) == BE::ONE) {
-            last_op_lvl = lvl;
-            break;
-        }
-    }
-
-    let base = last_op_lvl * steps;
-    let row_fin = base + zk_lisp::schedule::pos_final();
-
-    let mut out_reg = 0u8;
-
-    for i in 0..zk_lisp::layout::NR {
-        if trace.get(cols.sel_dst_index(i), row_fin) == BE::ONE {
-            out_reg = i as u8;
-            break;
-        }
-    }
-
-    // Complete VM PI-binding
-    pi.vm_out_reg = out_reg;
-    pi.vm_out_row = (row_fin + 1) as u32;
-    pi.vm_expected_bytes = expected_bytes;
 
     tracing::info!(target = "examples.hash_chain", "proving...");
 
