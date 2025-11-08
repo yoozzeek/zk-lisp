@@ -1,8 +1,4 @@
 // IR for zk-lisp
-// - Registers are u8 (r0..r7)
-// - Immediates are u64; conversion to field happens in lowering/trace
-
-use crate::{commit, layout, schedule};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -124,43 +120,15 @@ impl ProgramBuilder {
     pub fn finalize(self) -> Program {
         let reg_count = self.reg_max;
         let bytes = encode_ops(&self.ops);
-        let commitment = commit::program_commitment(&bytes);
+        let commitment = crate::commit::program_commitment(&bytes);
 
-        // compute ProgramMeta:
-        // last op with a destination register.
-        let mut last_level: Option<usize> = None;
-        let mut out_reg: u8 = 0;
-
-        for (i, op) in self.ops.iter().enumerate() {
-            match *op {
-                Op::Const { dst, .. }
-                | Op::Mov { dst, .. }
-                | Op::Add { dst, .. }
-                | Op::Sub { dst, .. }
-                | Op::Mul { dst, .. }
-                | Op::Neg { dst, .. }
-                | Op::Eq { dst, .. }
-                | Op::Select { dst, .. }
-                | Op::Hash2 { dst, .. }
-                | Op::Assert { dst, .. } => {
-                    last_level = Some(i);
-                    out_reg = dst;
-                }
-                _ => {}
-            }
-        }
-
-        let steps = layout::STEPS_PER_LEVEL_P2;
-        let pos_fin = schedule::pos_final();
-        let out_row: u32 = if let Some(lvl) = last_level {
-            (lvl * steps + pos_fin + 1) as u32
-        } else {
-            // fallback: level 0
-            // next after final.
-            (pos_fin + 1) as u32
+        // ProgramMeta is computed at compile_entry time
+        // for programs generated from source; for ad-hoc
+        // ProgramBuilder usage we leave it as default (0,0).
+        let meta = ProgramMeta {
+            out_reg: 0,
+            out_row: 0,
         };
-
-        let meta = ProgramMeta { out_reg, out_row };
 
         Program::new(self.ops, reg_count, commitment, meta)
     }

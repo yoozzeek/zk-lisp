@@ -1,6 +1,7 @@
 mod lower;
 
 use crate::ir::{Op, Program};
+use crate::{layout, schedule};
 
 use lower::{Ast, Atom, LowerCtx, Tok};
 use std::collections::{BTreeMap, VecDeque};
@@ -92,6 +93,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     // Build (main ARG0 ... ARGN)
     let mut call_items: Vec<Ast> = Vec::with_capacity(1 + args.len());
     call_items.push(Ast::Atom(Atom::Sym("main".to_string())));
+
     for &v in args {
         call_items.push(Ast::Atom(Atom::Int(v)));
     }
@@ -102,22 +104,26 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     // then tail-call main and capture its result reg.
     let mut cx = LowerCtx::new();
     for f in forms {
-        // lower all top-level forms except
-        // we don't append the (main ...) here
         lower::lower_top(&mut cx, f)?;
     }
 
     // Lower (main ...) as expression
-    // to capture its result register.
     let res_reg = lower::lower_expr(&mut cx, call_ast)?;
+
+    // Normalize main return into r0
+    if res_reg != 0 {
+        cx.b.push(Op::Mov {
+            dst: 0,
+            src: res_reg,
+        });
+    }
 
     // Finalize program
     cx.b.push(Op::End);
 
     let mut program = cx.b.finalize();
 
-    // Compute ProgramMeta from the captured
-    // result register: last level writing to res_reg.
+    // Compute ProgramMeta from last write into r0
     let mut last_lvl = 0usize;
     for (i, op) in program.ops.iter().enumerate() {
         match *op {
@@ -131,7 +137,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
             | Op::Select { dst, .. }
             | Op::Hash2 { dst, .. }
             | Op::Assert { dst, .. } => {
-                if dst == res_reg {
+                if dst == 0 {
                     last_lvl = i;
                 }
             }
@@ -139,10 +145,10 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
         }
     }
 
-    let steps = crate::layout::STEPS_PER_LEVEL_P2;
-    let pos_fin = crate::schedule::pos_final();
+    let steps = layout::STEPS_PER_LEVEL_P2;
+    let pos_fin = schedule::pos_final();
 
-    program.meta.out_reg = res_reg;
+    program.meta.out_reg = 0;
     program.meta.out_row = (last_lvl * steps + pos_fin + 1) as u32;
 
     Ok(program)
