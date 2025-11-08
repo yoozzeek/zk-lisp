@@ -101,10 +101,13 @@ impl Air for ZkLispAir {
         // Boundary assertions count per level:
         let levels = (info.length() / STEPS_PER_LEVEL_P2).max(1);
 
-        // schedule/domain
-        let mut num_assertions = (4 + POSEIDON_ROUNDS) * levels;
+        // Strict schedule/domain boundary assertions per level:
+        // ones at positions: (2 + R)
+        // zeros at non-positions: (4R + 2)
+        // domain tags at map: 2
+        let mut num_assertions =
+            (2 + POSEIDON_ROUNDS) * levels + (4 * POSEIDON_ROUNDS + 2) * levels + 2 * levels;
 
-        // Program commitment
         if features.vm {
             num_assertions += 1;
         }
@@ -120,6 +123,13 @@ impl Air for ZkLispAir {
 
         // Debug: print expected evals and context
         Self::print_evals_debug(&pub_inputs, &info, &features, &degrees);
+
+        // Ensure at least one degree exists
+        let degrees = if degrees.is_empty() {
+            vec![TransitionConstraintDegree::new(1)]
+        } else {
+            degrees
+        };
 
         let ctx = AirContext::new(info, degrees, num_assertions, options);
         let cols = Columns::baseline();

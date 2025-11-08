@@ -154,3 +154,44 @@ where
         *ix += 1;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::Columns;
+    use winterfell::EvaluationFrame;
+
+    #[test]
+    fn two_ops_set_violation() {
+        let cols = Columns::baseline();
+        let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
+        let mut periodic = vec![BE::ZERO; 1 + crate::layout::POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
+
+        // map row
+        periodic[0] = BE::ONE;
+
+        // op_add and op_sub both set
+        frame.current_mut()[cols.op_add] = BE::ONE;
+        frame.current_mut()[cols.op_sub] = BE::ONE;
+
+        // Evaluate
+        let mut res = vec![BE::ZERO; 48];
+        let mut ix = 0usize;
+
+        VmCtrlBlock::eval_block(
+            &BlockCtx::new(
+                &cols,
+                &Default::default(),
+                &Box::new([[BE::ZERO; 4]; crate::layout::POSEIDON_ROUNDS]),
+                &Box::new([[BE::ZERO; 4]; 4]),
+                &Box::new([BE::ZERO; 2]),
+            ),
+            &frame,
+            &periodic,
+            &mut res,
+            &mut ix,
+        );
+
+        assert!(res.iter().any(|v| *v != BE::ZERO));
+    }
+}

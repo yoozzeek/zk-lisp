@@ -49,7 +49,6 @@ impl PublicInputs {
             ));
         }
 
-
         if ((self.feature_mask & FM_VM) != 0 || (self.feature_mask & FM_POSEIDON) != 0)
             && self.program_commitment.iter().all(|b| *b == 0)
         {
@@ -136,7 +135,7 @@ mod tests {
             feature_mask: FM_KV | FM_KV_EXPECT,
             ..Default::default()
         };
-        
+
         // Zero expected accs are allowed:
         // 0 is a valid field value
         pi.validate_flags().expect("ok with zero accs");
@@ -197,7 +196,7 @@ mod tests {
             winterfell::BatchingMethod::Linear,
         );
 
-        let sched_asserts = layout::POSEIDON_ROUNDS + 4;
+        let sched_asserts = 5 * layout::POSEIDON_ROUNDS + 6;
 
         // Case A: Poseidon only
         let pi_pose = PublicInputs {

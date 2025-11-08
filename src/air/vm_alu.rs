@@ -60,6 +60,7 @@ where
         let p_map = periodic[0];
         let p_final = periodic[1 + POSEIDON_ROUNDS];
         let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
+        let p_pad_last = periodic[1 + POSEIDON_ROUNDS + 2];
         let p_last = periodic[1 + POSEIDON_ROUNDS + 3];
 
         // mixers
@@ -68,9 +69,8 @@ where
         let s_write = s_low * pi * pi * pi;
         let s_eq = s_write * pi;
 
-        // carry when next row is not final within the level:
-        // map rows, rounds 0..R-2, and all pad rows
-        let mut g_carry = p_map + p_pad;
+        // carry when next row is not final within the level
+        let mut g_carry = p_map + (p_pad - p_pad_last);
         for j in 0..(POSEIDON_ROUNDS - 1) {
             g_carry += periodic[1 + j];
         }
@@ -151,5 +151,48 @@ where
         // assert: require c_val == 1 at final
         result[*ix] = p_final * b_assert * (c_val - E::ONE) + s_eq;
         *ix += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::Columns;
+    use winterfell::EvaluationFrame;
+
+    #[test]
+    fn assert_enforcer_violates_when_false() {
+        let cols = Columns::baseline();
+        let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
+
+        // final row
+        periodic[1 + POSEIDON_ROUNDS] = BE::ONE;
+
+        // Select c from r0, set r0 = 0 => c_val = 0 -> violation
+        frame.current_mut()[cols.op_assert] = BE::ONE;
+        frame.current_mut()[cols.sel_c_index(0)] = BE::ONE;
+        frame.current_mut()[cols.r_index(0)] = BE::ZERO;
+
+        // next row copies registers
+        // (not used for assert constraint besides dst)
+        let mut res = vec![BE::ZERO; 19];
+        let mut ix = 0usize;
+
+        VmAluBlock::eval_block(
+            &BlockCtx::new(
+                &cols,
+                &Default::default(),
+                &Box::new([[BE::ZERO; 4]; POSEIDON_ROUNDS]),
+                &Box::new([[BE::ZERO; 4]; 4]),
+                &Box::new([BE::ZERO; 2]),
+            ),
+            &frame,
+            &periodic,
+            &mut res,
+            &mut ix,
+        );
+
+        assert!(res.iter().any(|v| *v != BE::ZERO));
     }
 }
