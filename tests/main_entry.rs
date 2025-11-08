@@ -1,6 +1,6 @@
 use winterfell::Trace;
+use zk_lisp::compiler::compile_entry;
 use zk_lisp::layout;
-use zk_lisp::lisp::compile_entry;
 use zk_lisp::pi::PublicInputsBuilder;
 use zk_lisp::prove::build_trace_with_pi;
 

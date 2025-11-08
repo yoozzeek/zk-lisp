@@ -269,7 +269,7 @@ fn detect_vm_output(trace: &winterfell::TraceTable<BE>) -> (u8, u32) {
 
 fn cmd_run(args: RunArgs, json: bool, max_bytes: usize) -> Result<()> {
     let src = read_program(&args.path, max_bytes)?;
-    let program = zk_lisp::lisp::compile_entry(&src, &args.args)
+    let program = zk_lisp::compiler::compile_entry(&src, &args.args)
         .map_err(|e| CliExit::Compile(e.to_string()))?;
 
     let pi = build_pi_for_program(&program, &args.args);
@@ -310,7 +310,7 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize) -> Result<()> {
 
 fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize) -> Result<()> {
     let src = read_program(&args.path, max_bytes)?;
-    let program = zk_lisp::lisp::compile_entry(&src, &args.args)
+    let program = zk_lisp::compiler::compile_entry(&src, &args.args)
         .map_err(|e| CliExit::Compile(e.to_string()))?;
 
     let mut pi = build_pi_for_program(&program, &args.args);
@@ -393,7 +393,7 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<()> {
     };
 
     let src = read_program(&args.path, max_bytes)?;
-    let program = zk_lisp::lisp::compile_entry(&src, &args.args)
+    let program = zk_lisp::compiler::compile_entry(&src, &args.args)
         .map_err(|e| CliExit::Compile(e.to_string()))?;
 
     // Rebuild PI similarly to Prove
@@ -531,7 +531,7 @@ fn cmd_repl() -> Result<()> {
 
         // Evaluate one-line expression by wrapping into (def (main) <expr>)
         let wrapped = format!("(def (main) {s})");
-        match zk_lisp::lisp::compile_entry(&wrapped, &[]) {
+        match zk_lisp::compiler::compile_entry(&wrapped, &[]) {
             Err(e) => println!("error: compile: {e}"),
             Ok(program) => {
                 let pi = build_pi_for_program(&program, &[]);

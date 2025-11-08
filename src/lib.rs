@@ -1,10 +1,10 @@
 pub mod air;
 pub mod commit;
+pub mod compiler;
 pub mod debug;
 pub mod error;
 pub mod ir;
 pub mod layout;
-pub mod lisp;
 pub mod logging;
 pub mod pi;
 pub mod poseidon;

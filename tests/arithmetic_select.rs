@@ -1,5 +1,5 @@
 use winterfell::ProofOptions;
-use zk_lisp::lisp::compile_str;
+use zk_lisp::compiler::compile_str;
 use zk_lisp::pi::{self, PublicInputs};
 use zk_lisp::prove::{ZkProver, build_trace, verify_proof};
 

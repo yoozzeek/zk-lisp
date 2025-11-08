@@ -1,6 +1,6 @@
 use winterfell::math::StarkField;
 use winterfell::{ProofOptions, Trace};
-use zk_lisp::lisp::compile_str;
+use zk_lisp::compiler::compile_str;
 use zk_lisp::pi::{self, PublicInputs, be_from_le8};
 use zk_lisp::poseidon::poseidon_hash_two_lanes;
 use zk_lisp::prove::{ZkProver, build_trace, verify_proof};

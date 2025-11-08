@@ -1,6 +1,6 @@
+use crate::compiler::{Env, Error};
 use crate::ir::{Op, ProgramBuilder};
 use crate::layout::NR;
-use crate::lisp::{Env, Error};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ast {

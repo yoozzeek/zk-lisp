@@ -1,6 +1,6 @@
 use std::panic;
 use winterfell::ProofOptions;
-use zk_lisp::lisp::compile_entry;
+use zk_lisp::compiler::compile_entry;
 use zk_lisp::pi::PublicInputsBuilder;
 use zk_lisp::prove::{ZkProver, build_trace_with_pi, verify_proof};
 

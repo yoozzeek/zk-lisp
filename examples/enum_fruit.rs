@@ -1,6 +1,6 @@
 use std::env;
 use winterfell::ProofOptions;
-use zk_lisp::lisp::compile_entry;
+use zk_lisp::compiler::compile_entry;
 use zk_lisp::logging;
 use zk_lisp::pi::PublicInputsBuilder;
 use zk_lisp::prove::{ZkProver, verify_proof};
