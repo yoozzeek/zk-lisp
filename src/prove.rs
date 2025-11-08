@@ -12,7 +12,7 @@ use winterfell::{
 use crate::air::ZkLispAir;
 use crate::pi::{PublicInputs, be_from_le8};
 use crate::trace::TraceBuilder;
-use crate::{layout, logging, poseidon, schedule};
+use crate::{ir, layout, logging, poseidon, schedule};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -59,11 +59,18 @@ impl ZkProver {
             options: self.options.clone(),
             pub_inputs: self.pub_inputs.clone(),
         };
+
+        let t0 = std::time::Instant::now();
         let proof = prover
             .prove(trace)
             .map_err(|e| Error::Backend(e.to_string()))?;
-
-        tracing::info!(target = "proof.prove", "prove created");
+        
+        let dt = t0.elapsed();
+        tracing::info!(
+            target = "proof.prove",
+            elapsed_ms = %dt.as_millis(),
+            "prove created",
+        );
 
         Ok(proof)
     }
@@ -212,32 +219,32 @@ pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Resu
         "verify proof",
     );
 
-    let res = winterfell::verify::<
+    let t0 = std::time::Instant::now();
+    winterfell::verify::<
         ZkLispAir,
         Blake3_256<BE>,
         DefaultRandomCoin<Blake3_256<BE>>,
         MerkleTree<Blake3_256<BE>>,
-    >(proof, pi, &acceptable);
+    >(proof, pi, &acceptable)
+    .map_err(|e| Error::Backend(e.to_string()))?;
 
-    match res {
-        Ok(()) => {
-            tracing::info!(target = "proof.verify", "proof verified",);
-            Ok(())
-        }
-        Err(e) => {
-            tracing::error!(target = "proof.verify", "verify failed: {e}",);
-            Err(Error::Backend(e.to_string()))
-        }
-    }
+    let dt = t0.elapsed();
+    tracing::info!(
+        target = "proof.verify",
+        elapsed_ms = %dt.as_millis(),
+        "proof verified",
+    );
+
+    Ok(())
 }
 
-pub fn build_trace(program: &crate::ir::Program) -> TraceTable<BE> {
+pub fn build_trace(program: &ir::Program) -> TraceTable<BE> {
     TraceBuilder::build_from_program(program).expect("trace")
 }
 
 /// Build trace using PublicInputs
 /// to seed VM args at level 0 map row.
-pub fn build_trace_with_pi(program: &crate::ir::Program, pi: &PublicInputs) -> TraceTable<BE> {
+pub fn build_trace_with_pi(program: &ir::Program, pi: &PublicInputs) -> TraceTable<BE> {
     let mut trace = TraceBuilder::build_from_program(program).expect("trace");
 
     if (pi.feature_mask & crate::pi::FM_VM) != 0 && !pi.vm_args.is_empty() {
