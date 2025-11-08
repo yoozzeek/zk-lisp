@@ -482,7 +482,8 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
         }
     }
 
-    let member_form = member_form.ok_or_else(|| Error::InvalidForm("deftype: member must be quoted".into()))?;
+    let member_form =
+        member_form.ok_or_else(|| Error::InvalidForm("deftype: member must be quoted".into()))?;
 
     let variants: Vec<String> = if let Ast::List(items) = member_form {
         if items.is_empty() {
@@ -504,14 +505,14 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
         return Err(Error::InvalidForm("deftype: member form".into()));
     };
 
-    // Define constant functions for 
+    // Define constant functions for
     // each variant: (def variant 0), etc.
     for (i, v) in variants.iter().enumerate() {
         let cname = format!("{tname}:{v}");
         cx.define_fun(&cname, Vec::new(), Ast::Atom(Atom::Int(i as u64)));
     }
 
-    // Define predicate function: 
+    // Define predicate function:
     // (def (T:is x) (= (* (- x a0) (- x a1) ...) 0)).
     let pred_name = format!("{tname}:is");
     let x_sym = Ast::Atom(Atom::Sym("x".to_string()));
@@ -520,8 +521,12 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     let mut terms: Vec<Ast> = Vec::with_capacity(variants.len());
     for (i, _) in variants.iter().enumerate() {
         let ai = Ast::Atom(Atom::Int(i as u64));
-        let term = Ast::List(vec![Ast::Atom(Atom::Sym("-".to_string())), x_sym.clone(), ai]);
-        
+        let term = Ast::List(vec![
+            Ast::Atom(Atom::Sym("-".to_string())),
+            x_sym.clone(),
+            ai,
+        ]);
+
         terms.push(term);
     }
 
@@ -531,21 +536,25 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     } else {
         let mut it = terms.into_iter();
         let mut acc = it.next().unwrap();
-        
+
         for t in it {
             acc = Ast::List(vec![Ast::Atom(Atom::Sym("*".to_string())), acc, t]);
         }
-        
+
         acc
     };
 
-    let eq0 = Ast::List(vec![Ast::Atom(Atom::Sym("=".to_string())), prod.clone(), Ast::Atom(Atom::Int(0))]);
+    let eq0 = Ast::List(vec![
+        Ast::Atom(Atom::Sym("=".to_string())),
+        prod.clone(),
+        Ast::Atom(Atom::Int(0)),
+    ]);
     cx.define_fun(&pred_name, vec!["x".to_string()], eq0.clone());
 
     // Define assert helper: (def (T:assert x) (assert (= prod 0)))
     let assert_name = format!("{tname}:assert");
     let assert_body = Ast::List(vec![Ast::Atom(Atom::Sym("assert".to_string())), eq0]);
-    
+
     cx.define_fun(&assert_name, vec!["x".to_string()], assert_body);
 
     Ok(())
@@ -571,6 +580,6 @@ fn extract_member_from_quote(ast: &Ast) -> Option<&Ast> {
             }
         }
     }
-        
+
     None
 }

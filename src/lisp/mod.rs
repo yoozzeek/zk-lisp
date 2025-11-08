@@ -132,7 +132,7 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
             '\'' => {
                 out.push(Tok::Quote);
                 it.next();
-                
+
                 i += 1;
             }
             ' ' | '\n' | '\r' | '\t' => {
@@ -226,7 +226,10 @@ fn parse_one(q: &mut VecDeque<Tok>) -> Result<Ast, Error> {
         Tok::Quote => {
             // 'X  => (quote X)
             let quoted = parse_one(q)?;
-            Ok(Ast::List(vec![Ast::Atom(Atom::Sym("quote".to_string())), quoted]))
+            Ok(Ast::List(vec![
+                Ast::Atom(Atom::Sym("quote".to_string())),
+                quoted,
+            ]))
         }
         Tok::RParen => Err(Error::Unmatched),
         Tok::Int(v) => Ok(Ast::Atom(Atom::Int(v))),

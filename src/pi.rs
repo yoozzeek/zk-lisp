@@ -1,6 +1,7 @@
 // Public inputs and features
 
 use crate::error::{Error, Result};
+use crate::ir;
 use winterfell::math::fields::f128::BaseElement as BE;
 
 // Feature bits
@@ -9,6 +10,15 @@ pub const FM_VM: u64 = 1 << 1;
 pub const FM_KV: u64 = 1 << 2;
 pub const FM_KV_EXPECT: u64 = 1 << 3;
 pub const FM_VM_EXPECT: u64 = 1 << 4;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FeaturesMap {
+    pub poseidon: bool,
+    pub vm: bool,
+    pub kv: bool,
+    pub kv_expect: bool,
+    pub vm_expect: bool,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct PublicInputs {
@@ -19,20 +29,121 @@ pub struct PublicInputs {
     pub cn_root: [u8; 32],
     pub kv_levels_mask: u128,
 
-    // VM PI binding: inputs and expected output
+    // VM PI binding:
+    // inputs and expected output
     pub vm_args: Vec<u64>,
     pub vm_out_reg: u8,
     pub vm_out_row: u32,
     pub vm_expected_bytes: [u8; 32],
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct FeaturesMap {
-    pub poseidon: bool,
-    pub vm: bool,
-    pub kv: bool,
-    pub kv_expect: bool,
-    pub vm_expect: bool,
+pub struct PublicInputsBuilder {
+    pi: PublicInputs,
+    inferred: bool,
+}
+
+impl PublicInputsBuilder {
+    pub fn for_program(program: &ir::Program) -> Self {
+        let mut b = Self {
+            pi: PublicInputs::default(),
+            inferred: false,
+        };
+        b.pi.program_commitment = program.commitment;
+        // infer features from program ops
+        b.infer_features(program);
+
+        b
+    }
+
+    fn infer_features(&mut self, program: &ir::Program) {
+        use crate::ir::Op::*;
+
+        let mut vm = false;
+        let mut pose = false;
+        let mut kv = false;
+
+        for op in &program.ops {
+            match *op {
+                Const { .. }
+                | Mov { .. }
+                | Add { .. }
+                | Sub { .. }
+                | Mul { .. }
+                | Neg { .. }
+                | Eq { .. }
+                | Select { .. }
+                | Assert { .. } => vm = true,
+                Hash2 { .. } => {
+                    vm = true;
+                    pose = true;
+                }
+                KvMap { .. } | KvFinal => {
+                    kv = true;
+                    pose = true;
+                }
+                End => {}
+            }
+        }
+
+        if vm {
+            self.pi.feature_mask |= FM_VM;
+        }
+        if kv {
+            self.pi.feature_mask |= FM_KV;
+        }
+        if pose {
+            self.pi.feature_mask |= FM_POSEIDON;
+        }
+
+        self.inferred = true;
+    }
+
+    pub fn vm_args(mut self, args: &[u64]) -> Self {
+        self.pi.vm_args = args.to_vec();
+        self.pi.feature_mask |= FM_VM;
+
+        self
+    }
+
+    pub fn vm_expect_from_meta(
+        mut self,
+        program: &crate::ir::Program,
+        expected: &[u8; 32],
+    ) -> Self {
+        self.pi.vm_out_reg = program.meta.out_reg;
+        self.pi.vm_out_row = program.meta.out_row;
+        self.pi.vm_expected_bytes = *expected;
+        self.pi.feature_mask |= FM_VM | FM_VM_EXPECT;
+
+        self
+    }
+
+    pub fn vm_expect_at(mut self, reg: u8, row: u32, expected: &[u8; 32]) -> Self {
+        self.pi.vm_out_reg = reg;
+        self.pi.vm_out_row = row;
+        self.pi.vm_expected_bytes = *expected;
+        self.pi.feature_mask |= FM_VM | FM_VM_EXPECT;
+
+        self
+    }
+
+    pub fn build(self) -> Result<PublicInputs> {
+        // basic validation and defaults
+        if (self.pi.feature_mask & (FM_VM | FM_POSEIDON)) != 0
+            && self.pi.program_commitment.iter().all(|b| *b == 0)
+        {
+            return Err(Error::InvalidInput(
+                "program_commitment must be non-zero when VM or POSEIDON is enabled",
+            ));
+        }
+        if self.pi.vm_args.len() > crate::layout::NR {
+            return Err(Error::InvalidInput("too many vm_args for register file"));
+        }
+
+        self.pi.validate_flags()?;
+
+        Ok(self.pi)
+    }
 }
 
 impl PublicInputs {
