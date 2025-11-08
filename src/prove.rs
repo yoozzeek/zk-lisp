@@ -64,7 +64,7 @@ impl ZkProver {
         let proof = prover
             .prove(trace)
             .map_err(|e| Error::Backend(e.to_string()))?;
-        
+
         let dt = t0.elapsed();
         tracing::info!(
             target = "proof.prove",
@@ -118,45 +118,50 @@ impl WProver for ZkWinterfellProver {
 
         // Compute VM output location (last op level)
         if (pi.feature_mask & crate::pi::FM_VM) != 0 {
-            let mut last_op_lvl: Option<usize> = None;
-            for lvl in (0..lvls).rev() {
-                let base = lvl * steps;
-                let row_map = base + schedule::pos_map();
-                let op_bits = [
-                    cols.op_const,
-                    cols.op_mov,
-                    cols.op_add,
-                    cols.op_sub,
-                    cols.op_mul,
-                    cols.op_neg,
-                    cols.op_eq,
-                    cols.op_select,
-                    cols.op_hash2,
-                    cols.op_assert,
-                ];
+            // If caller provided explicit
+            // VM_EXPECT (via builder/meta), respect it.
+            let has_vm_expect = (pi.feature_mask & crate::pi::FM_VM_EXPECT) != 0;
+            if !has_vm_expect {
+                let mut last_op_lvl: Option<usize> = None;
+                for lvl in (0..lvls).rev() {
+                    let base = lvl * steps;
+                    let row_map = base + schedule::pos_map();
+                    let op_bits = [
+                        cols.op_const,
+                        cols.op_mov,
+                        cols.op_add,
+                        cols.op_sub,
+                        cols.op_mul,
+                        cols.op_neg,
+                        cols.op_eq,
+                        cols.op_select,
+                        cols.op_hash2,
+                        cols.op_assert,
+                    ];
 
-                if op_bits.iter().any(|&c| trace.get(c, row_map) == BE::ONE) {
-                    last_op_lvl = Some(lvl);
-                    break;
-                }
-            }
-
-            if let Some(lvl) = last_op_lvl {
-                let base = lvl * steps;
-                let row_fin = base + schedule::pos_final();
-
-                // detect dst reg at final row
-                let mut out_reg = 0u8;
-
-                for i in 0..layout::NR {
-                    if trace.get(cols.sel_dst_index(i), row_fin) == BE::ONE {
-                        out_reg = i as u8;
+                    if op_bits.iter().any(|&c| trace.get(c, row_map) == BE::ONE) {
+                        last_op_lvl = Some(lvl);
                         break;
                     }
                 }
 
-                pi.vm_out_reg = out_reg;
-                pi.vm_out_row = (row_fin + 1) as u32; // value written to next row after final
+                if let Some(lvl) = last_op_lvl {
+                    let base = lvl * steps;
+                    let row_fin = base + schedule::pos_final();
+
+                    // detect dst reg at final row
+                    let mut out_reg = 0u8;
+
+                    for i in 0..layout::NR {
+                        if trace.get(cols.sel_dst_index(i), row_fin) == BE::ONE {
+                            out_reg = i as u8;
+                            break;
+                        }
+                    }
+
+                    pi.vm_out_reg = out_reg;
+                    pi.vm_out_row = (row_fin + 1) as u32; // value written to next row after final
+                }
             }
         }
 

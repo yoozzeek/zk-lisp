@@ -4,7 +4,7 @@ use winterfell::math::StarkField;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp::lisp::compile_entry;
 use zk_lisp::logging;
-use zk_lisp::pi::{PublicInputsBuilder};
+use zk_lisp::pi::PublicInputsBuilder;
 use zk_lisp::poseidon::poseidon_hash_two_lanes;
 use zk_lisp::prove::{ZkProver, verify_proof};
 
