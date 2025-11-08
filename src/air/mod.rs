@@ -239,6 +239,14 @@ impl Air for ZkLispAir {
                 let reg = (self.pub_inputs.vm_out_reg as usize).min(crate::layout::NR - 1);
                 let exp = crate::pi::be_from_le8(&self.pub_inputs.vm_expected_bytes);
 
+                tracing::debug!(
+                    target = "proof.air",
+                    "vm_expect: assert reg={} row={} exp={:?}",
+                    reg,
+                    row,
+                    exp
+                );
+
                 out.push(Assertion::single(self.cols.r_index(reg), row, exp));
             }
         }
