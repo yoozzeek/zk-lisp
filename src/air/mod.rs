@@ -112,7 +112,8 @@ impl Air for ZkLispAir {
             num_assertions += 1;
         }
         if features.kv && features.kv_expect {
-            num_assertions += 2 * (pub_inputs.kv_levels_mask.count_ones() as usize);
+            // map acc, final acc and prev_acc
+            num_assertions += 3 * (pub_inputs.kv_levels_mask.count_ones() as usize);
         }
         if features.kv {
             num_assertions += 4 * (pub_inputs.kv_levels_mask.count_ones() as usize);

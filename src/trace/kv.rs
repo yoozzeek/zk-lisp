@@ -87,6 +87,12 @@ pub fn overlay_kv(trace: &mut TraceTable<BE>, events: &[KvEvent], cfg: KvOverlay
                 for r in row_fin..(base + steps) {
                     trace.set(cols.kv_acc, r, out);
                 }
+                
+                // prev_acc at row after final
+                let row_next = row_fin + 1;
+                if row_next < base + steps {
+                    trace.set(cols.kv_prev_acc, row_next, out);
+                }
             }
             KvEvent::Final { level } => {
                 let base = level * steps;

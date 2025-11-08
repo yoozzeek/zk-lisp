@@ -250,6 +250,12 @@ impl TraceBuilder {
                     for r in row_final..(base + steps) {
                         trace.set(cols.kv_acc, r, out);
                     }
+                    
+                    // Set prev_acc at row after final
+                    let row_next = row_final + 1;
+                    if row_next < base + steps {
+                        trace.set(cols.kv_prev_acc, row_next, out);
+                    }
 
                     // Version: hold before/at final,
                     // bump after final

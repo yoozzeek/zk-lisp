@@ -86,7 +86,7 @@ fn assert_negative_fails() {
             // In debug, preflight should fail — this is OK
         }
         Ok(proof) => {
-            // In release, proving may succeed, 
+            // In release, proving may succeed,
             // but verification must fail.
             verify_proof(proof, pi, &opts).expect_err("verify must fail");
         }

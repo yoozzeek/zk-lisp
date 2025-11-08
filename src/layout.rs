@@ -55,6 +55,7 @@ pub struct Columns {
     pub kv_sib: usize,
     pub kv_acc: usize,
     pub kv_version: usize,
+    pub kv_prev_acc: usize,
 
     // PI columns
     pub pi_prog: usize,
@@ -102,10 +103,13 @@ impl Columns {
         let kv_acc = kv_sib + 1;
         let kv_version = kv_acc + 1;
 
-        // PI columns
+        // PI columns (keep original index)
         let pi_prog = kv_version + 1;
 
-        let width = pi_prog + 1;
+        // Extra KV column placed after PI to avoid shifting existing indices
+        let kv_prev_acc = pi_prog + 1;
+
+        let width = kv_prev_acc + 1;
 
         Self {
             lane_l,
@@ -139,6 +143,7 @@ impl Columns {
             kv_sib,
             kv_acc,
             kv_version,
+            kv_prev_acc,
             pi_prog,
             width,
         }

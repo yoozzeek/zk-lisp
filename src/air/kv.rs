@@ -161,9 +161,11 @@ where
                     let base = lvl * steps;
                     let row_map = base + crate::schedule::pos_map();
                     let row_final = base + crate::schedule::pos_final();
+                    let row_next = row_final + 1;
 
                     out.push(Assertion::single(cols.kv_acc, row_map, map_exp));
                     out.push(Assertion::single(cols.kv_acc, row_final, fin_exp));
+                    out.push(Assertion::single(cols.kv_prev_acc, row_next, fin_exp));
                 }
             }
         }
