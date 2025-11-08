@@ -8,6 +8,7 @@ pub const FM_POSEIDON: u64 = 1 << 0;
 pub const FM_VM: u64 = 1 << 1;
 pub const FM_KV: u64 = 1 << 2;
 pub const FM_KV_EXPECT: u64 = 1 << 3;
+pub const FM_VM_EXPECT: u64 = 1 << 4;
 
 #[derive(Clone, Debug, Default)]
 pub struct PublicInputs {
@@ -17,6 +18,12 @@ pub struct PublicInputs {
     pub kv_fin_acc_bytes: [u8; 32],
     pub cn_root: [u8; 32],
     pub kv_levels_mask: u128,
+
+    // VM PI binding: inputs and expected output
+    pub vm_args: Vec<u64>,
+    pub vm_out_reg: u8,
+    pub vm_out_row: u32,
+    pub vm_expected_bytes: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -25,6 +32,7 @@ pub struct FeaturesMap {
     pub vm: bool,
     pub kv: bool,
     pub kv_expect: bool,
+    pub vm_expect: bool,
 }
 
 impl PublicInputs {
@@ -35,6 +43,7 @@ impl PublicInputs {
             vm: (m & FM_VM) != 0,
             kv: (m & FM_KV) != 0,
             kv_expect: (m & FM_KV_EXPECT) != 0,
+            vm_expect: (m & FM_VM_EXPECT) != 0,
         }
     }
 
@@ -42,19 +51,23 @@ impl PublicInputs {
         if (self.feature_mask & FM_KV_EXPECT) != 0 && (self.feature_mask & FM_KV) == 0 {
             return Err(Error::InvalidInput("FM_KV_EXPECT requires FM_KV"));
         }
-
         if (self.feature_mask & FM_KV) == 0 && self.kv_levels_mask != 0 {
             return Err(Error::InvalidInput(
                 "kv_levels_mask must be zero when FM_KV is disabled",
             ));
         }
-
         if ((self.feature_mask & FM_VM) != 0 || (self.feature_mask & FM_POSEIDON) != 0)
             && self.program_commitment.iter().all(|b| *b == 0)
         {
             return Err(Error::InvalidInput(
                 "program_commitment must be non-zero when VM or POSEIDON is enabled",
             ));
+        }
+        if (self.feature_mask & FM_VM_EXPECT) != 0 && (self.feature_mask & FM_VM) == 0 {
+            return Err(Error::InvalidInput("FM_VM_EXPECT requires FM_VM"));
+        }
+        if self.vm_args.len() > crate::layout::NR {
+            return Err(Error::InvalidInput("too many vm_args for register file"));
         }
 
         Ok(())

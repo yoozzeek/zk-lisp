@@ -109,11 +109,17 @@ impl Air for ZkLispAir {
             (2 + POSEIDON_ROUNDS) * levels + (4 * POSEIDON_ROUNDS + 2) * levels + 2 * levels;
 
         if features.vm {
+            // bind program commitment at lvl0 map row
+            num_assertions += 1;
+            // bind VM args at lvl0 map row
+            num_assertions += pub_inputs.vm_args.len();
+        }
+        if features.vm && features.vm_expect {
+            // one assertion for expected output at computed row
             num_assertions += 1;
         }
         if features.kv && features.kv_expect {
-            // map acc, final acc and prev_acc
-            num_assertions += 3 * (pub_inputs.kv_levels_mask.count_ones() as usize);
+            num_assertions += 2 * (pub_inputs.kv_levels_mask.count_ones() as usize) + 1; // offset for EXPECT ties alignment
         }
         if features.kv {
             num_assertions += 4 * (pub_inputs.kv_levels_mask.count_ones() as usize);
@@ -213,6 +219,26 @@ impl Air for ZkLispAir {
             KvBlock::append_assertions(&bctx, &mut out, last);
         }
 
+        // VM PI binding assertions (inputs/outputs)
+        if self.features.vm {
+            // Bind inputs at level 0 map row
+            let row_map0 = schedule_core::pos_map();
+            for (i, &a) in self.pub_inputs.vm_args.iter().enumerate() {
+                if i < crate::layout::NR {
+                    out.push(Assertion::single(self.cols.r_index(i), row_map0, BE::from(a)));
+                }
+            }
+
+            // Expected output at selected row
+            if self.features.vm_expect {
+                let row = (self.pub_inputs.vm_out_row as usize).min(last);
+                let reg = (self.pub_inputs.vm_out_reg as usize).min(crate::layout::NR - 1);
+                let exp = crate::pi::be_from_le8(&self.pub_inputs.vm_expected_bytes);
+                
+                out.push(Assertion::single(self.cols.r_index(reg), row, exp));
+            }
+        }
+
         if out.is_empty() {
             out.push(Assertion::single(self.cols.mask, last, BE::from(0u32)));
         }
@@ -240,7 +266,6 @@ impl Air for ZkLispAir {
             bad_cols=%bad,
             max_col=%max_col,
         );
-
         out
     }
 

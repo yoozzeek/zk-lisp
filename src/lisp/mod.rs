@@ -52,6 +52,63 @@ pub fn compile_str(src: &str) -> Result<Program, Error> {
     Ok(cx.b.finalize())
 }
 
+// Compile main
+pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
+    let toks = lex(src)?;
+    let mut forms = parse(&toks)?;
+
+    // discover main signature
+    let mut main_params: Option<usize> = None;
+
+    for f in &forms {
+        if let Ast::List(items) = f {
+            if items.is_empty() {
+                continue;
+            }
+    
+            if let Ast::Atom(Atom::Sym(h)) = &items[0] {
+                if h == "def" {
+                    if let Some(Ast::List(hh)) = items.get(1) {
+                        if let Some(Ast::Atom(Atom::Sym(name))) = hh.first() {
+                            if name == "main" {
+                                main_params = Some(hh.len().saturating_sub(1));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let arity = main_params.ok_or_else(|| Error::InvalidForm("main: not found".into()))?;
+    if arity != args.len() {
+        return Err(Error::InvalidForm(format!(
+            "main expects {} args (got {})",
+            arity,
+            args.len()
+        )));
+    }
+
+    // append (main ARG0 ... ARGN)
+    let mut call_items: Vec<Ast> = Vec::with_capacity(1 + args.len());
+    call_items.push(Ast::Atom(Atom::Sym("main".to_string())));
+    
+    for &v in args {
+        call_items.push(Ast::Atom(Atom::Int(v)));
+    }
+
+    forms.push(Ast::List(call_items));
+
+    let mut cx = LowerCtx::new();
+    for f in forms {
+        lower::lower_top(&mut cx, f)?;
+    }
+
+    cx.b.push(Op::End);
+
+    Ok(cx.b.finalize())
+}
+
 // Lexer
 pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
     let mut out = Vec::new();
