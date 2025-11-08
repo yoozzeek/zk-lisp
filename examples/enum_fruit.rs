@@ -47,15 +47,17 @@ fn main() {
         }
     };
 
-    // Program: enum fruit, assert membership, return 1
+    // Program: enum fruit, return:
+    // predicate result (1 if in set, else 0).
     let src = r#"
         (deftype fruit () '(member apple orange banana))
         (def (main t)
-          (assert (fruit:is t)))
+          (fruit:is t))
     "#;
     let program = compile_entry(src, &[t]).expect("compile");
 
-    // Expected = 1
+    // Expected = 1 (membership holds)
+    // for t not in set verify must FAIL.
     let expected = u128_to_bytes32(1);
 
     let pi = PublicInputsBuilder::for_program(&program)
