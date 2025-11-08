@@ -25,7 +25,7 @@ impl VmCtrlBlock {
             ));
         }
 
-        // select cond boolean (1)
+        // select cond boolean
         out.push(TransitionConstraintDegree::with_cycles(
             2,
             vec![STEPS_PER_LEVEL_P2],
@@ -136,7 +136,9 @@ where
             c_val += cur[ctx.cols.sel_c_index(i)] * r;
         }
 
-        result[*ix] = p_map * b_sel * c_val * (c_val - E::ONE) + s_high;
+        // booleanity for select is
+        // enforced at final in ALU.
+        result[*ix] = s_high;
         *ix += 1;
 
         // op_* booleanity and one-hot,

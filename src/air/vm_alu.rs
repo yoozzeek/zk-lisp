@@ -20,7 +20,7 @@ impl VmAluBlock {
         // write registers at final (op-gated)
         for _ in 0..NR {
             out.push(TransitionConstraintDegree::with_cycles(
-                4,
+                6,
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
@@ -66,8 +66,11 @@ where
         // mixers
         let s_low = p_last * p_map;
         let pi = cur[ctx.cols.pi_prog];
-        let s_write = s_low * pi * pi * pi;
-        let s_eq = s_write * pi;
+        let pi2 = pi * pi;
+        let pi4 = pi2 * pi2;
+        let s_write = s_low * pi4 * pi; // pi^5
+        // keep eq mixer degree lower than writes
+        let s_eq = s_low * pi4;
 
         // carry when next row is not final within the level
         let mut g_carry = p_map + (p_pad - p_pad_last);
@@ -149,7 +152,9 @@ where
         *ix += 1;
 
         // assert: require c_val == 1 at final
-        result[*ix] = p_final * b_assert * (c_val - E::ONE) + s_eq;
+        // and enforce c booleanity for SELECT at final
+        result[*ix] =
+            p_final * (b_assert * (c_val - E::ONE) + b_sel * (c_val * (c_val - E::ONE))) + s_eq;
         *ix += 1;
     }
 }
