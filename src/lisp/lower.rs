@@ -111,6 +111,49 @@ pub fn lower_top(cx: &mut LowerCtx, ast: Ast) -> Result<(), Error> {
     }
 }
 
+pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<u8, Error> {
+    match ast {
+        Ast::Atom(Atom::Int(v)) => {
+            let r = cx.alloc()?;
+            cx.b.push(Op::Const { dst: r, imm: v });
+
+            Ok(r)
+        }
+        Ast::Atom(Atom::Sym(s)) => {
+            let src = cx.get_var(&s)?;
+            let dst = cx.alloc()?;
+
+            cx.b.push(Op::Mov { dst, src });
+
+            Ok(dst)
+        }
+        Ast::List(items) if !items.is_empty() => match &items[0] {
+            Ast::Atom(Atom::Sym(s)) if s == "let" => lower_let(cx, &items[1..]),
+            Ast::Atom(Atom::Sym(s)) if s == "select" => lower_select(cx, &items[1..]),
+            Ast::Atom(Atom::Sym(s)) if s == "+" => lower_bin(cx, &items[1..], BinOp::Add),
+            Ast::Atom(Atom::Sym(s)) if s == "-" => lower_bin(cx, &items[1..], BinOp::Sub),
+            Ast::Atom(Atom::Sym(s)) if s == "*" => lower_bin(cx, &items[1..], BinOp::Mul),
+            Ast::Atom(Atom::Sym(s)) if s == "neg" => lower_neg(cx, &items[1..]),
+            Ast::Atom(Atom::Sym(s)) if s == "=" => lower_eq(cx, &items[1..]),
+            Ast::Atom(Atom::Sym(s)) if s == "hash2" => lower_hash2(cx, &items[1..]),
+            Ast::Atom(Atom::Sym(s)) if s == "kv-step" => {
+                lower_kv_step(cx, &items[1..]).map(|_| cx.get_var("_kv_last").unwrap_or(0))
+            }
+            Ast::Atom(Atom::Sym(s)) if s == "kv-final" => {
+                lower_kv_final(cx, &items[1..]).map(|_| cx.get_var("_kv_last").unwrap_or(0))
+            }
+            Ast::Atom(Atom::Sym(s)) if s == "assert" => lower_assert(cx, &items[1..]),
+            Ast::Atom(Atom::Sym(s)) if s == "if" => lower_if(cx, &items[1..]),
+            Ast::Atom(Atom::Sym(name)) => {
+                // user function call: (f a b ...)
+                lower_call(cx, name, &items[1..])
+            }
+            _ => Err(Error::InvalidForm("expr".into())),
+        },
+        _ => Err(Error::InvalidForm("atom".into())),
+    }
+}
+
 fn lower_def(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     // forms:
     // (def (f x y) body)
@@ -154,42 +197,6 @@ fn lower_def(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     cx.define_fun(&name, params, body);
 
     Ok(())
-}
-
-fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<u8, Error> {
-    match ast {
-        Ast::Atom(Atom::Int(v)) => {
-            let r = cx.alloc()?;
-            cx.b.push(Op::Const { dst: r, imm: v });
-
-            Ok(r)
-        }
-        Ast::Atom(Atom::Sym(s)) => cx.get_var(&s),
-        Ast::List(items) if !items.is_empty() => match &items[0] {
-            Ast::Atom(Atom::Sym(s)) if s == "let" => lower_let(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "select" => lower_select(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "+" => lower_bin(cx, &items[1..], BinOp::Add),
-            Ast::Atom(Atom::Sym(s)) if s == "-" => lower_bin(cx, &items[1..], BinOp::Sub),
-            Ast::Atom(Atom::Sym(s)) if s == "*" => lower_bin(cx, &items[1..], BinOp::Mul),
-            Ast::Atom(Atom::Sym(s)) if s == "neg" => lower_neg(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "=" => lower_eq(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "hash2" => lower_hash2(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "kv-step" => {
-                lower_kv_step(cx, &items[1..]).map(|_| cx.get_var("_kv_last").unwrap_or(0))
-            }
-            Ast::Atom(Atom::Sym(s)) if s == "kv-final" => {
-                lower_kv_final(cx, &items[1..]).map(|_| cx.get_var("_kv_last").unwrap_or(0))
-            }
-            Ast::Atom(Atom::Sym(s)) if s == "assert" => lower_assert(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "if" => lower_if(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(name)) => {
-                // user function call: (f a b ...)
-                lower_call(cx, name, &items[1..])
-            }
-            _ => Err(Error::InvalidForm("expr".into())),
-        },
-        _ => Err(Error::InvalidForm("atom".into())),
-    }
 }
 
 fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
@@ -512,8 +519,9 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
         cx.define_fun(&cname, Vec::new(), Ast::Atom(Atom::Int(i as u64)));
     }
 
-    // Define predicate function:
-    // (def (T:is x) (= (* (- x a0) (- x a1) ...) 0)).
+    // Define predicate function
+    // via product-of-differences:
+    // is = (= (* (- x a0) (- x a1) ...) 0)
     let pred_name = format!("{tname}:is");
     let x_sym = Ast::Atom(Atom::Sym("x".to_string()));
 
@@ -532,7 +540,7 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
 
     // fold product: (* t1 (* t2 (* t3 ...)))
     let prod = if terms.is_empty() {
-        Ast::Atom(Atom::Int(0)) // empty set: always false
+        Ast::Atom(Atom::Int(0)) // empty set ⇒ always false
     } else {
         let mut it = terms.into_iter();
         let mut acc = it.next().unwrap();
@@ -544,16 +552,18 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
         acc
     };
 
-    let eq0 = Ast::List(vec![
+    let is_pred = Ast::List(vec![
         Ast::Atom(Atom::Sym("=".to_string())),
         prod.clone(),
         Ast::Atom(Atom::Int(0)),
     ]);
-    cx.define_fun(&pred_name, vec!["x".to_string()], eq0.clone());
 
-    // Define assert helper: (def (T:assert x) (assert (= prod 0)))
+    cx.define_fun(&pred_name, vec!["x".to_string()], is_pred.clone());
+
+    // Define assert helper:
+    // (def (T:assert x) (assert (= prod 0)))
     let assert_name = format!("{tname}:assert");
-    let assert_body = Ast::List(vec![Ast::Atom(Atom::Sym("assert".to_string())), eq0]);
+    let assert_body = Ast::List(vec![Ast::Atom(Atom::Sym("assert".to_string())), is_pred]);
 
     cx.define_fun(&assert_name, vec!["x".to_string()], assert_body);
 

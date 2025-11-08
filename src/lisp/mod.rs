@@ -55,7 +55,7 @@ pub fn compile_str(src: &str) -> Result<Program, Error> {
 // Compile main
 pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     let toks = lex(src)?;
-    let mut forms = parse(&toks)?;
+    let forms = parse(&toks)?;
 
     // discover main signature
     let mut main_params: Option<usize> = None;
@@ -89,24 +89,63 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
         )));
     }
 
-    // append (main ARG0 ... ARGN)
+    // Build (main ARG0 ... ARGN)
     let mut call_items: Vec<Ast> = Vec::with_capacity(1 + args.len());
     call_items.push(Ast::Atom(Atom::Sym("main".to_string())));
-
     for &v in args {
         call_items.push(Ast::Atom(Atom::Int(v)));
     }
 
-    forms.push(Ast::List(call_items));
+    let call_ast = Ast::List(call_items);
 
+    // Lower: first all top-level forms (defs, etc.),
+    // then tail-call main and capture its result reg.
     let mut cx = LowerCtx::new();
     for f in forms {
+        // lower all top-level forms except
+        // we don't append the (main ...) here
         lower::lower_top(&mut cx, f)?;
     }
 
+    // Lower (main ...) as expression
+    // to capture its result register.
+    let res_reg = lower::lower_expr(&mut cx, call_ast)?;
+
+    // Finalize program
     cx.b.push(Op::End);
 
-    Ok(cx.b.finalize())
+    let mut program = cx.b.finalize();
+
+    // Compute ProgramMeta from the captured
+    // result register: last level writing to res_reg.
+    let mut last_lvl = 0usize;
+    for (i, op) in program.ops.iter().enumerate() {
+        match *op {
+            Op::Const { dst, .. }
+            | Op::Mov { dst, .. }
+            | Op::Add { dst, .. }
+            | Op::Sub { dst, .. }
+            | Op::Mul { dst, .. }
+            | Op::Neg { dst, .. }
+            | Op::Eq { dst, .. }
+            | Op::Select { dst, .. }
+            | Op::Hash2 { dst, .. }
+            | Op::Assert { dst, .. } => {
+                if dst == res_reg {
+                    last_lvl = i;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let steps = crate::layout::STEPS_PER_LEVEL_P2;
+    let pos_fin = crate::schedule::pos_final();
+
+    program.meta.out_reg = res_reg;
+    program.meta.out_row = (last_lvl * steps + pos_fin + 1) as u32;
+
+    Ok(program)
 }
 
 // Lexer
