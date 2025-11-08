@@ -111,6 +111,9 @@ impl Air for ZkLispAir {
         if features.vm {
             num_assertions += 1;
         }
+        if features.kv && features.kv_expect {
+            num_assertions += 2 * (pub_inputs.kv_levels_mask.count_ones() as usize);
+        }
         if num_assertions == 0 {
             num_assertions = 1;
         }
@@ -357,7 +360,7 @@ impl ZkLispAir {
             ofs += len;
         }
         if features.kv {
-            let len = 8;
+            let len = 6;
             dbg.push(("kv", evals[ofs..ofs + len].to_vec()));
         }
 
@@ -403,7 +406,7 @@ impl ZkLispAir {
             ofs += len2;
         }
         if features.kv {
-            let len = 8;
+            let len = 6;
             ranges.push(("kv", ofs, ofs + len));
             ofs += len;
         }

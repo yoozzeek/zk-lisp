@@ -10,9 +10,9 @@ use winterfell::{
 };
 
 use crate::air::ZkLispAir;
-use crate::logging;
-use crate::pi::PublicInputs;
+use crate::pi::{PublicInputs, be_from_le8};
 use crate::trace::TraceBuilder;
+use crate::{layout, logging, poseidon, schedule};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -78,8 +78,28 @@ impl WProver for ZkWinterfellProver {
     type ConstraintCommitment<E: FieldElement<BaseField = Self::BaseField>> =
         DefaultConstraintCommitment<E, Self::HashFn, Self::VC>;
 
-    fn get_pub_inputs(&self, _trace: &Self::Trace) -> <Self::Air as Air>::PublicInputs {
-        self.pub_inputs.clone()
+    fn get_pub_inputs(&self, trace: &Self::Trace) -> <Self::Air as Air>::PublicInputs {
+        let mut pi = self.pub_inputs.clone();
+        if (pi.feature_mask & crate::pi::FM_KV) != 0 {
+            let cols = layout::Columns::baseline();
+            let steps = layout::STEPS_PER_LEVEL_P2;
+            let lvls = trace.length() / steps;
+
+            let mut mask: u128 = 0;
+
+            for lvl in 0..lvls {
+                let base = lvl * steps;
+                let row_map = base + schedule::pos_map();
+
+                if trace.get(cols.kv_g_map, row_map) == BE::ONE {
+                    mask |= 1u128 << lvl;
+                }
+            }
+
+            pi.kv_levels_mask = mask;
+        }
+
+        pi
     }
 
     fn options(&self) -> &ProofOptions {
@@ -211,14 +231,14 @@ fn preflight(
         air.evaluate_transition(&frame, &pv, &mut res);
 
         if let Some((i, v)) = res.iter().enumerate().find(|&(_, &x)| x != BE::ZERO) {
-            let cols = crate::layout::Columns::baseline();
-            let pos = r % crate::layout::STEPS_PER_LEVEL_P2;
+            let cols = layout::Columns::baseline();
+            let pos = r % layout::STEPS_PER_LEVEL_P2;
             let g_map = frame.current()[cols.g_map];
             let g_final = frame.current()[cols.g_final];
 
             let mut g_rounds = Vec::new();
 
-            for j in 0..crate::layout::POSEIDON_ROUNDS {
+            for j in 0..layout::POSEIDON_ROUNDS {
                 g_rounds.push(frame.current()[cols.g_r_index(j)]);
             }
 
@@ -228,15 +248,19 @@ fn preflight(
 
             // extra KV debug
             let p_map = pc[0][r];
-            let p_final = pc[1 + crate::layout::POSEIDON_ROUNDS][r];
+            let p_final = pc[1 + layout::POSEIDON_ROUNDS][r];
             let kv_ver = frame.current()[cols.kv_version];
             let kv_ver_next = frame.next()[cols.kv_version];
             let kv_acc_cur = frame.current()[cols.kv_acc];
             let kv_acc_next = frame.next()[cols.kv_acc];
-            let exp_map = crate::pi::be_from_le8(&pub_inputs.kv_map_acc_bytes);
-            let exp_fin = crate::pi::be_from_le8(&pub_inputs.kv_fin_acc_bytes);
-            let exp_en = if (pub_inputs.feature_mask & crate::pi::FM_KV_EXPECT) != 0 { 1 } else { 0 };
-            
+            let exp_map = be_from_le8(&pub_inputs.kv_map_acc_bytes);
+            let exp_fin = be_from_le8(&pub_inputs.kv_fin_acc_bytes);
+            let exp_en = if (pub_inputs.feature_mask & crate::pi::FM_KV_EXPECT) != 0 {
+                1
+            } else {
+                0
+            };
+
             println!(
                 "  kv: p_map={p_map:?} p_final={p_final:?} ver_cur={kv_ver:?} ver_next={kv_ver_next:?} acc_cur={kv_acc_cur:?} acc_next={kv_acc_next:?} exp_en={exp_en} exp_map={exp_map:?} exp_fin={exp_fin:?}"
             );
@@ -245,8 +269,8 @@ fn preflight(
             let pose_constraints = 4 * crate::layout::POSEIDON_ROUNDS;
             if i < pose_constraints {
                 let j = i / 4; // which round
-                let mm = crate::poseidon::derive_poseidon_mds_cauchy_4x4(&pub_inputs.program_commitment);
-                let rc = crate::poseidon::derive_poseidon_round_constants(&pub_inputs.program_commitment);
+                let mm = poseidon::derive_poseidon_mds_cauchy_4x4(&pub_inputs.program_commitment);
+                let rc = poseidon::derive_poseidon_round_constants(&pub_inputs.program_commitment);
                 let sl = frame.current()[cols.lane_l];
                 let sr = frame.current()[cols.lane_r];
                 let sc0 = frame.current()[cols.lane_c0];
@@ -281,7 +305,7 @@ fn preflight(
                 let dst = frame.current()[cols.sel_dst_index(wi)];
                 let a_val_dbg = {
                     let mut a = BE::ZERO;
-                    for k in 0..crate::layout::NR {
+                    for k in 0..layout::NR {
                         a +=
                             frame.current()[cols.sel_a_index(k)] * frame.current()[cols.r_index(k)];
                     }
@@ -289,7 +313,7 @@ fn preflight(
                 };
                 let b_val_dbg = {
                     let mut b = BE::ZERO;
-                    for k in 0..crate::layout::NR {
+                    for k in 0..layout::NR {
                         b +=
                             frame.current()[cols.sel_b_index(k)] * frame.current()[cols.r_index(k)];
                     }
@@ -297,7 +321,7 @@ fn preflight(
                 };
                 let c_val_dbg = {
                     let mut c = BE::ZERO;
-                    for k in 0..crate::layout::NR {
+                    for k in 0..layout::NR {
                         c +=
                             frame.current()[cols.sel_c_index(k)] * frame.current()[cols.r_index(k)];
                     }
@@ -334,7 +358,7 @@ fn preflight(
                 let mut sel_a_idxs = Vec::new();
                 let mut sel_b_idxs = Vec::new();
                 let mut sel_c_idxs = Vec::new();
-                for k in 0..crate::layout::NR {
+                for k in 0..layout::NR {
                     if frame.current()[cols.sel_dst_index(k)] == BE::ONE {
                         sel_dst_idxs.push(k);
                     }
@@ -358,7 +382,7 @@ fn preflight(
             }
 
             // also dump next row trace
-            let cols2 = crate::layout::Columns::baseline();
+            let cols2 = layout::Columns::baseline();
             println!(
                 "[next row {}] lanes: l={:?} r={:?} c0={:?} c1={:?}",
                 r + 1,

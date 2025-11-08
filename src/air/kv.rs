@@ -35,15 +35,6 @@ impl KvBlock {
             3,
             vec![STEPS_PER_LEVEL_P2],
         ));
-        // Expected acc checks when enabled
-        out.push(TransitionConstraintDegree::with_cycles(
-            1,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
-        out.push(TransitionConstraintDegree::with_cycles(
-            3,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
         // carry acc on non-final rows
         out.push(TransitionConstraintDegree::with_cycles(
             1,
@@ -121,41 +112,42 @@ where
             p_final * kv_fin * kv_map * (cur[ctx.cols.kv_acc] - cur[ctx.cols.lane_l]) + s2;
         *ix += 1;
 
-        // Expected acc checks gated by feature mask
-        let expect_enabled = if (ctx.pub_inputs.feature_mask & pi::FM_KV_EXPECT) != 0 {
-            E::ONE
-        } else {
-            E::ZERO
-        };
-
-        // decode first 8 bytes (little-endian)
-        // into field for expected map/final
-        let map_exp = be_from_le8::<E>(ctx.pub_inputs.kv_map_acc_bytes);
-        let fin_exp = be_from_le8::<E>(ctx.pub_inputs.kv_fin_acc_bytes);
-        result[*ix] = expect_enabled * p_map * (cur[ctx.cols.kv_acc] - map_exp) + s1;
-        *ix += 1;
-        // Final expectation only on levels which performed KV map
-        result[*ix] = expect_enabled * p_final * kv_fin * kv_map * (cur[ctx.cols.kv_acc] - fin_exp) + s1;
-        *ix += 1;
-
         // carry acc across rows whose next is NOT final
         result[*ix] = g_hold * (next[ctx.cols.kv_acc] - cur[ctx.cols.kv_acc]) + s1;
         *ix += 1;
     }
 
     fn append_assertions(
-        _ctx: &BlockCtx<E>,
-        _out: &mut Vec<Assertion<<E as FieldElement>::BaseField>>,
-        _last: usize,
+        ctx: &BlockCtx<E>,
+        out: &mut Vec<Assertion<<E as FieldElement>::BaseField>>,
+        last: usize,
     ) {
-        // No KV gate boundary assertions by default.
-    }
-}
+        // EXPECT checks via boundary
+        // per KV level (map and final rows)
+        if (ctx.pub_inputs.feature_mask & pi::FM_KV) == 0 {
+            return;
+        }
+        if (ctx.pub_inputs.feature_mask & pi::FM_KV_EXPECT) == 0 {
+            return;
+        }
 
-fn be_from_le8<E: FieldElement<BaseField = BE>>(bytes32: [u8; 32]) -> E {
-    let mut le = [0u8; 8];
-    le.copy_from_slice(&bytes32[0..8]);
-    E::from(BE::from(u64::from_le_bytes(le)))
+        let steps = STEPS_PER_LEVEL_P2;
+        let lvls = (last + 1) / steps;
+        let map_exp = crate::pi::be_from_le8(&ctx.pub_inputs.kv_map_acc_bytes);
+        let fin_exp = crate::pi::be_from_le8(&ctx.pub_inputs.kv_fin_acc_bytes);
+        let cols = ctx.cols;
+
+        for lvl in 0..lvls {
+            let base = lvl * steps;
+            let row_map = base + crate::schedule::pos_map();
+            let row_final = base + crate::schedule::pos_final();
+
+            if ((ctx.pub_inputs.kv_levels_mask >> lvl) & 1) == 1 {
+                out.push(Assertion::single(cols.kv_acc, row_map, map_exp));
+                out.push(Assertion::single(cols.kv_acc, row_final, fin_exp));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -209,23 +201,12 @@ mod tests {
     }
 
     #[test]
-    fn expected_map_mismatch_fails_only_expected_constraint() {
+    fn kv_constraints_zero_on_valid_map_row() {
         let cols = Columns::baseline();
         let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
         let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
-        // enable KV_EXPECT
-        let mut pi = pi::PublicInputs::default();
-        pi.feature_mask |= pi::FM_KV_EXPECT;
-
-        // set expected map acc != 5
-        let bad = 6u64;
-        let mut map_bytes = [0u8; 32];
-        map_bytes[0..8].copy_from_slice(&bad.to_le_bytes());
-
-        pi.kv_map_acc_bytes = map_bytes;
-        pi.kv_fin_acc_bytes = [0u8; 32];
-
+        let pi = pi::PublicInputs::default();
         let rc_box = Box::new([[BE::ZERO; 4]; POSEIDON_ROUNDS]);
         let mds_box = Box::new({
             let mut m = [[BE::ZERO; 4]; 4];
@@ -259,19 +240,14 @@ mod tests {
         // carry acc
         frame.next_mut()[cols.kv_acc] = frame.current()[cols.kv_acc];
 
-        let mut res = vec![BE::ZERO; 8];
+        let mut res = vec![BE::ZERO; 6];
         let mut ix = 0usize;
         KvBlock::eval_block(&ctx, &frame, &periodic, &mut res, &mut ix);
 
-        // expected map constraint index = 5
-        // (0 dir, 1-2 lanes, 3 version, 4 final_tie, 5 expected_map)
-        assert_ne!(res[5], BE::ZERO);
-
-        // other constraints zero
+        // All constraints should
+        // be zero on a valid map row.
         for (i, v) in res.iter().enumerate() {
-            if i != 5 {
-                assert_eq!(*v, BE::ZERO, "idx {i}");
-            }
+            assert_eq!(*v, BE::ZERO, "idx {i}");
         }
     }
 

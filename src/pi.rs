@@ -15,6 +15,7 @@ pub struct PublicInputs {
     pub kv_map_acc_bytes: [u8; 32],
     pub kv_fin_acc_bytes: [u8; 32],
     pub cn_root: [u8; 32],
+    pub kv_levels_mask: u128,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -40,22 +41,43 @@ impl PublicInputs {
 // PI encoding for Winterfell
 impl winterfell::math::ToElements<BE> for PublicInputs {
     fn to_elements(&self) -> Vec<BE> {
+        // encode kv_levels_mask into one field element (lo + hi*2^64)
+        let lo = (self.kv_levels_mask & 0xFFFF_FFFF_FFFF_FFFFu128) as u64;
+        let hi = (self.kv_levels_mask >> 64) as u64;
+        let kv_mask_fe = BE::from(lo) + BE::from(hi) * pow2_64_fe();
+
         let out = vec![
             BE::from(self.feature_mask),
             be_from_le8(&self.program_commitment),
             be_from_le8(&self.kv_map_acc_bytes),
             be_from_le8(&self.kv_fin_acc_bytes),
             be_from_le8(&self.cn_root),
+            kv_mask_fe,
         ];
         out
     }
 }
 
 pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {
-    let mut le = [0u8; 8];
-    le.copy_from_slice(&bytes32[0..8]);
+    // fold first 16 bytes (LE) into
+    // a field element: lo + hi * 2^64.
+    let mut lo = [0u8; 8];
+    let mut hi = [0u8; 8];
+    lo.copy_from_slice(&bytes32[0..8]);
+    hi.copy_from_slice(&bytes32[8..16]);
 
-    BE::from(u64::from_le_bytes(le))
+    BE::from(u64::from_le_bytes(lo)) + BE::from(u64::from_le_bytes(hi)) * pow2_64_fe()
+}
+
+#[inline]
+fn pow2_64_fe() -> BE {
+    let mut acc = BE::from(1u64);
+    let two = BE::from(2u64);
+    for _ in 0..64 {
+        acc *= two;
+    }
+
+    acc
 }
 
 #[cfg(test)]
@@ -114,10 +136,10 @@ mod tests {
         };
 
         let air_all = air::ZkLispAir::new(info, pi_all, opts);
-        // poseidon (4*R) + vm(55) + kv(8)
+        // poseidon (4*R) + vm(55) + kv(6)
         assert_eq!(
             air_all.context().num_main_transition_constraints(),
-            4 * layout::POSEIDON_ROUNDS + 55 + 8
+            4 * layout::POSEIDON_ROUNDS + 55 + 6
         );
         assert_eq!(air_all.get_assertions().len(), sched_asserts + 1);
     }
