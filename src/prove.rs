@@ -45,6 +45,8 @@ impl ZkProver {
             q = %self.options.num_queries(),
             blowup = %self.options.blowup_factor(),
             grind = %self.options.grinding_factor(),
+            width = %trace.width(),
+            length = %trace.length(),
             "prove start",
         );
 
@@ -57,9 +59,13 @@ impl ZkProver {
             options: self.options.clone(),
             pub_inputs: self.pub_inputs.clone(),
         };
-        prover
+        let proof = prover
             .prove(trace)
-            .map_err(|e| Error::Backend(e.to_string()))
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
+        tracing::info!(target = "proof.prove", "prove created");
+
+        Ok(proof)
     }
 }
 
@@ -84,7 +90,7 @@ impl WProver for ZkWinterfellProver {
 
     fn get_pub_inputs(&self, trace: &Self::Trace) -> <Self::Air as Air>::PublicInputs {
         let mut pi = self.pub_inputs.clone();
-        
+
         let cols = layout::Columns::baseline();
         let steps = layout::STEPS_PER_LEVEL_P2;
         let lvls = trace.length() / steps;
@@ -121,27 +127,27 @@ impl WProver for ZkWinterfellProver {
                     cols.op_hash2,
                     cols.op_assert,
                 ];
-                
+
                 if op_bits.iter().any(|&c| trace.get(c, row_map) == BE::ONE) {
                     last_op_lvl = Some(lvl);
                     break;
                 }
             }
-            
+
             if let Some(lvl) = last_op_lvl {
                 let base = lvl * steps;
                 let row_fin = base + schedule::pos_final();
-                
+
                 // detect dst reg at final row
                 let mut out_reg = 0u8;
-                
+
                 for i in 0..layout::NR {
                     if trace.get(cols.sel_dst_index(i), row_fin) == BE::ONE {
                         out_reg = i as u8;
                         break;
                     }
                 }
-                
+
                 pi.vm_out_reg = out_reg;
                 pi.vm_out_row = (row_fin + 1) as u32; // value written to next row after final
             }
@@ -198,17 +204,80 @@ pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Resu
             .map_err(|e| Error::Backend(e.to_string()))?;
     }
 
-    winterfell::verify::<
+    tracing::info!(
+        target = "proof.verify",
+        q = %opts.num_queries(),
+        blowup = %opts.blowup_factor(),
+        grind = %opts.grinding_factor(),
+        "verify proof",
+    );
+
+    let res = winterfell::verify::<
         ZkLispAir,
         Blake3_256<BE>,
         DefaultRandomCoin<Blake3_256<BE>>,
         MerkleTree<Blake3_256<BE>>,
-    >(proof, pi, &acceptable)
-    .map_err(|e| Error::Backend(e.to_string()))
+    >(proof, pi, &acceptable);
+
+    match res {
+        Ok(()) => {
+            tracing::info!(target = "proof.verify", "proof verified",);
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!(target = "proof.verify", "verify failed: {e}",);
+            Err(Error::Backend(e.to_string()))
+        }
+    }
 }
 
 pub fn build_trace(program: &crate::ir::Program) -> TraceTable<BE> {
     TraceBuilder::build_from_program(program).expect("trace")
+}
+
+/// Build trace using PublicInputs
+/// to seed VM args at level 0 map row.
+pub fn build_trace_with_pi(program: &crate::ir::Program, pi: &PublicInputs) -> TraceTable<BE> {
+    let mut trace = TraceBuilder::build_from_program(program).expect("trace");
+
+    if (pi.feature_mask & crate::pi::FM_VM) != 0 && !pi.vm_args.is_empty() {
+        let cols = layout::Columns::baseline();
+        let base0 = 0usize;
+        let row_map0 = base0 + schedule::pos_map();
+        let row_fin0 = base0 + schedule::pos_final();
+
+        // 1) seed args on map..=final
+        for (i, &a) in pi.vm_args.iter().enumerate() {
+            if i < layout::NR {
+                let val = BE::from(a);
+                for r in row_map0..=row_fin0 {
+                    trace.set(cols.r_index(i), r, val);
+                }
+            }
+        }
+
+        // 2) set next row after final
+        // for non-dst regs to equal cur (carry)
+        let row_next = row_fin0 + 1;
+        let level_end = base0 + layout::STEPS_PER_LEVEL_P2;
+
+        for i in 0..layout::NR {
+            let is_dst = trace.get(cols.sel_dst_index(i), row_fin0) == BE::ONE;
+            if !is_dst {
+                if let Some(&a) = pi.vm_args.get(i) {
+                    let val = BE::from(a);
+
+                    // Set all rows after final within level
+                    // to the arg value for non-dst regs.
+                    for r in row_next..level_end {
+                        trace.set(cols.r_index(i), r, val);
+                    }
+                }
+            }
+        }
+    }
+
+    trace
 }
 
 fn preflight(
@@ -248,18 +317,20 @@ fn preflight(
         let mut res0 = vec![BE::ZERO; res_len];
         air.evaluate_transition(&frame0, &periodic_poly_vals, &mut res0);
 
-        let cols_dbg = crate::layout::Columns::baseline();
+        let cols_dbg = layout::Columns::baseline();
         let sd0 = frame0.current()[cols_dbg.sel_dst_index(0)];
         let p_map0 = periodic_poly_vals[0];
-        let p_fin0 = periodic_poly_vals[1 + crate::layout::POSEIDON_ROUNDS];
-        let p_pad0 = periodic_poly_vals[1 + crate::layout::POSEIDON_ROUNDS + 1];
-        let p_last0 = periodic_poly_vals[1 + crate::layout::POSEIDON_ROUNDS + 3];
+        let p_fin0 = periodic_poly_vals[1 + layout::POSEIDON_ROUNDS];
+        let p_pad0 = periodic_poly_vals[1 + layout::POSEIDON_ROUNDS + 1];
+        let p_last0 = periodic_poly_vals[1 + layout::POSEIDON_ROUNDS + 3];
 
-        println!(
+        tracing::debug!(
+            target = "proof.preflight",
             "[preflight poly step0] first 8: {:?}",
             &res0[0..res0.len().min(8)]
         );
-        println!(
+        tracing::debug!(
+            target = "proof.preflight",
             "[preflight poly step0] gates: p_map={p_map0:?} p_final={p_fin0:?} p_pad={p_pad0:?} p_last={p_last0:?} sd0={sd0:?}"
         );
     }
@@ -297,7 +368,8 @@ fn preflight(
                 g_rounds.push(frame.current()[cols.g_r_index(j)]);
             }
 
-            println!(
+            tracing::debug!(
+                target = "proof.preflight",
                 "[preflight] row={r} pos={pos} gates: map={g_map} final={g_final} rounds={g_rounds:?} first_bad={{idx:{i}, val:{v:?}}}"
             );
 
@@ -316,12 +388,13 @@ fn preflight(
                 0
             };
 
-            println!(
+            tracing::debug!(
+                target = "proof.preflight",
                 "  kv: p_map={p_map:?} p_final={p_final:?} ver_cur={kv_ver:?} ver_next={kv_ver_next:?} acc_cur={kv_acc_cur:?} acc_next={kv_acc_next:?} exp_en={exp_en} exp_map={exp_map:?} exp_fin={exp_fin:?}"
             );
 
             // If in Poseidon block, dump lane values and expected next
-            let pose_constraints = 4 * crate::layout::POSEIDON_ROUNDS;
+            let pose_constraints = 4 * layout::POSEIDON_ROUNDS;
             if i < pose_constraints {
                 let j = i / 4; // which round
                 let mm = poseidon::derive_poseidon_mds_cauchy_4x4(&pub_inputs.program_commitment);
@@ -348,7 +421,8 @@ fn preflight(
                 let nc0 = frame.next()[cols.lane_c0];
                 let nc1 = frame.next()[cols.lane_c1];
 
-                println!(
+                tracing::debug!(
+                    target = "proof.preflight",
                     "[poseidon] j={j} cur=(l:{sl:?} r:{sr:?} c0:{sc0:?} c1:{sc1:?}) next=(l:{nl:?} r:{nr:?} c0:{nc0:?} c1:{nc1:?}) exp_next=(l:{yl:?} r:{yr:?} c0:{yc0:?} c1:{yc1:?})"
                 );
             }
@@ -403,7 +477,8 @@ fn preflight(
                 let lhs = frame.next()[cols.r_index(wi)]
                     - ((BE::ONE - dst) * frame.current()[cols.r_index(wi)] + dst * res_dbg);
 
-                println!(
+                tracing::debug!(
+                    target = "proof.preflight",
                     "  write[idx={wi}] dst={dst:?} res={res_dbg:?} cur={:?} next={:?} lhs={lhs:?}",
                     frame.current()[cols.r_index(wi)],
                     frame.next()[cols.r_index(wi)]
@@ -428,17 +503,20 @@ fn preflight(
                     }
                 }
 
-                println!(
+                tracing::debug!(
+                    target = "proof.preflight",
                     "  sel_dst={sel_dst_idxs:?} sel_a={sel_a_idxs:?} sel_b={sel_b_idxs:?} sel_c={sel_c_idxs:?}"
                 );
-                println!(
+                tracing::debug!(
+                    target = "proof.preflight",
                     "  ops(const, mov, add, sub, mul, neg, eq, sel, hash)=({b_const:?},{b_mov:?},{b_add:?},{b_sub:?},{b_mul:?},{b_neg:?},{b_eqb:?},{b_sel:?},{b_hash:?}) a={a_val_dbg:?} b={b_val_dbg:?} c={c_val_dbg:?}"
                 );
             }
 
             // also dump next row trace
             let cols2 = layout::Columns::baseline();
-            println!(
+            tracing::debug!(
+                target = "proof.preflight",
                 "[next row {}] lanes: l={:?} r={:?} c0={:?} c1={:?}",
                 r + 1,
                 frame.next()[cols2.lane_l],
