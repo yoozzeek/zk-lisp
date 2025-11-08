@@ -11,7 +11,7 @@ pub fn print_trace_row(_air: &ZkLispAir, trace: &TraceTable<BE>, row: usize) {
     let n = trace.length();
 
     if row >= n {
-        println!("row {row} out of range (n={n})");
+        tracing::error!("row {row} out of range (n={n})");
         return;
     }
 
@@ -26,7 +26,7 @@ pub fn print_trace_row(_air: &ZkLispAir, trace: &TraceTable<BE>, row: usize) {
         g_rounds.push(trace.get(cols.g_r_index(j), row));
     }
 
-    println!(
+    tracing::debug!(
         "[row={row} lvl={lvl} pos={pos} ({})] gates: map={g_map} final={g_final} rounds={g_rounds:?}",
         pos_label(pos)
     );
@@ -48,7 +48,7 @@ pub fn print_trace_row(_air: &ZkLispAir, trace: &TraceTable<BE>, row: usize) {
             ops.push((name, trace.get(c, row)));
         }
 
-        println!("  vm.ops: {ops:?}");
+        tracing::debug!("  vm.ops: {ops:?}");
     }
 }
 
@@ -72,8 +72,9 @@ pub fn print_first_bad_row(air: &ZkLispAir, trace: &TraceTable<BE>) {
         Air::evaluate_transition(air, &frame, &pv, &mut res);
 
         if let Some((i, v)) = res.iter().enumerate().find(|(_, x)| **x != BE::ZERO) {
-            println!("first bad row={r} constraint={i} value={v:?}");
+            tracing::debug!("first bad row={r} constraint={i} value={v:?}");
             print_trace_row(air, trace, r);
+
             break;
         }
     }

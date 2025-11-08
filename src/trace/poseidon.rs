@@ -67,11 +67,4 @@ pub fn apply_level(
     trace.set(cols.lane_r, row_fin, sr);
     trace.set(cols.lane_c0, row_fin, sc0);
     trace.set(cols.lane_c1, row_fin, sc1);
-
-    #[cfg(debug_assertions)]
-    {
-        println!(
-            "[poseidon.apply_level] level={level} map_row={row_map} fin_row={row_fin} final=(l:{sl:?} r:{sr:?} c0:{sc0:?} c1:{sc1:?})"
-        );
-    }
 }

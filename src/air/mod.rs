@@ -225,7 +225,11 @@ impl Air for ZkLispAir {
             let row_map0 = schedule_core::pos_map();
             for (i, &a) in self.pub_inputs.vm_args.iter().enumerate() {
                 if i < crate::layout::NR {
-                    out.push(Assertion::single(self.cols.r_index(i), row_map0, BE::from(a)));
+                    out.push(Assertion::single(
+                        self.cols.r_index(i),
+                        row_map0,
+                        BE::from(a),
+                    ));
                 }
             }
 
@@ -234,7 +238,7 @@ impl Air for ZkLispAir {
                 let row = (self.pub_inputs.vm_out_row as usize).min(last);
                 let reg = (self.pub_inputs.vm_out_reg as usize).min(crate::layout::NR - 1);
                 let exp = crate::pi::be_from_le8(&self.pub_inputs.vm_expected_bytes);
-                
+
                 out.push(Assertion::single(self.cols.r_index(reg), row, exp));
             }
         }
@@ -258,7 +262,7 @@ impl Air for ZkLispAir {
             }
         }
 
-        tracing::info!(
+        tracing::debug!(
             target="proof.air",
             assertions_len=%out.len(),
             width=%width,
@@ -368,7 +372,7 @@ impl ZkLispAir {
             .map(|d| d.get_evaluation_degree(trace_len) - (trace_len - 1))
             .collect();
 
-        tracing::info!(
+        tracing::debug!(
             target = "proof.air",
             "expected_eval_degrees_len={} evals={:?}",
             evals.len(),
@@ -400,7 +404,7 @@ impl ZkLispAir {
             dbg.push(("kv", evals[ofs..ofs + len].to_vec()));
         }
 
-        tracing::info!(target = "proof.air", "per_block_evals: {:?}", dbg);
+        tracing::debug!(target = "proof.air", "per_block_evals: {:?}", dbg);
     }
 
     #[inline]
@@ -414,7 +418,7 @@ impl ZkLispAir {
         let lde = ctx.lde_domain_size();
         let blow_ce = ce / tl;
 
-        tracing::info!(
+        tracing::debug!(
             target = "proof.air",
             "ctx: trace_len={} ce_domain_size={} lde_domain_size={} ce_blowup={} exemptions={}",
             tl,
@@ -447,7 +451,7 @@ impl ZkLispAir {
             ofs += len;
         }
 
-        tracing::info!(target = "proof.air", "deg_ranges: {:?}", ranges);
-        tracing::info!(target = "proof.air", "deg_len={} (computed)", ofs);
+        tracing::debug!(target = "proof.air", "deg_ranges: {:?}", ranges);
+        tracing::debug!(target = "proof.air", "deg_len={} (computed)", ofs);
     }
 }

@@ -65,7 +65,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
             if items.is_empty() {
                 continue;
             }
-    
+
             if let Ast::Atom(Atom::Sym(h)) = &items[0] {
                 if h == "def" {
                     if let Some(Ast::List(hh)) = items.get(1) {
@@ -92,7 +92,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     // append (main ARG0 ... ARGN)
     let mut call_items: Vec<Ast> = Vec::with_capacity(1 + args.len());
     call_items.push(Ast::Atom(Atom::Sym("main".to_string())));
-    
+
     for &v in args {
         call_items.push(Ast::Atom(Atom::Int(v)));
     }
