@@ -15,7 +15,7 @@ pub const FM_VM: u64 = 1 << 1;
 pub const FM_KV: u64 = 1 << 2;
 pub const FM_KV_EXPECT: u64 = 1 << 3;
 pub const FM_VM_EXPECT: u64 = 1 << 4;
-pub const FM_HASH2: u64 = 1 << 5;
+pub const FM_SPONGE: u64 = 1 << 5;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FeaturesMap {
@@ -24,7 +24,7 @@ pub struct FeaturesMap {
     pub kv: bool,
     pub kv_expect: bool,
     pub vm_expect: bool,
-    pub hash2: bool,
+    pub sponge: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -82,10 +82,12 @@ impl PublicInputsBuilder {
                 SAbsorb2 { .. } => {
                     vm = true;
                     pose = true;
+                    self.pi.feature_mask |= FM_SPONGE;
                 }
                 SSqueeze { .. } => {
                     vm = true;
                     pose = true;
+                    self.pi.feature_mask |= FM_SPONGE;
                 }
                 KvMap { .. } | KvFinal => {
                     kv = true;
@@ -163,7 +165,7 @@ impl PublicInputs {
             kv: (m & FM_KV) != 0,
             kv_expect: (m & FM_KV_EXPECT) != 0,
             vm_expect: (m & FM_VM_EXPECT) != 0,
-            hash2: (m & FM_HASH2) != 0,
+            sponge: (m & FM_SPONGE) != 0,
         }
     }
 
@@ -351,10 +353,10 @@ mod tests {
         };
 
         let air_all = air::ZkLispAir::new(info, pi_all, opts);
-        // poseidon (4*R + 4 hold + 2 vm_bind) + vm(67) + kv(6)
+        // poseidon (4*R + 4 hold) + vm(67) + kv(6)
         assert_eq!(
             air_all.context().num_main_transition_constraints(),
-            4 * layout::POSEIDON_ROUNDS + 6 + 67 + 6
+            4 * layout::POSEIDON_ROUNDS + 4 + 67 + 6
         );
         assert_eq!(air_all.get_assertions().len(), sched_asserts + 1);
     }

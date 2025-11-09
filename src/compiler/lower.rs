@@ -433,10 +433,13 @@ fn lower_hash2(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let a = lower_expr(cx, rest[0].clone())?;
     let b = lower_expr(cx, rest[1].clone())?;
 
-    // Transform into sponge ops 
+    // Transform into sponge ops
     // for forward compatibility.
-    cx.b.push(Op::SAbsorb2 { a: a.reg(), b: b.reg() });
-    
+    cx.b.push(Op::SAbsorb2 {
+        a: a.reg(),
+        b: b.reg(),
+    });
+
     let dst = cx.alloc()?;
     cx.b.push(Op::SSqueeze { dst });
 
@@ -638,11 +641,8 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         let r_hi = cx.alloc()?;
         cx.b.push(Op::Const { dst: r_hi, imm: hi });
 
-        cx.b.push(Op::SAbsorb2 {
-            a: r_lo,
-            b: r_hi,
-        });
-        
+        cx.b.push(Op::SAbsorb2 { a: r_lo, b: r_hi });
+
         let r_c = cx.alloc()?;
         cx.b.push(Op::SSqueeze { dst: r_c });
 
@@ -658,10 +658,7 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let r_c1 = c_hash(cx, lo1, hi1)?;
     let r_p01 = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorb2 {
-            a: r_c0,
-            b: r_c1,
-        });
+        cx.b.push(Op::SAbsorb2 { a: r_c0, b: r_c1 });
         cx.b.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_c0);
@@ -676,10 +673,7 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let r_c3 = c_hash(cx, lo3, hi3)?;
     let r_p23 = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorb2 {
-            a: r_c2,
-            b: r_c3,
-        });
+        cx.b.push(Op::SAbsorb2 { a: r_c2, b: r_c3 });
         cx.b.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_c2);
@@ -733,7 +727,10 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // digest = H(t0, payload)
     let r_digest = cx.alloc()?;
-    cx.b.push(Op::SAbsorb2 { a: r_t0, b: r_payload });
+    cx.b.push(Op::SAbsorb2 {
+        a: r_t0,
+        b: r_payload,
+    });
     cx.b.push(Op::SSqueeze { dst: r_digest });
 
     cx.free_reg(r_t0);
@@ -780,11 +777,8 @@ fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> 
         let r_hi = cx.alloc()?;
         cx.b.push(Op::Const { dst: r_hi, imm: hi });
 
-        cx.b.push(Op::SAbsorb2 {
-            a: r_lo,
-            b: r_hi,
-        });
-        
+        cx.b.push(Op::SAbsorb2 { a: r_lo, b: r_hi });
+
         let r_c = cx.alloc()?;
         cx.b.push(Op::SSqueeze { dst: r_c });
 
@@ -801,10 +795,7 @@ fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> 
 
     let r_payload = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorb2 {
-            a: r_c0,
-            b: r_c1,
-        });
+        cx.b.push(Op::SAbsorb2 { a: r_c0, b: r_c1 });
         cx.b.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_c0);
@@ -836,10 +827,7 @@ fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> 
 
     let r_t0 = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorb2 {
-            a: r_tag,
-            b: r_len,
-        });
+        cx.b.push(Op::SAbsorb2 { a: r_tag, b: r_len });
         cx.b.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_tag);

@@ -305,13 +305,28 @@ pub(crate) fn run(
                 let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash;
                 let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_hash;
                 let uses_c = b_sel + b_assert;
-                let op_any =
-                    b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash + b_assert;
+                let op_any = b_const
+                    + b_mov
+                    + b_add
+                    + b_sub
+                    + b_mul
+                    + b_neg
+                    + b_eq
+                    + b_sel
+                    + b_hash
+                    + b_assert;
 
                 tracing::debug!(
-                    target="proof.preflight",
+                    target = "proof.preflight",
                     "[sums] sum_dst={:?} sum_a={:?} sum_b={:?} sum_c={:?} uses_a={:?} uses_b={:?} uses_c={:?} op_any={:?}",
-                    sum_dst, sum_a, sum_b, sum_c, uses_a, uses_b, uses_c, op_any
+                    sum_dst,
+                    sum_a,
+                    sum_b,
+                    sum_c,
+                    uses_a,
+                    uses_b,
+                    uses_c,
+                    op_any
                 );
 
                 None

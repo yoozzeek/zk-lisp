@@ -65,7 +65,7 @@ where
         let cur = frame.current();
         let next = frame.next();
         let mm = ctx.poseidon_mds;
-        
+
         // Gate for map-row constraints
         let p_map = periodic[0];
 
@@ -132,7 +132,7 @@ where
         // Bind map-row lanes to VM-selected
         // inputs when sponge ops are enabled;
         // gated by op_hash2 at map row.
-        if ctx.pub_inputs.get_features().vm && ctx.pub_inputs.get_features().hash2 {
+        if ctx.pub_inputs.get_features().vm && ctx.pub_inputs.get_features().sponge {
             let b_hash = cur[ctx.cols.op_hash2];
 
             let mut a_val = E::ZERO;

@@ -420,10 +420,11 @@ mod tests {
         let src = "(let ((x 1) (y 2)) (hash2 x y)) (kv-step 0 7) (kv-final)";
         let p = compile_str(src).unwrap();
         // hash now represented via sponge ops SAbsorb2/SSqueeze
-        assert!(p.ops.iter().any(|op| matches!(
-            op,
-            Op::SAbsorb2 { .. } | Op::SSqueeze { .. }
-        )));
+        assert!(
+            p.ops
+                .iter()
+                .any(|op| matches!(op, Op::SAbsorb2 { .. } | Op::SSqueeze { .. }))
+        );
         assert!(p.ops.iter().any(|op| matches!(op, Op::KvMap { .. })));
         assert!(p.ops.iter().any(|op| matches!(op, Op::KvFinal)));
     }

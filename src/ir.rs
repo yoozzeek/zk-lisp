@@ -18,8 +18,8 @@ pub enum Op {
     Assert { dst: u8, c: u8 },               // enforces c==1 and writes 1 to dst
 
     // CRYPTO
-    SAbsorb2 { a: u8, b: u8 },       // Sponge: absorb 2 elements (rate=2)
-    SSqueeze { dst: u8 },            // Sponge: squeeze lane_l into dst
+    SAbsorb2 { a: u8, b: u8 }, // Sponge: absorb 2 elements (rate=2)
+    SSqueeze { dst: u8 },      // Sponge: squeeze lane_l into dst
 
     // KV
     KvMap { dir: u32, sib_reg: u8 }, // one level of path

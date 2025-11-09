@@ -216,12 +216,23 @@ fn build_pi_for_program(program: &zk_lisp::ir::Program, args: &[u64]) -> zk_lisp
     }
 
     // Poseidon when sponge ops or KV appear
+    if program.ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::SAbsorb2 { .. } | Op::SSqueeze { .. } | Op::KvMap { .. } | Op::KvFinal
+        )
+    }) {
+        mask |= zk_lisp::pi::FM_POSEIDON;
+    }
+
+    // Sponge feature when
+    // SAbsorb2/SSqueeze appear.
     if program
         .ops
         .iter()
-        .any(|op| matches!(op, Op::SAbsorb2 { .. } | Op::SSqueeze { .. } | Op::KvMap { .. } | Op::KvFinal))
+        .any(|op| matches!(op, Op::SAbsorb2 { .. } | Op::SSqueeze { .. }))
     {
-        mask |= zk_lisp::pi::FM_POSEIDON;
+        mask |= zk_lisp::pi::FM_SPONGE;
     }
 
     // KV when kv ops appear

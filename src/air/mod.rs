@@ -95,9 +95,10 @@ impl Air for ZkLispAir {
         if features.poseidon {
             PoseidonBlock::push_degrees(&mut degrees);
 
-            // When VM is enabled, enforce VM->lane
-            // bindings on map rows of absorb operations.
-            if features.vm {
+            // When VM is enabled AND sponge ops
+            // are present enforce VM->lane bindings
+            // on map rows of absorb operations.
+            if features.vm && features.sponge {
                 PoseidonBlock::push_degrees_vm_bind(&mut degrees);
             }
         }
@@ -112,7 +113,7 @@ impl Air for ZkLispAir {
         // Boundary assertions count per level:
         let levels = (info.length() / STEPS_PER_LEVEL_P2).max(1);
 
-        // Strict schedule/domain boundary 
+        // Strict schedule/domain boundary
         // assertions per level:
         // ones at positions: (2 + R)
         // zeros at non-positions: (4R + 2)
