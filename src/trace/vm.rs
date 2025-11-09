@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
+// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
+
 use crate::ir::Op;
 use crate::layout::{Columns, NR, STEPS_PER_LEVEL_P2};
 use crate::pi;

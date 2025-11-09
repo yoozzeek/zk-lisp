@@ -1,5 +1,9 @@
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
+// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
+
 use std::process::Command;
 
 fn bin() -> Command {

@@ -1,4 +1,8 @@
-// IR for zk-lisp
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
+// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
+
+//! IR for zk-lisp
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {

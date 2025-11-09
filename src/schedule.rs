@@ -1,4 +1,8 @@
-// Periodic schedule for one level and utilities.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
+// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
+
+//! Periodic schedule for one level and utilities.
 
 use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 

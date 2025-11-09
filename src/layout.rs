@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
+// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
+
 use winterfell::math::fields::f128::BaseElement as BE;
 
 pub const POSEIDON_ROUNDS: usize = 27;
