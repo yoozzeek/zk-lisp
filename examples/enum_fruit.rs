@@ -37,7 +37,7 @@ fn u128_to_bytes32(n: u128) -> [u8; 32] {
 }
 
 fn main() {
-    logging::init();
+    logging::init_with_level(None);
     tracing::info!(target = "examples.enum_fruit", "start");
 
     let t = match parse_arg() {

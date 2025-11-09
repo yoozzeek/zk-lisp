@@ -166,23 +166,23 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
             [Ast::Atom(Atom::Sym(s)), rest @ ..] => {
                 let tail = rest;
                 match s.as_str() {
-                    "let" => lower_let(cx, tail),
-                    "select" => lower_select(cx, tail),
                     "+" => lower_bin(cx, tail, BinOp::Add),
                     "-" => lower_bin(cx, tail, BinOp::Sub),
                     "*" => lower_bin(cx, tail, BinOp::Mul),
-                    "neg" => lower_neg(cx, tail),
                     "=" => lower_eq(cx, tail),
+                    "if" => lower_if(cx, tail),
+                    "let" => lower_let(cx, tail),
+                    "neg" => lower_neg(cx, tail),
+                    "str64" => lower_str64(cx, tail),
                     "hash2" => lower_hash2(cx, tail),
+                    "select" => lower_select(cx, tail),
+                    "assert" => lower_assert(cx, tail),
+                    "in-set" => lower_in_set(cx, tail),
                     "kv-step" => lower_kv_step(cx, tail)
                         .map(|_| RVal::Borrowed(cx.get_var("_kv_last").unwrap_or(0))),
                     "kv-final" => lower_kv_final(cx, tail)
                         .map(|_| RVal::Borrowed(cx.get_var("_kv_last").unwrap_or(0))),
-                    "assert" => lower_assert(cx, tail),
-                    "if" => lower_if(cx, tail),
-                    "str64" => lower_str64(cx, tail),
                     "hex-to-bytes32" => lower_hex_to_bytes32(cx, tail),
-                    "in-set" => lower_in_set(cx, tail),
                     _ => lower_call(cx, s, tail),
                 }
             }

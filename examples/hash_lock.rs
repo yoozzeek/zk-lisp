@@ -53,7 +53,7 @@ fn hex128_to_bytes32(hex: &str) -> Result<[u8; 32], String> {
 }
 
 fn main() {
-    logging::init();
+    logging::init_with_level(None);
     tracing::info!(target = "examples.hash_lock", "start");
 
     let (secret, salt, expect_hex) = match parse_args() {
