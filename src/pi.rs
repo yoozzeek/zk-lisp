@@ -322,7 +322,7 @@ mod tests {
         let air_pose = air::ZkLispAir::new(info.clone(), pi_pose, opts.clone());
         assert_eq!(
             air_pose.context().num_main_transition_constraints(),
-            4 * layout::POSEIDON_ROUNDS
+            4 * layout::POSEIDON_ROUNDS + 6
         );
         assert_eq!(air_pose.get_assertions().len(), sched_asserts);
 
@@ -347,7 +347,7 @@ mod tests {
         // poseidon (4*R) + vm(67) + kv(6)
         assert_eq!(
             air_all.context().num_main_transition_constraints(),
-            4 * layout::POSEIDON_ROUNDS + 67 + 6
+            4 * layout::POSEIDON_ROUNDS + 6 + 67 + 6
         );
         assert_eq!(air_all.get_assertions().len(), sched_asserts + 1);
     }

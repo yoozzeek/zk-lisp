@@ -221,9 +221,18 @@ impl TraceBuilder {
                 // run Poseidon for level; dst <= lane_l(final)
                 Op::Hash2 { dst, a, b } => {
                     trace.set(cols.op_hash2, row_map, BE::ONE);
+                    // Set selectors for 
+                    // dst, a, b at map row.
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_map, cols.sel_b_start, b);
+
+                    // Latch op and selectors 
+                    // to final row for uniformity.
                     trace.set(cols.op_hash2, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
                     let left = regs[a as usize];
                     let right = regs[b as usize];

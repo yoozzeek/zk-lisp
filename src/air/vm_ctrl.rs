@@ -115,8 +115,8 @@ where
 
         // role usage gates: which roles
         // must select exactly one src.
-        let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel;
-        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel;
+        let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash;
+        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_hash;
         let uses_c = b_sel + b_assert;
         let op_any =
             b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash + b_assert;
