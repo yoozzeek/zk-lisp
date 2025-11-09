@@ -36,6 +36,34 @@ enum BinOp {
     Mul,
 }
 
+/// Return value ownership model
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RVal {
+    Owned(u8),
+    Borrowed(u8),
+}
+
+impl RVal {
+    #[inline]
+    pub fn reg(self) -> u8 {
+        match self {
+            RVal::Owned(r) | RVal::Borrowed(r) => r,
+        }
+    }
+
+    pub fn into_owned(self, cx: &mut LowerCtx) -> Result<RVal, Error> {
+        match self {
+            RVal::Owned(r) => Ok(RVal::Owned(r)),
+            RVal::Borrowed(s) => {
+                let dst = cx.alloc()?;
+                cx.b.push(Op::Mov { dst, src: s });
+
+                Ok(RVal::Owned(dst))
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LowerCtx<'a> {
     pub b: ProgramBuilder,
@@ -70,13 +98,6 @@ impl<'a> LowerCtx<'a> {
         self.free.push(r);
     }
 
-    fn clone_reg(&mut self, src: u8) -> Result<u8, Error> {
-        let dst = self.alloc()?;
-        self.b.push(Op::Mov { dst, src });
-
-        Ok(dst)
-    }
-
     fn map_var(&mut self, name: &str, r: u8) {
         self.env.vars.insert(name.to_string(), r);
     }
@@ -106,8 +127,8 @@ pub fn lower_top(cx: &mut LowerCtx, ast: Ast) -> Result<(), Error> {
                 Ast::Atom(Atom::Sym(s)) if s == "deftype" => lower_deftype(cx, &items[1..]),
                 _ => {
                     // treat as expression; compute and discard
-                    let r = lower_expr(cx, ast)?;
-                    cx.free_reg(r);
+                    let v = lower_expr(cx, ast)?;
+                    free_if_owned(cx, v);
 
                     Ok(())
                 }
@@ -115,21 +136,21 @@ pub fn lower_top(cx: &mut LowerCtx, ast: Ast) -> Result<(), Error> {
         }
         _ => {
             // expression or atom; compute and drop
-            let r = lower_expr(cx, ast)?;
-            cx.free_reg(r);
+            let v = lower_expr(cx, ast)?;
+            free_if_owned(cx, v);
 
             Ok(())
         }
     }
 }
 
-pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<u8, Error> {
+pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
     match ast {
         Ast::Atom(Atom::Int(v)) => {
             let r = cx.alloc()?;
             cx.b.push(Op::Const { dst: r, imm: v });
 
-            Ok(r)
+            Ok(RVal::Owned(r))
         }
         Ast::Atom(Atom::Str(_)) => {
             // String literal must be used
@@ -137,41 +158,37 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<u8, Error> {
             Err(Error::InvalidForm("string literal outside macro".into()))
         }
         Ast::Atom(Atom::Sym(s)) => {
-            // Variables are cloned into temporaries
-            // to avoid  freeing live variable registers
-            // in nested expressions.
+            // Return borrowed register for variables
             let r = cx.get_var(&s)?;
-            cx.clone_reg(r)
+            Ok(RVal::Borrowed(r))
         }
-        Ast::List(items) if !items.is_empty() => match &items[0] {
-            Ast::Atom(Atom::Sym(s)) if s == "let" => lower_let(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "select" => lower_select(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "+" => lower_bin(cx, &items[1..], BinOp::Add),
-            Ast::Atom(Atom::Sym(s)) if s == "-" => lower_bin(cx, &items[1..], BinOp::Sub),
-            Ast::Atom(Atom::Sym(s)) if s == "*" => lower_bin(cx, &items[1..], BinOp::Mul),
-            Ast::Atom(Atom::Sym(s)) if s == "neg" => lower_neg(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "=" => lower_eq(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "hash2" => lower_hash2(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "kv-step" => {
-                lower_kv_step(cx, &items[1..]).map(|_| cx.get_var("_kv_last").unwrap_or(0))
-            }
-            Ast::Atom(Atom::Sym(s)) if s == "kv-final" => {
-                lower_kv_final(cx, &items[1..]).map(|_| cx.get_var("_kv_last").unwrap_or(0))
-            }
-            Ast::Atom(Atom::Sym(s)) if s == "assert" => lower_assert(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "if" => lower_if(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "str64" => lower_str64(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(s)) if s == "bytes32-from-hex" => {
-                lower_bytes32_from_hex(cx, &items[1..])
-            }
-            Ast::Atom(Atom::Sym(s)) if s == "in-set" => lower_in_set(cx, &items[1..]),
-            Ast::Atom(Atom::Sym(name)) => {
-                // user function call: (f a b ...)
-                lower_call(cx, name, &items[1..])
+        Ast::List(items) if !items.is_empty() => match items.as_slice() {
+            [Ast::Atom(Atom::Sym(s)), rest @ ..] => {
+                let tail = rest;
+                match s.as_str() {
+                    "let" => lower_let(cx, tail),
+                    "select" => lower_select(cx, tail),
+                    "+" => lower_bin(cx, tail, BinOp::Add),
+                    "-" => lower_bin(cx, tail, BinOp::Sub),
+                    "*" => lower_bin(cx, tail, BinOp::Mul),
+                    "neg" => lower_neg(cx, tail),
+                    "=" => lower_eq(cx, tail),
+                    "hash2" => lower_hash2(cx, tail),
+                    "kv-step" => lower_kv_step(cx, tail)
+                        .map(|_| RVal::Borrowed(cx.get_var("_kv_last").unwrap_or(0))),
+                    "kv-final" => lower_kv_final(cx, tail)
+                        .map(|_| RVal::Borrowed(cx.get_var("_kv_last").unwrap_or(0))),
+                    "assert" => lower_assert(cx, tail),
+                    "if" => lower_if(cx, tail),
+                    "str64" => lower_str64(cx, tail),
+                    "hex-to-bytes32" => lower_hex_to_bytes32(cx, tail),
+                    "in-set" => lower_in_set(cx, tail),
+                    _ => lower_call(cx, s, tail),
+                }
             }
             _ => Err(Error::InvalidForm("expr".into())),
         },
-        _ => Err(Error::InvalidForm("atom".into())),
+        Ast::List(_) => Err(Error::InvalidForm("expr".into())),
     }
 }
 
@@ -220,7 +237,7 @@ fn lower_def(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     Ok(())
 }
 
-fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // (let ((x expr) (y expr)) body)
     if rest.is_empty() {
         return Err(Error::InvalidForm("let".into()));
@@ -239,10 +256,12 @@ fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
                     Ast::Atom(Atom::Sym(s)) => s.clone(),
                     _ => return Err(Error::InvalidForm("let: name".into())),
                 };
-                let r = lower_expr(cx, kv[1].clone())?;
+
+                let r = lower_expr(cx, kv[1].clone())?.into_owned(cx)?;
+                let rr = r.reg();
 
                 saved.push((name.clone(), cx.env.vars.get(&name).copied()));
-                cx.map_var(&name, r);
+                cx.map_var(&name, rr);
             }
             _ => return Err(Error::InvalidForm("let: pair".into())),
         }
@@ -253,7 +272,9 @@ fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
         .get(1)
         .cloned()
         .ok_or_else(|| Error::InvalidForm("let: body".into()))?;
-    let res = lower_expr(cx, body_ast)?;
+
+    let res_v = lower_expr(cx, body_ast)?;
+    let res_reg = res_v.reg();
 
     // cleanup: free all let-bound regs
     // except result (if referenced by name).
@@ -261,15 +282,15 @@ fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
         let r = cx.env.vars.remove(&name).unwrap();
         if let Some(p) = prior {
             cx.env.vars.insert(name, p);
-        } else if r != res {
+        } else if r != res_reg {
             cx.free_reg(r);
         }
     }
 
-    Ok(res)
+    Ok(res_v)
 }
 
-fn lower_select(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+fn lower_select(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     if rest.len() != 3 {
         return Err(Error::InvalidForm("select".into()));
     }
@@ -280,17 +301,22 @@ fn lower_select(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
 
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Select { dst, c, a, b });
+    cx.b.push(Op::Select {
+        dst,
+        c: c.reg(),
+        a: a.reg(),
+        b: b.reg(),
+    });
 
     // free temps (keep dst)
-    cx.free_reg(c);
-    cx.free_reg(a);
-    cx.free_reg(b);
+    free_if_owned(cx, c);
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
 
-    Ok(dst)
+    Ok(RVal::Owned(dst))
 }
 
-fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<u8, Error> {
+fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<RVal, Error> {
     if rest.len() != 2 {
         return Err(Error::InvalidForm("bin".into()));
     }
@@ -301,18 +327,30 @@ fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<u8, Error> {
     let dst = cx.alloc()?;
 
     match op {
-        BinOp::Add => cx.b.push(Op::Add { dst, a, b }),
-        BinOp::Sub => cx.b.push(Op::Sub { dst, a, b }),
-        BinOp::Mul => cx.b.push(Op::Mul { dst, a, b }),
+        BinOp::Add => cx.b.push(Op::Add {
+            dst,
+            a: a.reg(),
+            b: b.reg(),
+        }),
+        BinOp::Sub => cx.b.push(Op::Sub {
+            dst,
+            a: a.reg(),
+            b: b.reg(),
+        }),
+        BinOp::Mul => cx.b.push(Op::Mul {
+            dst,
+            a: a.reg(),
+            b: b.reg(),
+        }),
     }
 
-    cx.free_reg(a);
-    cx.free_reg(b);
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
 
-    Ok(dst)
+    Ok(RVal::Owned(dst))
 }
 
-fn lower_neg(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+fn lower_neg(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     if rest.len() != 1 {
         return Err(Error::InvalidForm("neg".into()));
     }
@@ -320,13 +358,13 @@ fn lower_neg(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     let a = lower_expr(cx, rest[0].clone())?;
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Neg { dst, a });
-    cx.free_reg(a);
+    cx.b.push(Op::Neg { dst, a: a.reg() });
+    free_if_owned(cx, a);
 
-    Ok(dst)
+    Ok(RVal::Owned(dst))
 }
 
-fn lower_assert(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+fn lower_assert(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     if rest.len() != 1 {
         return Err(Error::InvalidForm("assert".into()));
     }
@@ -334,13 +372,13 @@ fn lower_assert(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     let c = lower_expr(cx, rest[0].clone())?;
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Assert { dst, c });
-    cx.free_reg(c);
+    cx.b.push(Op::Assert { dst, c: c.reg() });
+    free_if_owned(cx, c);
 
-    Ok(dst)
+    Ok(RVal::Owned(dst))
 }
 
-fn lower_if(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+fn lower_if(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     if rest.len() != 3 {
         return Err(Error::InvalidForm("if".into()));
     }
@@ -351,16 +389,21 @@ fn lower_if(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
 
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Select { dst, c, a: t, b: e });
+    cx.b.push(Op::Select {
+        dst,
+        c: c.reg(),
+        a: t.reg(),
+        b: e.reg(),
+    });
 
-    cx.free_reg(c);
-    cx.free_reg(t);
-    cx.free_reg(e);
+    free_if_owned(cx, c);
+    free_if_owned(cx, t);
+    free_if_owned(cx, e);
 
-    Ok(dst)
+    Ok(RVal::Owned(dst))
 }
 
-fn lower_eq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+fn lower_eq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     if rest.len() != 2 {
         return Err(Error::InvalidForm("=".into()));
     }
@@ -370,15 +413,19 @@ fn lower_eq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
 
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Eq { dst, a, b });
+    cx.b.push(Op::Eq {
+        dst,
+        a: a.reg(),
+        b: b.reg(),
+    });
 
-    cx.free_reg(a);
-    cx.free_reg(b);
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
 
-    Ok(dst)
+    Ok(RVal::Owned(dst))
 }
 
-fn lower_hash2(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+fn lower_hash2(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     if rest.len() != 2 {
         return Err(Error::InvalidForm("hash2".into()));
     }
@@ -388,54 +435,19 @@ fn lower_hash2(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
 
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Hash2 { dst, a, b });
-
-    cx.free_reg(a);
-    cx.free_reg(b);
-
-    Ok(dst)
-}
-
-fn lower_kv_step(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("kv-step".into()));
-    }
-
-    let dir = match &rest[0] {
-        Ast::Atom(Atom::Int(v)) => *v,
-        _ => return Err(Error::InvalidForm("kv-step: dir".into())),
-    };
-
-    if dir > 1 {
-        return Err(Error::InvalidDir(dir));
-    }
-
-    let sib_r = lower_expr(cx, rest[1].clone())?;
-    cx.b.push(Op::KvMap {
-        dir: dir as u32,
-        sib_reg: sib_r,
+    cx.b.push(Op::Hash2 {
+        dst,
+        a: a.reg(),
+        b: b.reg(),
     });
 
-    // remember last sib reg
-    // for potential chaining
-    cx.map_var("_kv_last", sib_r);
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
 
-    Ok(sib_r)
+    Ok(RVal::Owned(dst))
 }
 
-fn lower_kv_final(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
-    if !rest.is_empty() {
-        return Err(Error::InvalidForm("kv-final".into()));
-    }
-
-    cx.b.push(Op::KvFinal);
-
-    // returns dummy reg 0 if not present;
-    // the op itself writes KV columns
-    Ok(*cx.env.vars.get("_kv_last").unwrap_or(&0))
-}
-
-fn lower_call(cx: &mut LowerCtx, name: &str, args: &[Ast]) -> Result<u8, Error> {
+fn lower_call(cx: &mut LowerCtx, name: &str, args: &[Ast]) -> Result<RVal, Error> {
     let (params, body) = cx
         .get_fun(name)
         .cloned()
@@ -457,36 +469,40 @@ fn lower_call(cx: &mut LowerCtx, name: &str, args: &[Ast]) -> Result<u8, Error> 
     }
 
     // evaluate args
-    let mut arg_regs = Vec::with_capacity(args.len());
+    let mut argv: Vec<RVal> = Vec::with_capacity(args.len());
     for a in args {
-        arg_regs.push(lower_expr(cx, a.clone())?);
+        argv.push(lower_expr(cx, a.clone())?);
     }
 
     // Create new bindings for params
-    let mut saved: Vec<(String, Option<u8>)> = Vec::new();
-    for (p, r) in params.iter().zip(arg_regs.iter().copied()) {
-        saved.push((p.clone(), cx.env.vars.get(p).copied()));
-        cx.map_var(p, r);
+    // Track ownership of argument registers
+    let mut saved: Vec<(String, Option<u8>, u8, bool)> = Vec::new();
+    for (p, v) in params.iter().zip(argv.iter().copied()) {
+        let reg = v.reg();
+        let owned = matches!(v, RVal::Owned(_));
+
+        saved.push((p.clone(), cx.env.vars.get(p).copied(), reg, owned));
+        cx.map_var(p, reg);
     }
 
-    let res = lower_expr(cx, body.clone())?;
+    let res_v = lower_expr(cx, body.clone())?;
+    let res_reg = res_v.reg();
 
-    // cleanup param bindings: do not free res reg here (caller decides)
-    for (p, prior) in saved.into_iter().rev() {
-        let r = cx.env.vars.remove(&p).unwrap();
+    // cleanup param bindings: do not free res reg;
+    // free only Owned args without prior mapping
+    for (p, prior, reg, owned) in saved.into_iter().rev() {
+        let _ = cx.env.vars.remove(&p).unwrap();
 
         if let Some(pr) = prior {
             cx.env.vars.insert(p, pr);
-        }
-
-        if r != res {
-            cx.free_reg(r);
+        } else if owned && reg != res_reg {
+            cx.free_reg(reg);
         }
     }
 
     cx.call_stack.pop();
 
-    Ok(res)
+    Ok(res_v)
 }
 
 fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
@@ -594,7 +610,7 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     Ok(())
 }
 
-fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // (str64 "...") → digest
     if rest.len() != 1 {
         return Err(Error::InvalidForm("str64".into()));
@@ -732,20 +748,20 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     cx.free_reg(r_t0);
     cx.free_reg(r_payload);
 
-    Ok(r_digest)
+    Ok(RVal::Owned(r_digest))
 }
 
-fn lower_bytes32_from_hex(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
-    // (bytes32-from-hex "0x...")
+fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    // (hex-to-bytes32 "0x...")
     if rest.len() != 1 {
-        return Err(Error::InvalidForm("bytes32-from-hex".into()));
+        return Err(Error::InvalidForm("hex-to-bytes32".into()));
     }
 
     let s = match &rest[0] {
         Ast::Atom(Atom::Str(st)) => st.clone(),
         _ => {
             return Err(Error::InvalidForm(
-                "bytes32-from-hex: expects string literal".into(),
+                "hex-to-bytes32: expects string literal".into(),
             ));
         }
     };
@@ -753,11 +769,11 @@ fn lower_bytes32_from_hex(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> 
     let hex_str = s.strip_prefix("0x").unwrap_or(&s);
     let decoded = match hex::decode(hex_str) {
         Ok(b) => b,
-        Err(_) => return Err(Error::InvalidForm("bytes32-from-hex: invalid hex".into())),
+        Err(_) => return Err(Error::InvalidForm("hex-to-bytes32: invalid hex".into())),
     };
 
     if decoded.len() > 32 {
-        return Err(Error::InvalidForm("bytes32-from-hex: length > 32".into()));
+        return Err(Error::InvalidForm("hex-to-bytes32: length > 32".into()));
     }
 
     // Pad to 32
@@ -851,10 +867,10 @@ fn lower_bytes32_from_hex(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> 
     cx.free_reg(r_t0);
     cx.free_reg(r_payload);
 
-    Ok(r_digest)
+    Ok(RVal::Owned(r_digest))
 }
 
-fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // (in-set x (s1 s2 ...)) -> assert(prod(x - si) == 0)
     if rest.len() != 2 {
         return Err(Error::InvalidForm("in-set".into()));
@@ -879,11 +895,11 @@ fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
 
         cx.b.push(Op::Sub {
             dst: r_diff,
-            a: x,
-            b: si,
+            a: x.reg(),
+            b: si.reg(),
         });
 
-        cx.free_reg(si);
+        free_if_owned(cx, si);
 
         r_prod = Some(match r_prod.take() {
             None => r_diff,
@@ -931,9 +947,55 @@ fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     });
 
     cx.free_reg(r_eq);
-    cx.free_reg(x);
 
-    Ok(r_out)
+    // do not free x if
+    // it was borrowed.
+    if let RVal::Owned(rx) = x {
+        cx.free_reg(rx);
+    }
+
+    Ok(RVal::Owned(r_out))
+}
+
+fn lower_kv_step(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("kv-step".into()));
+    }
+
+    let dir = match &rest[0] {
+        Ast::Atom(Atom::Int(v)) => *v,
+        _ => return Err(Error::InvalidForm("kv-step: dir".into())),
+    };
+
+    if dir > 1 {
+        return Err(Error::InvalidDir(dir));
+    }
+
+    let sib_v = lower_expr(cx, rest[1].clone())?;
+    let sib_r = sib_v.reg();
+
+    cx.b.push(Op::KvMap {
+        dir: dir as u32,
+        sib_reg: sib_r,
+    });
+
+    // remember last sib reg
+    // for potential chaining
+    cx.map_var("_kv_last", sib_r);
+
+    Ok(sib_r)
+}
+
+fn lower_kv_final(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+    if !rest.is_empty() {
+        return Err(Error::InvalidForm("kv-final".into()));
+    }
+
+    cx.b.push(Op::KvFinal);
+
+    // returns dummy reg 0 if not present;
+    // the op itself writes KV columns
+    Ok(*cx.env.vars.get("_kv_last").unwrap_or(&0))
 }
 
 // find the quoted (member ...)
@@ -969,4 +1031,11 @@ fn u64_pair_from_le_16(b16: &[u8]) -> (u64, u64) {
     hi8.copy_from_slice(&b16[8..16]);
 
     (u64::from_le_bytes(lo8), u64::from_le_bytes(hi8))
+}
+
+#[inline]
+fn free_if_owned(cx: &mut LowerCtx, v: RVal) {
+    if let RVal::Owned(r) = v {
+        cx.free_reg(r);
+    }
 }

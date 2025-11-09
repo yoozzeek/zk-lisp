@@ -112,7 +112,8 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     }
 
     // Lower (main ...) as expression
-    let res_reg = lower::lower_expr(&mut cx, call_ast)?;
+    let res_v = lower::lower_expr(&mut cx, call_ast)?;
+    let res_reg = res_v.reg();
 
     // Normalize main return into r0
     if res_reg != 0 {
