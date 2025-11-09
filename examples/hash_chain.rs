@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
+// Copyright (C) 2025  Andrew Kochergin <zeek@tuta.com>
+
 use std::env;
 use winterfell::ProofOptions;
 use winterfell::math::StarkField;
