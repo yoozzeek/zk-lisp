@@ -86,3 +86,42 @@ pub fn apply_level(
     trace.set(cols.lane_c0, row_fin, sc0);
     trace.set(cols.lane_c1, row_fin, sc1);
 }
+
+/// Copy Poseidon lanes such as map, all rounds,
+/// final from src_level to dst_level.
+pub fn copy_level(trace: &mut TraceTable<BE>, src_level: usize, dst_level: usize) {
+    let cols = Columns::baseline();
+    let steps = layout::STEPS_PER_LEVEL_P2;
+
+    let src_base = src_level * steps;
+    let dst_base = dst_level * steps;
+
+    // map row
+    let src_map = src_base + schedule::pos_map();
+    let dst_map = dst_base + schedule::pos_map();
+
+    for &col in [cols.lane_l, cols.lane_r, cols.lane_c0, cols.lane_c1].iter() {
+        let v = trace.get(col, src_map);
+        trace.set(col, dst_map, v);
+    }
+
+    // rounds
+    for j in 0..POSEIDON_ROUNDS {
+        let src_r = src_base + 1 + j;
+        let dst_r = dst_base + 1 + j;
+
+        for &col in [cols.lane_l, cols.lane_r, cols.lane_c0, cols.lane_c1].iter() {
+            let v = trace.get(col, src_r);
+            trace.set(col, dst_r, v);
+        }
+    }
+
+    // final row
+    let src_fin = src_base + schedule::pos_final();
+    let dst_fin = dst_base + schedule::pos_final();
+
+    for &col in [cols.lane_l, cols.lane_r, cols.lane_c0, cols.lane_c1].iter() {
+        let v = trace.get(col, src_fin);
+        trace.set(col, dst_fin, v);
+    }
+}

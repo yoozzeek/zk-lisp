@@ -18,7 +18,7 @@ impl PoseidonBlock {
         for _ in 0..POSEIDON_ROUNDS {
             for _ in 0..4 {
                 out.push(TransitionConstraintDegree::with_cycles(
-                    3,
+                    4,
                     vec![STEPS_PER_LEVEL_P2],
                 ));
             }
@@ -104,13 +104,16 @@ where
                 + E::from(mm[3][3]) * sc13
                 + E::from(rc[3]);
 
-            result[*ix] = gr * (next[ctx.cols.lane_l] - yl);
+            // level activity gate
+            let pa = cur[ctx.cols.pose_active];
+
+            result[*ix] = pa * gr * (next[ctx.cols.lane_l] - yl);
             *ix += 1;
-            result[*ix] = gr * (next[ctx.cols.lane_r] - yr);
+            result[*ix] = pa * gr * (next[ctx.cols.lane_r] - yr);
             *ix += 1;
-            result[*ix] = gr * (next[ctx.cols.lane_c0] - yc0);
+            result[*ix] = pa * gr * (next[ctx.cols.lane_c0] - yc0);
             *ix += 1;
-            result[*ix] = gr * (next[ctx.cols.lane_c1] - yc1);
+            result[*ix] = pa * gr * (next[ctx.cols.lane_c1] - yc1);
             *ix += 1;
         }
 

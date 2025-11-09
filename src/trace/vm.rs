@@ -27,7 +27,10 @@ impl TraceBuilder {
 
         // register state
         let mut regs = [BE::ZERO; NR];
-        let mut pending_absorb: Option<(BE, BE)> = None;
+
+        // Remember absorb level and
+        // inputs to reuse on SSqueeze.
+        let mut pending_absorb: Option<(usize, BE, BE)> = None;
 
         for (lvl, op) in p.ops.iter().enumerate() {
             // snapshot current regs and
@@ -85,6 +88,9 @@ impl TraceBuilder {
             for &c in &ops {
                 trace.set(c, row_map, BE::ZERO);
             }
+
+            // Track per-level poseidon activity
+            let mut pose_active = BE::ZERO;
 
             match *op {
                 // ALU: write immediate to dst at final;
@@ -227,6 +233,8 @@ impl TraceBuilder {
                     next_regs[dst as usize] = BE::ONE;
                 }
                 Op::SAbsorb2 { a, b } => {
+                    pose_active = BE::ONE;
+
                     // mark hash op at map for gating;
                     // set selectors a/b
                     trace.set(cols.op_hash2, row_map, BE::ONE);
@@ -241,29 +249,35 @@ impl TraceBuilder {
 
                     let left = regs[a as usize];
                     let right = regs[b as usize];
-                    pending_absorb = Some((left, right));
+                    pending_absorb = Some((lvl, left, right));
 
                     // fill poseidon lanes
                     // for this level.
                     poseidon::apply_level(&mut trace, &p.commitment, lvl, left, right);
                 }
                 Op::SSqueeze { dst } => {
+                    pose_active = BE::ONE;
+
                     // use pending absorb if present
-                    let (left, right) = pending_absorb.take().unwrap_or((BE::ZERO, BE::ZERO));
+                    let (abs_lvl, _left, _right) = pending_absorb
+                        .take()
+                        .unwrap_or((lvl.saturating_sub(1), BE::ZERO, BE::ZERO));
 
                     // mark op at final;
                     // set dst selector at final
                     trace.set(cols.op_hash2, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
 
-                    // run permutation
-                    poseidon::apply_level(&mut trace, &p.commitment, lvl, left, right);
+                    // reuse lanes from absorb level to avoid recomputation
+                    poseidon::copy_level(&mut trace, abs_lvl, lvl);
 
                     let out = trace.get(cols.lane_l, row_final);
                     next_regs[dst as usize] = out;
                 }
                 Op::KvMap { dir, sib_reg } => {
                     // KV map+final in one level
+                    pose_active = BE::ONE;
+
                     trace.set(cols.kv_g_map, row_map, BE::ONE);
                     trace.set(cols.kv_dir, row_map, BE::from(dir as u64));
 
@@ -335,8 +349,12 @@ impl TraceBuilder {
                 }
             }
 
-            // commit next_regs to
-            // regs for next level.
+            // commit next_regs to regs for next level.
+            // also set pose_active across the whole level
+            for r in base..(base + steps) {
+                trace.set(cols.pose_active, r, pose_active);
+            }
+
             regs = next_regs;
         }
 
@@ -349,24 +367,6 @@ impl TraceBuilder {
             let row_map = base + schedule::pos_map();
             trace.set(cols.lane_c0, row_map, dom_all[0]);
             trace.set(cols.lane_c1, row_map, dom_all[1]);
-        }
-
-        // For levels without Poseidon activity:
-        // no Hash2 and no KV map/final;
-        for lvl in 0..total_levels {
-            let base = lvl * steps;
-            let row_map = base + schedule::pos_map();
-            let row_final = base + schedule::pos_final();
-            let is_hash_map = trace.get(cols.op_hash2, row_map) == BE::ONE;
-            let is_hash_final = trace.get(cols.op_hash2, row_final) == BE::ONE;
-            let is_hash = is_hash_map || is_hash_final;
-            let is_kv_map = trace.get(cols.kv_g_map, row_map) == BE::ONE;
-
-            if is_hash || is_kv_map {
-                continue;
-            }
-
-            poseidon::apply_level(&mut trace, &p.commitment, lvl, BE::ZERO, BE::ZERO);
         }
 
         Ok(trace)

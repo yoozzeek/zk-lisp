@@ -20,7 +20,8 @@ pub struct Columns {
     // Schedule gates
     pub g_map: usize,
     pub g_final: usize,
-    pub g_r_start: usize, // start index for g_r[0..POSEIDON_ROUNDS)
+    // start index for g_r[0..POSEIDON_ROUNDS)
+    pub g_r_start: usize,
 
     // Generic activity mask for padding rows
     pub mask: usize,
@@ -40,7 +41,8 @@ pub struct Columns {
     pub op_hash2: usize,
     pub op_assert: usize,
 
-    // Operand selectors one-hot per role (8 each)
+    // Operand selectors
+    // one-hot per role (8 each).
     pub sel_dst_start: usize,
     pub sel_a_start: usize,
     pub sel_b_start: usize,
@@ -63,6 +65,9 @@ pub struct Columns {
 
     // PI columns
     pub pi_prog: usize,
+
+    // Poseidon per-level activity gate
+    pub pose_active: usize,
 
     width: usize,
 }
@@ -110,10 +115,14 @@ impl Columns {
         // PI columns (keep original index)
         let pi_prog = kv_version + 1;
 
-        // Extra KV column placed after PI to avoid shifting existing indices
+        // Extra KV column placed after PI
+        // to avoid shifting existing indices.
         let kv_prev_acc = pi_prog + 1;
 
-        let width = kv_prev_acc + 1;
+        // Append pose_active at the very end
+        let pose_active = kv_prev_acc + 1;
+
+        let width = pose_active + 1;
 
         Self {
             lane_l,
@@ -149,6 +158,7 @@ impl Columns {
             kv_version,
             kv_prev_acc,
             pi_prog,
+            pose_active,
             width,
         }
     }
