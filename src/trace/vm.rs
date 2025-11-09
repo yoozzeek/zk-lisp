@@ -279,7 +279,6 @@ impl TraceBuilder {
                     trace.set(cols.kv_g_final, row_final, BE::ONE);
 
                     let ver = trace.get(cols.kv_version, row_map);
-
                     for r in base..=row_final {
                         trace.set(cols.kv_version, r, ver)
                     }

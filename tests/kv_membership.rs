@@ -14,7 +14,7 @@ fn kv_membership_prove_verify() {
     // Single kv step + final; initial acc defaults to 0 so map/final acc stay 0.
     let src = "(kv-step 0 7) (kv-final)";
     let program = compile_str(src).expect("compile");
-    let trace = build_trace(&program);
+    let trace = build_trace(&program).expect("trace");
 
     // A) Without EXPECT
     let mut pi = PublicInputs::default();

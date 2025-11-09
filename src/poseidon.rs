@@ -8,6 +8,7 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 
 use crate::layout::POSEIDON_ROUNDS;
+use crate::utils;
 
 const DOM_POSEIDON_RC: &str = "zkl/poseidon2/rc";
 const DOM_POSEIDON_DOM0: &str = "zkl/poseidon2/dom/c0";
@@ -186,18 +187,7 @@ fn ro_from_slices(domain: &str, parts: &[&[u8]]) -> BE {
     let lo = (val & 0xFFFF_FFFF_FFFF_FFFFu128) as u64;
     let hi = (val >> 64) as u64;
 
-    BE::from(lo) + BE::from(hi) * pow2_64()
-}
-
-#[inline]
-fn pow2_64() -> BE {
-    let mut acc = BE::ONE;
-    let two = BE::from(2u64);
-    for _ in 0..64 {
-        acc *= two;
-    }
-
-    acc
+    BE::from(lo) + BE::from(hi) * utils::pow2_64()
 }
 
 fn cache() -> &'static RwLock<HashMap<[u8; 32], PoseidonSuite>> {

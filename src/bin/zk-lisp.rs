@@ -2,8 +2,6 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
-#![allow(clippy::uninlined_format_args)]
-use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::io::{self, Write};
@@ -11,6 +9,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 use winterfell::math::StarkField;
 use winterfell::{BatchingMethod, FieldExtension, Proof, ProofOptions, Trace};
+use zk_lisp::{compiler, error, prove};
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -66,7 +65,6 @@ struct ProveArgs {
     /// Arguments for main
     #[arg(long = "arg", value_delimiter = ',')]
     args: Vec<u64>,
-
     /// Number of FRI queries
     #[arg(long, default_value_t = 1)]
     queries: u8,
@@ -114,32 +112,38 @@ struct VerifyArgs {
 }
 
 #[derive(Error, Debug)]
-enum CliExit {
+enum CliError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
-    #[error("compile error: {0}")]
-    Compile(String),
-    #[error("io error: {0}")]
-    Io(String),
-    #[error("prover error: {0}")]
-    Prover(String),
-    #[error("verify failed: {0}")]
-    Verify(String),
+    #[error("compile error")]
+    Compile(#[from] compiler::Error),
+    #[error("io error")]
+    Io(#[from] io::Error),
+    #[error("prove error")]
+    Prover(#[from] prove::Error),
+    #[error("verify error")]
+    Verify(prove::Error),
+    #[error("build error")]
+    Build(#[from] error::Error),
+    #[error("hex error")]
+    Hex(#[from] hex::FromHexError),
 }
 
-impl CliExit {
+impl CliError {
     fn code(&self) -> i32 {
         match self {
-            CliExit::InvalidInput(_) => 2,
-            CliExit::Compile(_) => 3,
-            CliExit::Io(_) => 5,
-            CliExit::Prover(_) => 6,
-            CliExit::Verify(_) => 7,
+            CliError::InvalidInput(_) => 2,
+            CliError::Compile(_) => 3,
+            CliError::Io(_) => 5,
+            CliError::Prover(_) => 6,
+            CliError::Verify(_) => 7,
+            CliError::Build(_) => 4,
+            CliError::Hex(_) => 2,
         }
     }
 }
 
-fn try_main(cli: Cli) -> Result<()> {
+fn try_main(cli: Cli) -> Result<(), CliError> {
     match cli.command {
         Command::Run(args) => cmd_run(args, cli.json, cli.max_bytes),
         Command::Prove(args) => cmd_prove(args, cli.json, cli.max_bytes),
@@ -161,23 +165,18 @@ fn proof_opts(queries: u8, blowup: u8, grind: u32) -> ProofOptions {
     )
 }
 
-fn read_program(path: &PathBuf, max_bytes: usize) -> Result<String> {
-    let meta = fs::metadata(path)
-        .with_context(|| format!("stat file: {}", path.display()))
-        .map_err(|e| CliExit::Io(e.to_string()))?;
+fn read_program(path: &PathBuf, max_bytes: usize) -> Result<String, CliError> {
+    let meta = fs::metadata(path)?;
 
     if meta.len() as usize > max_bytes {
-        return Err(CliExit::InvalidInput(format!(
+        return Err(CliError::InvalidInput(format!(
             "file too large: {} bytes (limit {})",
             meta.len(),
             max_bytes
-        ))
-        .into());
+        )));
     }
 
-    let s = fs::read_to_string(path)
-        .with_context(|| format!("read file: {}", path.display()))
-        .map_err(|e| CliExit::Io(e.to_string()))?;
+    let s = fs::read_to_string(path)?;
 
     Ok(s)
 }
@@ -227,17 +226,16 @@ fn build_pi_for_program(program: &zk_lisp::ir::Program, args: &[u64]) -> zk_lisp
     }
 }
 
-fn cmd_run(args: RunArgs, json: bool, max_bytes: usize) -> Result<()> {
+fn cmd_run(args: RunArgs, json: bool, max_bytes: usize) -> Result<(), CliError> {
     let src = read_program(&args.path, max_bytes)?;
-    let program = zk_lisp::compiler::compile_entry(&src, &args.args)
-        .map_err(|e| CliExit::Compile(e.to_string()))?;
+    let program = compiler::compile_entry(&src, &args.args)?;
 
     let pi = build_pi_for_program(&program, &args.args);
-    // Build trace with VM args (and possibly KV expectations later)
-    let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi);
+    // Build trace with VM args
+    let trace = prove::build_trace_with_pi(&program, &pi)?;
 
     // Compute VM output position and value
-    let (out_reg, out_row) = zk_lisp::prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = prove::compute_vm_output(&trace);
     let cols = zk_lisp::layout::Columns::baseline();
     let val = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
@@ -247,6 +245,7 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize) -> Result<()> {
         println!(
             "{}",
             serde_json::json!({
+                "ok": true,
                 "result_dec": val_u128.to_string(),
                 "result_hex": format!("0x{:032x}", val_u128),
                 "out_reg": out_reg,
@@ -257,48 +256,45 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize) -> Result<()> {
     } else {
         let rows = trace.length();
         println!(
-            r"result:
-  {val_u128} (hex 0x{val_u128:032x}),
-  out_reg={out_reg},
-  out_row={out_row},
-  rows={rows}"
+            "result: {val_u128} (0x{val_u128:032x}), out_reg={out_reg}, out_row={out_row}, rows={rows}"
         );
     }
 
     Ok(())
 }
 
-fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize) -> Result<()> {
+fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize) -> Result<(), CliError> {
+    if args.seed.is_some() {
+        return Err(CliError::InvalidInput(
+            "seed is not supported yet".to_string(),
+        ));
+    }
+
     let src = read_program(&args.path, max_bytes)?;
-    let program = zk_lisp::compiler::compile_entry(&src, &args.args)
-        .map_err(|e| CliExit::Compile(e.to_string()))?;
+    let program = compiler::compile_entry(&src, &args.args)?;
 
     let mut pi = build_pi_for_program(&program, &args.args);
-    let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi);
+    let trace = prove::build_trace_with_pi(&program, &pi)?;
 
     // Fill dynamic PI parts (kv mask)
     if (pi.feature_mask & zk_lisp::pi::FM_KV) != 0 {
-        pi.kv_levels_mask = zk_lisp::prove::compute_kv_levels_mask(&trace);
+        pi.kv_levels_mask = prove::compute_kv_levels_mask(&trace);
     }
 
     // VM output position
-    let (out_reg, out_row) = zk_lisp::prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = prove::compute_vm_output(&trace);
     pi.vm_out_reg = out_reg;
     pi.vm_out_row = out_row;
 
     let opts = proof_opts(args.queries, args.blowup, args.grind);
-    let prover = zk_lisp::prove::ZkProver::new(opts.clone(), pi.clone());
+    let prover = prove::ZkProver::new(opts.clone(), pi.clone());
 
-    let proof = prover
-        .prove(trace)
-        .map_err(|e| CliExit::Prover(e.to_string()))?;
+    let proof = prover.prove(trace)?;
 
     // Serialize proof to bytes and hex
     let proof_bytes = proof_to_bytes(&proof)?;
     if let Some(path) = args.out {
-        fs::write(&path, &proof_bytes)
-            .with_context(|| format!("write proof: {}", path.display()))
-            .map_err(|e| CliExit::Io(e.to_string()))?;
+        fs::write(&path, &proof_bytes)?;
     }
 
     let proof_hex = hex::encode(&proof_bytes);
@@ -308,55 +304,65 @@ fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize) -> Result<()> {
             println!(
                 "{}",
                 serde_json::json!({
+                    "ok": true,
                     "proof_hex": proof_hex,
                     "opts": {"queries": args.queries, "blowup": args.blowup, "grind": args.grind},
-                    "seed": args.seed,
                     "commitment": format!("0x{:02x?}", program.commitment),
                 })
             );
         } else {
             println!("proof(hex): {proof_hex}");
-
-            if let Some(s) = args.seed {
-                println!("seed: {s} (note: currently not applied)");
-            }
         }
     }
 
     Ok(())
 }
 
-fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<()> {
+fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliError> {
     let proof_bytes = if let Some(path) = args.proof.strip_prefix('@') {
-        fs::read(path)
-            .with_context(|| format!("read proof file: {path}"))
-            .map_err(|e| CliExit::Io(e.to_string()))?
+        let meta = fs::metadata(path)?;
+        if meta.len() as usize > max_bytes {
+            return Err(CliError::InvalidInput(format!(
+                "proof file too large: {} bytes (limit {})",
+                meta.len(),
+                max_bytes
+            )));
+        }
+
+        fs::read(path)?
     } else {
         let s = args.proof.strip_prefix("0x").unwrap_or(&args.proof);
-        hex::decode(s).map_err(|e| CliExit::InvalidInput(format!("invalid proof hex: {e}")))?
+        if s.len() / 2 > max_bytes {
+            return Err(CliError::InvalidInput(format!(
+                "proof hex too large: {} bytes (limit {})",
+                s.len() / 2,
+                max_bytes
+            )));
+        }
+
+        hex::decode(s)?
     };
 
     let src = read_program(&args.path, max_bytes)?;
-    let program = zk_lisp::compiler::compile_entry(&src, &args.args)
-        .map_err(|e| CliExit::Compile(e.to_string()))?;
+    let program = compiler::compile_entry(&src, &args.args)?;
 
     // Rebuild PI similarly to Prove
     let mut pi = build_pi_for_program(&program, &args.args);
-    let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi);
+    let trace = prove::build_trace_with_pi(&program, &pi)?;
 
     if (pi.feature_mask & zk_lisp::pi::FM_KV) != 0 {
-        pi.kv_levels_mask = zk_lisp::prove::compute_kv_levels_mask(&trace);
+        pi.kv_levels_mask = prove::compute_kv_levels_mask(&trace);
     }
 
     // VM output location
-    let (out_reg, out_row) = zk_lisp::prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = prove::compute_vm_output(&trace);
     pi.vm_out_reg = out_reg;
     pi.vm_out_row = out_row;
 
-    let proof = proof_from_bytes(&proof_bytes).map_err(|e| CliExit::InvalidInput(e.to_string()))?;
+    let proof = proof_from_bytes(&proof_bytes)?;
 
     let opts = proof_opts(args.queries, args.blowup, args.grind);
-    zk_lisp::prove::verify_proof(proof, pi, &opts).map_err(|e| CliExit::Verify(e.to_string()))?;
+    prove::verify_proof(proof, pi, &opts).map_err(CliError::Verify)?;
 
     if json {
         println!(
@@ -367,22 +373,17 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<()> {
                     "queries": args.queries,
                     "blowup": args.blowup,
                     "grind": args.grind,
-                },
-                "seed": args.seed,
+                }
             })
         );
     } else {
         println!("OK");
-
-        if let Some(s) = args.seed {
-            println!("seed: {s} (note: currently not applied)");
-        }
     }
 
     Ok(())
 }
 
-fn cmd_repl() -> Result<()> {
+fn cmd_repl() -> Result<(), CliError> {
     zk_lisp::logging::init_with_level(None);
 
     println!(
@@ -443,6 +444,7 @@ fn cmd_repl() -> Result<()> {
 
         if let Some(rest) = s.strip_prefix(":args ") {
             let mut args = Vec::new();
+
             for part in rest.split(',') {
                 if part.trim().is_empty() {
                     continue;
@@ -468,17 +470,21 @@ fn cmd_repl() -> Result<()> {
 
         // Evaluate one-line expression by wrapping into (def (main) <expr>)
         let wrapped = format!("(def (main) {s})");
-        match zk_lisp::compiler::compile_entry(&wrapped, &[]) {
+        match compiler::compile_entry(&wrapped, &[]) {
             Err(e) => println!("error: compile: {e}"),
             Ok(program) => {
                 let pi = build_pi_for_program(&program, &[]);
-                let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi);
-                let (out_reg, out_row) = zk_lisp::prove::compute_vm_output(&trace);
-                let cols = zk_lisp::layout::Columns::baseline();
-                let val = trace.get(cols.r_index(out_reg as usize), out_row as usize);
-                let v: u128 = val.as_int();
+                match prove::build_trace_with_pi(&program, &pi) {
+                    Err(e) => println!("error: build trace: {e}"),
+                    Ok(trace) => {
+                        let (out_reg, out_row) = prove::compute_vm_output(&trace);
+                        let cols = zk_lisp::layout::Columns::baseline();
+                        let val = trace.get(cols.r_index(out_reg as usize), out_row as usize);
+                        let v: u128 = val.as_int();
 
-                println!("= {v} (0x{v:032x})");
+                        println!("= {v} (0x{v:032x})");
+                    }
+                }
             }
         }
     }
@@ -488,16 +494,15 @@ fn cmd_repl() -> Result<()> {
 
 // --- Proof (de)serialization helpers ---
 
-fn proof_to_bytes(proof: &Proof) -> Result<Vec<u8>> {
-    // Prefer winterfell's Serializable if available
-    // Proof likely implements to_bytes(); try that first.
+fn proof_to_bytes(proof: &Proof) -> Result<Vec<u8>, CliError> {
     #[allow(clippy::let_and_return)]
     let bytes = proof.to_bytes();
     Ok(bytes)
 }
 
-fn proof_from_bytes(bytes: &[u8]) -> Result<Proof> {
-    let p = Proof::from_bytes(bytes).map_err(|_| anyhow!("invalid proof bytes"))?;
+fn proof_from_bytes(bytes: &[u8]) -> Result<Proof, CliError> {
+    let p = Proof::from_bytes(bytes)
+        .map_err(|e| CliError::InvalidInput(format!("invalid proof bytes: {e}")))?;
     Ok(p)
 }
 
@@ -508,30 +513,17 @@ fn main() {
     let code = match try_main(cli.clone()) {
         Ok(()) => 0,
         Err(e) => {
-            if let Some(ce) = e.downcast_ref::<CliExit>() {
-                let code = ce.code();
-                if cli.json {
-                    println!(
-                        "{}",
-                        serde_json::json!({ "ok": false, "error": ce.to_string(), "code": code })
-                    );
-                } else {
-                    eprintln!("error: {ce}");
-                }
-
-                code
+            let code = e.code();
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "ok": false, "error": e.to_string(), "code": code })
+                );
             } else {
-                if cli.json {
-                    println!(
-                        "{}",
-                        serde_json::json!({ "ok": false, "error": e.to_string(), "code": 1 })
-                    );
-                } else {
-                    eprintln!("error: {e}");
-                }
-
-                1
+                eprintln!("error: {e}");
             }
+
+            code
         }
     };
 

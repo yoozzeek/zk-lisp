@@ -2,6 +2,8 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
+#![allow(dead_code)]
+
 use winterfell::Trace;
 use winterfell::TraceTable;
 use winterfell::math::FieldElement;

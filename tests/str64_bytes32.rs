@@ -22,7 +22,7 @@ fn opts() -> ProofOptions {
 
 fn prove_verify_ok(src: &str) {
     let program = compile_str(src).expect("compile");
-    let trace = build_trace(&program);
+    let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;
@@ -37,7 +37,7 @@ fn prove_verify_ok(src: &str) {
 
 fn prove_verify_fail(src: &str) {
     let program = compile_str(src).expect("compile");
-    let trace = build_trace(&program);
+    let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;

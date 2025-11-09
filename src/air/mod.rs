@@ -55,6 +55,7 @@ impl<'a, E: FieldElement> BlockCtx<'a, E> {
 }
 
 pub trait AirBlock<E: FieldElement> {
+    #[allow(dead_code)]
     fn push_degrees(out: &mut Vec<TransitionConstraintDegree>);
 
     fn eval_block(
@@ -361,13 +362,13 @@ impl Air for ZkLispAir {
         values[1 + POSEIDON_ROUNDS + 3] = p_last;
 
         // interpolate first (1 + R + 1 + 1 + 1)
-        // columns (excluding p_last) all of which 
+        // columns (excluding p_last) all of which
         // have length "cycle"; compute twiddles once.
         let inv_twiddles_cycle = fft::get_inv_twiddles::<BE>(cycle);
-        
+
         for col in values.iter_mut().take(1 + POSEIDON_ROUNDS + 1 + 1 + 1) {
             debug_assert_eq!(col.len(), cycle);
-            
+
             fft::interpolate_poly(col, &inv_twiddles_cycle);
         }
 

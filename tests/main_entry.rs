@@ -37,7 +37,7 @@ fn program_meta_points_to_main_return_cell() {
         .build()
         .expect("pi");
 
-    let trace = build_trace_with_pi(&program, &pi);
+    let trace = build_trace_with_pi(&program, &pi).expect("trace");
 
     let cols = layout::Columns::baseline();
     let row = program.meta.out_row as usize;

@@ -10,6 +10,7 @@ use crate::{layout, schedule};
 use lower::{Ast, Atom, LowerCtx, Tok};
 use std::collections::{BTreeMap, VecDeque};
 use thiserror::Error;
+use tracing::{debug, instrument};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -43,9 +44,14 @@ struct Env {
 
 impl Env {}
 
+#[instrument(level = "info", skip(src))]
 pub fn compile_str(src: &str) -> Result<Program, Error> {
     let toks = lex(src)?;
+    debug!(toks_len = toks.len(), "lexed");
+
     let forms = parse(&toks)?;
+    debug!(forms = forms.len(), "parsed");
+
     let mut cx = LowerCtx::new();
 
     for f in forms {
@@ -54,13 +60,24 @@ pub fn compile_str(src: &str) -> Result<Program, Error> {
 
     cx.b.push(Op::End);
 
-    Ok(cx.b.finalize())
+    let program = cx.b.finalize();
+    debug!(
+        ops = program.ops.len(),
+        reg_count = program.reg_count,
+        "lowered"
+    );
+
+    Ok(program)
 }
 
 // Compile main
+#[instrument(level = "info", skip(src, args))]
 pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     let toks = lex(src)?;
+    debug!(toks_len = toks.len(), "lexed");
+
     let forms = parse(&toks)?;
+    debug!(forms = forms.len(), "parsed");
 
     // discover main signature
     let mut main_params: Option<usize> = None;
@@ -155,6 +172,13 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
 
     program.meta.out_reg = 0;
     program.meta.out_row = (last_lvl * steps + pos_fin + 1) as u32;
+
+    debug!(
+        ops = program.ops.len(),
+        reg_count = program.reg_count,
+        out_row = program.meta.out_row,
+        "entry lowered",
+    );
 
     Ok(program)
 }
@@ -286,7 +310,7 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
                     }
                 }
 
-                let v = s.parse::<u64>().unwrap();
+                let v = s.parse::<u64>().map_err(|_| Error::Lex(ch, i))?;
                 out.push(Tok::Int(v));
             }
             _ => {

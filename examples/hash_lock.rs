@@ -115,7 +115,7 @@ fn main() {
         .build()
         .expect("pi");
 
-    let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi);
+    let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi).expect("trace");
 
     tracing::info!(target = "examples.hash_lock", "proving...");
 

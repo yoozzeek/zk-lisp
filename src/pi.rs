@@ -5,7 +5,8 @@
 //! Public inputs and features
 
 use crate::error::{Error, Result};
-use crate::ir;
+use crate::{ir, utils};
+
 use winterfell::math::fields::f128::BaseElement as BE;
 
 // Feature bits
@@ -43,15 +44,14 @@ pub struct PublicInputs {
 
 pub struct PublicInputsBuilder {
     pi: PublicInputs,
-    inferred: bool,
 }
 
 impl PublicInputsBuilder {
     pub fn for_program(program: &ir::Program) -> Self {
         let mut b = Self {
             pi: PublicInputs::default(),
-            inferred: false,
         };
+
         b.pi.program_commitment = program.commitment;
         // infer features from program ops
         b.infer_features(program);
@@ -98,8 +98,6 @@ impl PublicInputsBuilder {
         if pose {
             self.pi.feature_mask |= FM_POSEIDON;
         }
-
-        self.inferred = true;
     }
 
     pub fn vm_args(mut self, args: &[u64]) -> Self {
@@ -196,7 +194,7 @@ impl winterfell::math::ToElements<BE> for PublicInputs {
         // one field element (lo + hi*2^64)
         let lo = (self.kv_levels_mask & 0xFFFF_FFFF_FFFF_FFFFu128) as u64;
         let hi = (self.kv_levels_mask >> 64) as u64;
-        let kv_mask_fe = BE::from(lo) + BE::from(hi) * pow2_64_fe();
+        let kv_mask_fe = BE::from(lo) + BE::from(hi) * utils::pow2_64();
 
         let out = vec![
             BE::from(self.feature_mask),
@@ -219,18 +217,7 @@ pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {
     lo.copy_from_slice(&bytes32[0..8]);
     hi.copy_from_slice(&bytes32[8..16]);
 
-    BE::from(u64::from_le_bytes(lo)) + BE::from(u64::from_le_bytes(hi)) * pow2_64_fe()
-}
-
-#[inline]
-fn pow2_64_fe() -> BE {
-    let mut acc = BE::from(1u64);
-    let two = BE::from(2u64);
-    for _ in 0..64 {
-        acc *= two;
-    }
-
-    acc
+    BE::from(u64::from_le_bytes(lo)) + BE::from(u64::from_le_bytes(hi)) * utils::pow2_64()
 }
 
 #[cfg(test)]

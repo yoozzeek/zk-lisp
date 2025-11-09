@@ -34,7 +34,7 @@ fn let_nested_and_shadowing_positive() {
     ";
 
     let program = compile_str(src).expect("compile");
-    let trace = build_trace(&program);
+    let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_VM;
@@ -56,7 +56,7 @@ fn def_function_and_call_positive() {
     ";
 
     let program = compile_str(src).expect("compile");
-    let trace = build_trace(&program);
+    let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_VM;

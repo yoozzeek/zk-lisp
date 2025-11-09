@@ -13,7 +13,7 @@ fn arithmetic_select_prove_verify() {
     let src = "(let ((a 7) (b 9)) (select (= a b) (+ a b) 0))";
     let program = compile_str(src).expect("compile");
 
-    let trace = build_trace(&program);
+    let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_VM;

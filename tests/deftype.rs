@@ -46,7 +46,7 @@ fn enum_predicate_positive_verifies() {
         .build()
         .expect("pi");
 
-    let trace = build_trace_with_pi(&program, &pi);
+    let trace = build_trace_with_pi(&program, &pi).expect("trace");
 
     let opts = opts();
     let prover = ZkProver::new(opts.clone(), pi.clone());
@@ -73,7 +73,7 @@ fn enum_predicate_negative_fails_verify() {
         .build()
         .expect("pi");
 
-    let trace = build_trace_with_pi(&program, &pi);
+    let trace = build_trace_with_pi(&program, &pi).expect("trace");
 
     let opts = opts();
 
@@ -88,7 +88,9 @@ fn enum_predicate_negative_fails_verify() {
         Ok(Ok(proof)) => {
             let err = verify_proof(proof, pi, &opts).expect_err("must fail verify");
             match err {
-                zk_lisp::prove::Error::Backend(_) => {}
+                zk_lisp::prove::Error::Backend(_)
+                | zk_lisp::prove::Error::BackendSource(_)
+                | zk_lisp::prove::Error::PublicInputs(_) => {}
             }
         }
         // Prove returned an error — acceptable failure mode
