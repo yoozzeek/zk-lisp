@@ -105,7 +105,7 @@ fn str64_max_len_error() {
 #[test]
 fn bytes32_eq_ok() {
     let src = r#"
-        (assert (= (bytes32-from-hex "0xdeadbeef") (bytes32-from-hex "0xdeadbeef")))
+        (assert (= (hex-to-bytes32 "0xdeadbeef") (hex-to-bytes32 "0xdeadbeef")))
     "#;
     prove_verify_ok(src);
 }
@@ -114,7 +114,7 @@ fn bytes32_eq_ok() {
 fn bytes32_len_variation_fail() {
     // 0x00 vs 0x0000 must differ due to length binding
     let src = r#"
-        (assert (= (bytes32-from-hex "0x00") (bytes32-from-hex "0x0000")))
+        (assert (= (hex-to-bytes32 "0x00") (hex-to-bytes32 "0x0000")))
     "#;
     prove_verify_fail(src);
 }
@@ -122,7 +122,7 @@ fn bytes32_len_variation_fail() {
 #[test]
 fn bytes32_in_set_ok() {
     let src = r#"
-        (in-set (bytes32-from-hex "0x01") ((bytes32-from-hex "0x00") (bytes32-from-hex "0x01")))
+        (in-set (hex-to-bytes32 "0x01") ((hex-to-bytes32 "0x00") (hex-to-bytes32 "0x01")))
     "#;
     prove_verify_ok(src);
 }
@@ -131,10 +131,10 @@ fn bytes32_in_set_ok() {
 fn bytes32_max_len_error() {
     // 33 bytes hex (66 hex chars) should fail at compile time
     let long_hex = format!("0x{}", "11".repeat(33));
-    let src = format!("(bytes32-from-hex \"{long_hex}\")");
+    let src = format!("(hex-to-bytes32 \"{long_hex}\")");
 
     let err = compile_str(&src).expect_err("compile must fail for >32 bytes");
     let msg = err.to_string();
 
-    assert!(msg.contains("bytes32-from-hex: length > 32"));
+    assert!(msg.contains("hex-to-bytes32: length > 32"));
 }
