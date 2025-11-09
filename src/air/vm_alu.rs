@@ -112,7 +112,7 @@ where
         let b_neg = cur[ctx.cols.op_neg];
         let b_eq = cur[ctx.cols.op_eq];
         let b_sel = cur[ctx.cols.op_select];
-        let b_hash = cur[ctx.cols.op_hash2];
+        let b_sponge = cur[ctx.cols.op_sponge];
         let b_assert = cur[ctx.cols.op_assert];
 
         // include Eq via dst_next so
@@ -129,7 +129,7 @@ where
             + b_mul * (a_val * b_val)
             + b_neg * (E::ZERO - a_val)
             + b_sel * (c_val * a_val + (E::ONE - c_val) * b_val)
-            + b_hash * cur[ctx.cols.lane_l]
+            + b_sponge * cur[ctx.cols.lane_l]
             + b_eq * dst_next
             + b_assert * E::ONE;
 

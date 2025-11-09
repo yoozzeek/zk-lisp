@@ -84,7 +84,7 @@ where
         let b_neg = cur[ctx.cols.op_neg];
         let b_eq = cur[ctx.cols.op_eq];
         let b_sel = cur[ctx.cols.op_select];
-        let b_hash = cur[ctx.cols.op_hash2];
+        let b_sponge = cur[ctx.cols.op_sponge];
         let b_assert = cur[ctx.cols.op_assert];
 
         let mut sum_dst = E::ZERO;
@@ -115,15 +115,15 @@ where
 
         // role usage gates: which roles
         // must select exactly one src.
-        let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash;
-        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_hash;
+        let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_sponge;
+        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_sponge;
         let uses_c = b_sel + b_assert;
         let op_any =
-            b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash + b_assert;
+            b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_sponge + b_assert;
 
         // dst required only for ops that
         // write a destination at final.
-        let uses_dst = op_any - b_hash;
+        let uses_dst = op_any - b_sponge;
         result[*ix] = p_map * (sum_dst - uses_dst) + s_low;
         *ix += 1;
         result[*ix] = p_map * (sum_a - uses_a) + s_low;
@@ -149,14 +149,14 @@ where
         // op_* booleanity and one-hot,
         // at most one op per map row.
         for b in [
-            b_const, b_mov, b_add, b_sub, b_mul, b_neg, b_eq, b_sel, b_hash, b_assert,
+            b_const, b_mov, b_add, b_sub, b_mul, b_neg, b_eq, b_sel, b_sponge, b_assert,
         ] {
             result[*ix] = p_map * b * (b - E::ONE) + s_high;
             *ix += 1;
         }
 
         let op_sum =
-            b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash + b_assert;
+            b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_sponge + b_assert;
         result[*ix] = p_map * op_sum * (op_sum - E::ONE) + s_low;
         *ix += 1;
     }

@@ -38,7 +38,7 @@ pub struct Columns {
     pub op_neg: usize,
     pub op_eq: usize,
     pub op_select: usize,
-    pub op_hash2: usize,
+    pub op_sponge: usize,
     pub op_assert: usize,
 
     // Operand selectors
@@ -93,8 +93,8 @@ impl Columns {
         let op_neg = op_mul + 1;
         let op_eq = op_neg + 1;
         let op_select = op_eq + 1;
-        let op_hash2 = op_select + 1;
-        let op_assert = op_hash2 + 1;
+        let op_sponge = op_select + 1;
+        let op_assert = op_sponge + 1;
 
         let sel_dst_start = op_assert + 1; // 8 cols
         let sel_a_start = sel_dst_start + NR; // 8 cols
@@ -142,7 +142,7 @@ impl Columns {
             op_neg,
             op_eq,
             op_select,
-            op_hash2,
+            op_sponge,
             op_assert,
             sel_dst_start,
             sel_a_start,

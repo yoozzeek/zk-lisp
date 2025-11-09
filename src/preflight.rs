@@ -256,8 +256,9 @@ pub(crate) fn run(
                 let b_mul = frame.current()[cols.op_mul];
                 let b_neg = frame.current()[cols.op_neg];
                 let b_sel = frame.current()[cols.op_select];
-                let b_hash = frame.current()[cols.op_hash2];
+                let b_sponge = frame.current()[cols.op_sponge];
                 let imm = frame.current()[cols.imm];
+                
                 let res_dbg = b_const * imm
                     + b_mov * a_val
                     + b_add * (a_val + b_val)
@@ -265,7 +266,7 @@ pub(crate) fn run(
                     + b_mul * (a_val * b_val)
                     + b_neg * (BE::ZERO - a_val)
                     + b_sel * (c_val * a_val + (BE::ONE - c_val) * b_val)
-                    + b_hash * frame.current()[cols.lane_l];
+                    + b_sponge * frame.current()[cols.lane_l];
                 let lhs = frame.next()[cols.r_index(wi)]
                     - ((BE::ONE - dst) * frame.current()[cols.r_index(wi)] + dst * res_dbg);
 
@@ -299,11 +300,11 @@ pub(crate) fn run(
                 let b_neg = frame.current()[cols.op_neg];
                 let b_eq = frame.current()[cols.op_eq];
                 let b_sel = frame.current()[cols.op_select];
-                let b_hash = frame.current()[cols.op_hash2];
+                let b_sponge = frame.current()[cols.op_sponge];
                 let b_assert = frame.current()[cols.op_assert];
 
-                let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash;
-                let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_hash;
+                let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_sponge;
+                let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_sponge;
                 let uses_c = b_sel + b_assert;
                 let op_any = b_const
                     + b_mov
@@ -313,7 +314,7 @@ pub(crate) fn run(
                     + b_neg
                     + b_eq
                     + b_sel
-                    + b_hash
+                    + b_sponge
                     + b_assert;
 
                 tracing::debug!(

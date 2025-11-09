@@ -136,7 +136,7 @@ where
         // inputs when sponge ops are enabled;
         // gated by op_hash2 at map row.
         if ctx.pub_inputs.get_features().vm && ctx.pub_inputs.get_features().sponge {
-            let b_hash = cur[ctx.cols.op_hash2];
+            let b_sponge = cur[ctx.cols.op_sponge];
 
             let mut a_val = E::ZERO;
             let mut b_val = E::ZERO;
@@ -146,9 +146,9 @@ where
                 b_val += cur[ctx.cols.sel_b_index(i)] * cur[ctx.cols.r_index(i)];
             }
 
-            result[*ix] = p_map * b_hash * (cur[ctx.cols.lane_l] - a_val);
+            result[*ix] = p_map * b_sponge * (cur[ctx.cols.lane_l] - a_val);
             *ix += 1;
-            result[*ix] = p_map * b_hash * (cur[ctx.cols.lane_r] - b_val);
+            result[*ix] = p_map * b_sponge * (cur[ctx.cols.lane_r] - b_val);
             *ix += 1;
         }
     }

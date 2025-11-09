@@ -81,7 +81,7 @@ impl TraceBuilder {
                 cols.op_neg,
                 cols.op_eq,
                 cols.op_select,
-                cols.op_hash2,
+                cols.op_sponge,
                 cols.op_assert,
             ];
 
@@ -237,13 +237,13 @@ impl TraceBuilder {
 
                     // mark hash op at map for gating;
                     // set selectors a/b
-                    trace.set(cols.op_hash2, row_map, BE::ONE);
+                    trace.set(cols.op_sponge, row_map, BE::ONE);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     // latch op and selectors
                     // to final for uniformity.
-                    trace.set(cols.op_hash2, row_final, BE::ONE);
+                    trace.set(cols.op_sponge, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
@@ -265,7 +265,7 @@ impl TraceBuilder {
 
                     // mark op at final;
                     // set dst selector at final
-                    trace.set(cols.op_hash2, row_final, BE::ONE);
+                    trace.set(cols.op_sponge, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
 
                     // reuse lanes from absorb level to avoid recomputation
@@ -492,7 +492,7 @@ mod tests {
         let base3 = 3 * steps;
         let row3_fin = base3 + schedule::pos_final();
 
-        assert_eq!(trace.get(cols.op_hash2, row3_fin), BE::ONE);
+        assert_eq!(trace.get(cols.op_sponge, row3_fin), BE::ONE);
 
         // Expected hash from inputs at absorb level
         let left = trace.get(cols.r_index(0), 2 * steps + schedule::pos_map());
