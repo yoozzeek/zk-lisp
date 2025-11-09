@@ -14,7 +14,12 @@ use zk_lisp::{PreflightMode, compiler, error, prove};
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "zk-lisp",
-    about = "zk-lisp CLI: run, prove, verify, repl",
+    about = r"# zk-lisp CLI
+# Copyright (c) Andrei Kochergin. All rights reserved.
+
+Lisp dialect and compiler for running zero-knowledge (ZK)
+programs, executable on an experimental virtual machine built
+on top of the Winterfell STARK prover and verifier.",
     version
 )]
 struct Cli {
