@@ -276,6 +276,45 @@ pub(crate) fn run(
                     c_val: fe_s(c_val),
                     lhs: fe_s(lhs),
                 })
+            } else if (144..=147).contains(&i) {
+                // Sums snapshot
+                let sum_dst = (0..layout::NR)
+                    .map(|k| frame.current()[cols.sel_dst_index(k)])
+                    .fold(BE::ZERO, |acc, v| acc + v);
+                let sum_a = (0..layout::NR)
+                    .map(|k| frame.current()[cols.sel_a_index(k)])
+                    .fold(BE::ZERO, |acc, v| acc + v);
+                let sum_b = (0..layout::NR)
+                    .map(|k| frame.current()[cols.sel_b_index(k)])
+                    .fold(BE::ZERO, |acc, v| acc + v);
+                let sum_c = (0..layout::NR)
+                    .map(|k| frame.current()[cols.sel_c_index(k)])
+                    .fold(BE::ZERO, |acc, v| acc + v);
+
+                let b_const = frame.current()[cols.op_const];
+                let b_mov = frame.current()[cols.op_mov];
+                let b_add = frame.current()[cols.op_add];
+                let b_sub = frame.current()[cols.op_sub];
+                let b_mul = frame.current()[cols.op_mul];
+                let b_neg = frame.current()[cols.op_neg];
+                let b_eq = frame.current()[cols.op_eq];
+                let b_sel = frame.current()[cols.op_select];
+                let b_hash = frame.current()[cols.op_hash2];
+                let b_assert = frame.current()[cols.op_assert];
+
+                let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash;
+                let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_hash;
+                let uses_c = b_sel + b_assert;
+                let op_any =
+                    b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash + b_assert;
+
+                tracing::debug!(
+                    target="proof.preflight",
+                    "[sums] sum_dst={:?} sum_a={:?} sum_b={:?} sum_c={:?} uses_a={:?} uses_b={:?} uses_c={:?} op_any={:?}",
+                    sum_dst, sum_a, sum_b, sum_c, uses_a, uses_b, uses_c, op_any
+                );
+
+                None
             } else {
                 None
             };

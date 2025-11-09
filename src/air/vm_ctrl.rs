@@ -121,9 +121,10 @@ where
         let op_any =
             b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_hash + b_assert;
 
-        // dst required only when an
-        // op is present at this map row.
-        result[*ix] = p_map * (sum_dst - op_any) + s_low;
+        // dst required only for ops that
+        // write a destination at final.
+        let uses_dst = op_any - b_hash;
+        result[*ix] = p_map * (sum_dst - uses_dst) + s_low;
         *ix += 1;
         result[*ix] = p_map * (sum_a - uses_a) + s_low;
         *ix += 1;

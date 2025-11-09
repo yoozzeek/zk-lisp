@@ -18,7 +18,8 @@ pub enum Op {
     Assert { dst: u8, c: u8 },               // enforces c==1 and writes 1 to dst
 
     // CRYPTO
-    Hash2 { dst: u8, a: u8, b: u8 }, // Poseidon2 map/final within one level
+    SAbsorb2 { a: u8, b: u8 },       // Sponge: absorb 2 elements (rate=2)
+    SSqueeze { dst: u8 },            // Sponge: squeeze lane_l into dst
 
     // KV
     KvMap { dir: u32, sib_reg: u8 }, // one level of path
@@ -106,10 +107,12 @@ impl ProgramBuilder {
                 self.touch_reg(dst);
                 self.touch_reg(c);
             }
-            Hash2 { dst, a, b } => {
-                self.touch_reg(dst);
+            SAbsorb2 { a, b } => {
                 self.touch_reg(a);
                 self.touch_reg(b);
+            }
+            SSqueeze { dst } => {
+                self.touch_reg(dst);
             }
             KvMap { dir: _, sib_reg } => {
                 self.touch_reg(sib_reg);
@@ -194,12 +197,6 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(a);
                 out.push(b);
             }
-            Hash2 { dst, a, b } => {
-                out.push(0x09);
-                out.push(dst);
-                out.push(a);
-                out.push(b);
-            }
             KvMap { dir, sib_reg } => {
                 out.push(0x0A);
                 out.extend_from_slice(&dir.to_le_bytes());
@@ -215,6 +212,15 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(0x0D);
                 out.push(dst);
                 out.push(c);
+            }
+            SAbsorb2 { a, b } => {
+                out.push(0x0E);
+                out.push(a);
+                out.push(b);
+            }
+            SSqueeze { dst } => {
+                out.push(0x0F);
+                out.push(dst);
             }
         }
     }

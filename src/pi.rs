@@ -79,10 +79,13 @@ impl PublicInputsBuilder {
                 | Eq { .. }
                 | Select { .. }
                 | Assert { .. } => vm = true,
-                Hash2 { .. } => {
+                SAbsorb2 { .. } => {
                     vm = true;
                     pose = true;
-                    self.pi.feature_mask |= FM_HASH2;
+                }
+                SSqueeze { .. } => {
+                    vm = true;
+                    pose = true;
                 }
                 KvMap { .. } | KvFinal => {
                     kv = true;
@@ -348,10 +351,10 @@ mod tests {
         };
 
         let air_all = air::ZkLispAir::new(info, pi_all, opts);
-        // poseidon (4*R) + vm(67) + kv(6)
+        // poseidon (4*R + 4 hold + 2 vm_bind) + vm(67) + kv(6)
         assert_eq!(
             air_all.context().num_main_transition_constraints(),
-            4 * layout::POSEIDON_ROUNDS + 4 + 67 + 6
+            4 * layout::POSEIDON_ROUNDS + 6 + 67 + 6
         );
         assert_eq!(air_all.get_assertions().len(), sched_asserts + 1);
     }

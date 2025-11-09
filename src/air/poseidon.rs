@@ -129,7 +129,9 @@ where
         result[*ix] = g_hold * (next[ctx.cols.lane_c1] - cur[ctx.cols.lane_c1]);
         *ix += 1;
 
-        // Bind map-row lanes to VM-selected inputs for Hash2
+        // Bind map-row lanes to VM-selected
+        // inputs when sponge ops are enabled;
+        // gated by op_hash2 at map row.
         if ctx.pub_inputs.get_features().vm && ctx.pub_inputs.get_features().hash2 {
             let b_hash = cur[ctx.cols.op_hash2];
 

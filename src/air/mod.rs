@@ -95,7 +95,9 @@ impl Air for ZkLispAir {
         if features.poseidon {
             PoseidonBlock::push_degrees(&mut degrees);
 
-            if features.vm && features.hash2 {
+            // When VM is enabled, enforce VM->lane
+            // bindings on map rows of absorb operations.
+            if features.vm {
                 PoseidonBlock::push_degrees_vm_bind(&mut degrees);
             }
         }
@@ -110,7 +112,8 @@ impl Air for ZkLispAir {
         // Boundary assertions count per level:
         let levels = (info.length() / STEPS_PER_LEVEL_P2).max(1);
 
-        // Strict schedule/domain boundary assertions per level:
+        // Strict schedule/domain boundary 
+        // assertions per level:
         // ones at positions: (2 + R)
         // zeros at non-positions: (4R + 2)
         // domain tags at map: 2
@@ -124,11 +127,13 @@ impl Air for ZkLispAir {
             num_assertions += pub_inputs.vm_args.len();
         }
         if features.vm && features.vm_expect {
-            // one assertion for expected output at computed row
+            // one assertion for expected
+            // output at computed row.
             num_assertions += 1;
         }
         if features.kv && features.kv_expect {
-            num_assertions += 2 * (pub_inputs.kv_levels_mask.count_ones() as usize) + 1; // offset for EXPECT ties alignment
+            // offset for EXPECT ties alignment
+            num_assertions += 2 * (pub_inputs.kv_levels_mask.count_ones() as usize) + 1;
         }
         if features.kv {
             num_assertions += 4 * (pub_inputs.kv_levels_mask.count_ones() as usize);

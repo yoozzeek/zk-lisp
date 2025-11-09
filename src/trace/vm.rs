@@ -27,6 +27,7 @@ impl TraceBuilder {
 
         // register state
         let mut regs = [BE::ZERO; NR];
+        let mut pending_absorb: Option<(BE, BE)> = None;
 
         for (lvl, op) in p.ops.iter().enumerate() {
             // snapshot current regs and
@@ -93,6 +94,7 @@ impl TraceBuilder {
                     trace.set(cols.op_const, row_map, BE::ONE);
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     trace.set(cols.imm, row_map, BE::from(imm));
+
                     // latch to final
                     trace.set(cols.op_const, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
@@ -118,6 +120,7 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
+
                     trace.set(cols.op_add, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
@@ -131,6 +134,7 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
+
                     trace.set(cols.op_sub, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
@@ -144,6 +148,7 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
+
                     trace.set(cols.op_mul, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
@@ -156,6 +161,7 @@ impl TraceBuilder {
                     trace.set(cols.op_neg, row_map, BE::ONE);
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
+
                     trace.set(cols.op_neg, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
@@ -169,6 +175,7 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
+
                     // latch op bit and selectors to final
                     trace.set(cols.op_eq, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
@@ -196,6 +203,7 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_map, cols.sel_c_start, c);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
+
                     trace.set(cols.op_select, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, c);
@@ -210,6 +218,7 @@ impl TraceBuilder {
                     trace.set(cols.op_assert, row_map, BE::ONE);
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, c);
+
                     trace.set(cols.op_assert, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, c);
@@ -217,25 +226,37 @@ impl TraceBuilder {
                     // write 1 at final
                     next_regs[dst as usize] = BE::ONE;
                 }
-                // HASH2: set op+dst; feed lanes from regs a,b;
-                // run Poseidon for level; dst <= lane_l(final)
-                Op::Hash2 { dst, a, b } => {
+                Op::SAbsorb2 { a, b } => {
+                    // mark hash op at map for gating;
+                    // set selectors a/b
                     trace.set(cols.op_hash2, row_map, BE::ONE);
-                    // Set selectors for 
-                    // dst, a, b at map row.
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
-                    // Latch op and selectors 
-                    // to final row for uniformity.
+                    // latch op and selectors
+                    // to final for uniformity.
                     trace.set(cols.op_hash2, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
                     let left = regs[a as usize];
                     let right = regs[b as usize];
+                    pending_absorb = Some((left, right));
+
+                    // fill poseidon lanes
+                    // for this level.
+                    poseidon::apply_level(&mut trace, &p.commitment, lvl, left, right);
+                }
+                Op::SSqueeze { dst } => {
+                    // use pending absorb if present
+                    let (left, right) = pending_absorb.take().unwrap_or((BE::ZERO, BE::ZERO));
+
+                    // mark op at final;
+                    // set dst selector at final
+                    trace.set(cols.op_hash2, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+
+                    // run permutation
                     poseidon::apply_level(&mut trace, &p.commitment, lvl, left, right);
 
                     let out = trace.get(cols.lane_l, row_final);
@@ -335,7 +356,10 @@ impl TraceBuilder {
         for lvl in 0..total_levels {
             let base = lvl * steps;
             let row_map = base + schedule::pos_map();
-            let is_hash = trace.get(cols.op_hash2, row_map) == BE::ONE;
+            let row_final = base + schedule::pos_final();
+            let is_hash_map = trace.get(cols.op_hash2, row_map) == BE::ONE;
+            let is_hash_final = trace.get(cols.op_hash2, row_final) == BE::ONE;
+            let is_hash = is_hash_map || is_hash_final;
             let is_kv_map = trace.get(cols.kv_g_map, row_map) == BE::ONE;
 
             if is_hash || is_kv_map {
@@ -448,13 +472,14 @@ mod tests {
     }
 
     #[test]
-    fn hash2_simple() {
-        // Check that VM Hash2 writes
+    fn sponge_absorb_squeeze_simple() {
+        // Check that SAbsorb2+SSqueeze writes
         // Poseidon(left,right) into dst.
         let mut b = crate::ir::ProgramBuilder::new();
         b.push(Op::Const { dst: 0, imm: 1 });
         b.push(Op::Const { dst: 1, imm: 2 });
-        b.push(Op::Hash2 { dst: 3, a: 0, b: 1 });
+        b.push(Op::SAbsorb2 { a: 0, b: 1 });
+        b.push(Op::SSqueeze { dst: 3 });
         b.push(Op::End);
 
         let p = b.finalize();
@@ -463,17 +488,18 @@ mod tests {
         let cols = Columns::baseline();
         let steps = STEPS_PER_LEVEL_P2;
 
-        let base2 = 2 * steps;
-        let row2_map = base2 + schedule::pos_map();
-        let row2_fin = base2 + schedule::pos_final();
+        // Level 2 (SSqueeze) performs the write
+        let base3 = 3 * steps;
+        let row3_fin = base3 + schedule::pos_final();
 
-        assert_eq!(trace.get(cols.op_hash2, row2_map), BE::ONE);
+        assert_eq!(trace.get(cols.op_hash2, row3_fin), BE::ONE);
 
-        let left = trace.get(cols.r_index(0), row2_map);
-        let right = trace.get(cols.r_index(1), row2_map);
+        // Expected hash from inputs at absorb level
+        let left = trace.get(cols.r_index(0), 2 * steps + schedule::pos_map());
+        let right = trace.get(cols.r_index(1), 2 * steps + schedule::pos_map());
         let expected = poseidon_core::poseidon_hash_two_lanes(&p.commitment, left, right);
 
-        assert_eq!(trace.get(cols.r_index(3), row2_fin + 1), expected);
+        assert_eq!(trace.get(cols.r_index(3), row3_fin + 1), expected);
     }
 
     #[test]

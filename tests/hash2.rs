@@ -15,7 +15,7 @@ fn hash2_prove_verify() {
     let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM | pi::FM_HASH2;
+    pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;
     pi.program_commitment = program.commitment;
 
     let opts = ProofOptions::new(
