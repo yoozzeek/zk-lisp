@@ -214,6 +214,7 @@ fn build_pi_for_program(program: &zk_lisp::ir::Program, args: &[u64]) -> zk_lisp
                 | Op::Select { .. }
                 | Op::Assert { .. }
                 | Op::SAbsorb2 { .. }
+                | Op::SAbsorbN { .. }
                 | Op::SSqueeze { .. }
         )
     }) {
@@ -224,7 +225,11 @@ fn build_pi_for_program(program: &zk_lisp::ir::Program, args: &[u64]) -> zk_lisp
     if program.ops.iter().any(|op| {
         matches!(
             op,
-            Op::SAbsorb2 { .. } | Op::SSqueeze { .. } | Op::KvMap { .. } | Op::KvFinal
+            Op::SAbsorb2 { .. }
+                | Op::SAbsorbN { .. }
+                | Op::SSqueeze { .. }
+                | Op::KvMap { .. }
+                | Op::KvFinal
         )
     }) {
         mask |= zk_lisp::pi::FM_POSEIDON;
@@ -232,11 +237,12 @@ fn build_pi_for_program(program: &zk_lisp::ir::Program, args: &[u64]) -> zk_lisp
 
     // Sponge feature when
     // SAbsorb2/SSqueeze appear.
-    if program
-        .ops
-        .iter()
-        .any(|op| matches!(op, Op::SAbsorb2 { .. } | Op::SSqueeze { .. }))
-    {
+    if program.ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::SAbsorb2 { .. } | Op::SAbsorbN { .. } | Op::SSqueeze { .. }
+        )
+    }) {
         mask |= zk_lisp::pi::FM_SPONGE;
     }
 

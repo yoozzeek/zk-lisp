@@ -79,7 +79,7 @@ impl PublicInputsBuilder {
                 | Eq { .. }
                 | Select { .. }
                 | Assert { .. } => vm = true,
-                SAbsorb2 { .. } => {
+                SAbsorb2 { .. } | SAbsorbN { .. } => {
                     vm = true;
                     pose = true;
                     self.pi.feature_mask |= FM_SPONGE;
@@ -322,6 +322,11 @@ mod tests {
 
         let sched_asserts = 5 * layout::POSEIDON_ROUNDS + 6;
 
+        // derive dynamic block lengths
+        let pose_len = 12 * layout::POSEIDON_ROUNDS + 12; // rounds + holds
+        let vm_ctrl_len_no_sponge = 4 * layout::NR + 4 + 1 + 10 + 1; // 48
+        let vm_alu_len = 19;
+
         // Case A: Poseidon only
         let pi_pose = PublicInputs {
             feature_mask: FM_POSEIDON,
@@ -331,7 +336,7 @@ mod tests {
         let air_pose = air::ZkLispAir::new(info.clone(), pi_pose, opts.clone());
         assert_eq!(
             air_pose.context().num_main_transition_constraints(),
-            4 * layout::POSEIDON_ROUNDS + 4
+            pose_len
         );
         assert_eq!(air_pose.get_assertions().len(), sched_asserts);
 
@@ -342,8 +347,10 @@ mod tests {
         };
 
         let air_vm = air::ZkLispAir::new(info.clone(), pi_vm, opts.clone());
-        // vm_ctrl (48) + vm_alu (19) = 67
-        assert_eq!(air_vm.context().num_main_transition_constraints(), 67);
+        assert_eq!(
+            air_vm.context().num_main_transition_constraints(),
+            vm_ctrl_len_no_sponge + vm_alu_len
+        );
         assert_eq!(air_vm.get_assertions().len(), sched_asserts + 1);
 
         // Case C: all features
@@ -353,10 +360,9 @@ mod tests {
         };
 
         let air_all = air::ZkLispAir::new(info, pi_all, opts);
-        // poseidon (4*R + 4 hold) + vm(67) + kv(6)
         assert_eq!(
             air_all.context().num_main_transition_constraints(),
-            4 * layout::POSEIDON_ROUNDS + 4 + 67 + 6
+            pose_len + (vm_ctrl_len_no_sponge + vm_alu_len) + 6
         );
         assert_eq!(air_all.get_assertions().len(), sched_asserts + 1);
     }

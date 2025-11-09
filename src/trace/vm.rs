@@ -28,9 +28,10 @@ impl TraceBuilder {
         // register state
         let mut regs = [BE::ZERO; NR];
 
-        // Remember absorb level and
-        // inputs to reuse on SSqueeze.
-        let mut pending_absorb: Option<(usize, BE, BE)> = None;
+        // Buffer absorbed registers
+        // across levels until SSqueeze;
+        // gather up to 10.
+        let mut pending_regs: Vec<u8> = Vec::new();
 
         for (lvl, op) in p.ops.iter().enumerate() {
             // snapshot current regs and
@@ -233,46 +234,72 @@ impl TraceBuilder {
                     next_regs[dst as usize] = BE::ONE;
                 }
                 Op::SAbsorb2 { a, b } => {
-                    pose_active = BE::ONE;
-
-                    // mark hash op at map for gating;
-                    // set selectors a/b
+                    // Treat as SAbsorbN with 2 regs;
+                    // do not execute permutation now.
                     trace.set(cols.op_sponge, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_a_start, a);
-                    set_sel(&mut trace, row_map, cols.sel_b_start, b);
-
-                    // latch op and selectors
-                    // to final for uniformity.
                     trace.set(cols.op_sponge, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
-                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
-                    let left = regs[a as usize];
-                    let right = regs[b as usize];
-                    pending_absorb = Some((lvl, left, right));
+                    // Set sponge lane selectors
+                    // for lanes 0..N-1.
+                    trace.set(cols.sel_s_index(0, a as usize), row_map, BE::ONE);
+                    trace.set(cols.sel_s_index(1, b as usize), row_map, BE::ONE);
+                    trace.set(cols.sel_s_index(0, a as usize), row_final, BE::ONE);
+                    trace.set(cols.sel_s_index(1, b as usize), row_final, BE::ONE);
 
-                    // fill poseidon lanes
-                    // for this level.
-                    poseidon::apply_level(&mut trace, &p.commitment, lvl, left, right);
+                    // Accumulate regs for later
+                    // permutation at SSqueeze.
+                    if pending_regs.len() < 10 {
+                        pending_regs.push(a);
+                    }
+                    if pending_regs.len() < 10 {
+                        pending_regs.push(b);
+                    }
+
+                    // This level is inactive for Poseidon
+                    pose_active = BE::ZERO;
                 }
                 Op::SSqueeze { dst } => {
-                    pose_active = BE::ONE;
-
-                    // use pending absorb if present
-                    let (abs_lvl, _left, _right) = pending_absorb
-                        .take()
-                        .unwrap_or((lvl.saturating_sub(1), BE::ZERO, BE::ZERO));
-
-                    // mark op at final;
-                    // set dst selector at final
+                    // Execute one permutation
+                    // absorbing all pending regs (<=10)
                     trace.set(cols.op_sponge, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
 
-                    // reuse lanes from absorb level to avoid recomputation
-                    poseidon::copy_level(&mut trace, abs_lvl, lvl);
+                    let mut inputs: Vec<BE> = Vec::with_capacity(pending_regs.len());
+                    for &r in &pending_regs {
+                        inputs.push(regs[r as usize]);
+                    }
 
-                    let out = trace.get(cols.lane_l, row_final);
+                    // If empty (no prior absorbs),
+                    // treat as zeros to keep semantics.
+                    pose_active = BE::ONE;
+                    poseidon::apply_level_absorb(&mut trace, &p.commitment, lvl, &inputs);
+
+                    let out = trace.get(cols.lane_index(0), row_final);
                     next_regs[dst as usize] = out;
+
+                    pending_regs.clear();
+                }
+                Op::SAbsorbN { regs: ref rr } => {
+                    // Mark sponge op at map/final,
+                    // set selectors for provided regs.
+                    trace.set(cols.op_sponge, row_map, BE::ONE);
+                    trace.set(cols.op_sponge, row_final, BE::ONE);
+
+                    for (i, &r) in rr.iter().enumerate() {
+                        if i >= 10 {
+                            break;
+                        }
+
+                        trace.set(cols.sel_s_index(i, r as usize), row_map, BE::ONE);
+                        trace.set(cols.sel_s_index(i, r as usize), row_final, BE::ONE);
+
+                        if pending_regs.len() < 10 {
+                            pending_regs.push(r);
+                        }
+                    }
+
+                    // No permutation at absorb rows
+                    pose_active = BE::ZERO;
                 }
                 Op::KvMap { dir, sib_reg } => {
                     // KV map+final in one level
@@ -290,7 +317,7 @@ impl TraceBuilder {
                     let left = (BE::ONE - d) * acc_cur + d * sib;
                     let right = (BE::ONE - d) * sib + d * acc_cur;
 
-                    poseidon::apply_level(&mut trace, &p.commitment, lvl, left, right);
+                    poseidon::apply_level_absorb(&mut trace, &p.commitment, lvl, &[left, right]);
 
                     // Mark final and set acc at/after final
                     trace.set(cols.kv_g_final, row_final, BE::ONE);

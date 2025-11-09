@@ -185,21 +185,22 @@ mod tests {
     #[test]
     fn dir_non_boolean_fails_at_map() {
         let cols = Columns::baseline();
+
         let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
         let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
-        let rc_box = Box::new([[BE::ZERO; 4]; POSEIDON_ROUNDS]);
+        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
         let mds_box = Box::new({
-            let mut m = [[BE::ZERO; 4]; 4];
-            m[0][0] = BE::ONE;
-            m[1][1] = BE::ONE;
-            m[2][2] = BE::ONE;
-            m[3][3] = BE::ONE;
+            let mut m = [[BE::ZERO; 12]; 12];
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] = BE::ONE;
+            }
+
             m
         });
         let dom_box = Box::new([BE::ONE, BE::from(2u64)]);
-        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_box, &mds_box, &dom_box);
+        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_vec, &mds_box, &dom_box);
 
         // map row: p_map=1
         periodic[0] = BE::ONE;
@@ -233,18 +234,17 @@ mod tests {
         let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
-        let rc_box = Box::new([[BE::ZERO; 4]; POSEIDON_ROUNDS]);
+        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
         let mds_box = Box::new({
-            let mut m = [[BE::ZERO; 4]; 4];
-            m[0][0] = BE::ONE;
-            m[1][1] = BE::ONE;
-            m[2][2] = BE::ONE;
-            m[3][3] = BE::ONE;
+            let mut m = [[BE::ZERO; 12]; 12];
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] = BE::ONE;
+            }
 
             m
         });
         let dom_box = Box::new([BE::ONE, BE::from(2u64)]);
-        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_box, &mds_box, &dom_box);
+        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_vec, &mds_box, &dom_box);
 
         // map row
         periodic[0] = BE::ONE;
@@ -284,17 +284,17 @@ mod tests {
         let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
-        let rc_box = Box::new([[BE::ZERO; 4]; POSEIDON_ROUNDS]);
+        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
         let mds_box = Box::new({
-            let mut m = [[BE::ZERO; 4]; 4];
-            m[0][0] = BE::ONE;
-            m[1][1] = BE::ONE;
-            m[2][2] = BE::ONE;
-            m[3][3] = BE::ONE;
+            let mut m = [[BE::ZERO; 12]; 12];
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] = BE::ONE;
+            }
+
             m
         });
         let dom_box = Box::new([BE::ONE, BE::from(2u64)]);
-        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_box, &mds_box, &dom_box);
+        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_vec, &mds_box, &dom_box);
 
         // final row
         periodic[0] = BE::ZERO;
@@ -322,17 +322,17 @@ mod tests {
         let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
-        let rc_box = Box::new([[BE::ZERO; 4]; POSEIDON_ROUNDS]);
+        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
         let mds_box = Box::new({
-            let mut m = [[BE::ZERO; 4]; 4];
-            m[0][0] = BE::ONE;
-            m[1][1] = BE::ONE;
-            m[2][2] = BE::ONE;
-            m[3][3] = BE::ONE;
+            let mut m = [[BE::ZERO; 12]; 12];
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] = BE::ONE;
+            }
+
             m
         });
         let dom_box = Box::new([BE::ONE, BE::from(2u64)]);
-        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_box, &mds_box, &dom_box);
+        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_vec, &mds_box, &dom_box);
 
         // final row
         periodic[0] = BE::ONE; // kv_map may also be 1

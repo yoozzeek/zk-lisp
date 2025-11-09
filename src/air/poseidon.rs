@@ -13,10 +13,9 @@ pub struct PoseidonBlock;
 
 impl PoseidonBlock {
     pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
-        // Per-round Poseidon
-        // transitions (4 lanes per round)
+        // Per-round Poseidon transitions
         for _ in 0..POSEIDON_ROUNDS {
-            for _ in 0..4 {
+            for _ in 0..12 {
                 out.push(TransitionConstraintDegree::with_cycles(
                     4,
                     vec![STEPS_PER_LEVEL_P2],
@@ -27,7 +26,7 @@ impl PoseidonBlock {
         // Hold constraints on non-round rows:
         // pad rows except last pad)
         // base=1 (linear), cycles=1
-        for _ in 0..4 {
+        for _ in 0..12 {
             out.push(TransitionConstraintDegree::with_cycles(
                 1,
                 vec![STEPS_PER_LEVEL_P2],
@@ -36,11 +35,11 @@ impl PoseidonBlock {
     }
 
     pub fn push_degrees_vm_bind(out: &mut Vec<TransitionConstraintDegree>) {
-        // VM->lane binding at map row for
-        // Hash2 (lane_l and lane_r).
-        // base=3 (b_hash * (lane - sum sel*reg)),
+        // VM->lane binding at map row
+        // for sponge absorb lanes (0..9).
+        // base=3 (pa * b_sponge * (lane - sum sel_s*reg)),
         // cycles=1 (p_map)
-        for _ in 0..2 {
+        for _ in 0..10 {
             out.push(TransitionConstraintDegree::with_cycles(
                 3,
                 vec![STEPS_PER_LEVEL_P2],
@@ -66,55 +65,31 @@ where
         let next = frame.next();
         let mm = ctx.poseidon_mds;
 
-        // Gate for map-row constraints
+        // Gates
         let p_map = periodic[0];
 
+        // Per-round transitions
         for j in 0..POSEIDON_ROUNDS {
             let gr = periodic[1 + j];
-
-            let sl = cur[ctx.cols.lane_l];
-            let sr = cur[ctx.cols.lane_r];
-            let sc0 = cur[ctx.cols.lane_c0];
-            let sc1 = cur[ctx.cols.lane_c1];
-
-            let sl3 = sl * sl * sl;
-            let sr3 = sr * sr * sr;
-            let sc03 = sc0 * sc0 * sc0;
-            let sc13 = sc1 * sc1 * sc1;
-
-            let rc = &ctx.poseidon_rc[j];
-            let yl = E::from(mm[0][0]) * sl3
-                + E::from(mm[0][1]) * sr3
-                + E::from(mm[0][2]) * sc03
-                + E::from(mm[0][3]) * sc13
-                + E::from(rc[0]);
-            let yr = E::from(mm[1][0]) * sl3
-                + E::from(mm[1][1]) * sr3
-                + E::from(mm[1][2]) * sc03
-                + E::from(mm[1][3]) * sc13
-                + E::from(rc[1]);
-            let yc0 = E::from(mm[2][0]) * sl3
-                + E::from(mm[2][1]) * sr3
-                + E::from(mm[2][2]) * sc03
-                + E::from(mm[2][3]) * sc13
-                + E::from(rc[2]);
-            let yc1 = E::from(mm[3][0]) * sl3
-                + E::from(mm[3][1]) * sr3
-                + E::from(mm[3][2]) * sc03
-                + E::from(mm[3][3]) * sc13
-                + E::from(rc[3]);
-
-            // level activity gate
             let pa = cur[ctx.cols.pose_active];
 
-            result[*ix] = pa * gr * (next[ctx.cols.lane_l] - yl);
-            *ix += 1;
-            result[*ix] = pa * gr * (next[ctx.cols.lane_r] - yr);
-            *ix += 1;
-            result[*ix] = pa * gr * (next[ctx.cols.lane_c0] - yc0);
-            *ix += 1;
-            result[*ix] = pa * gr * (next[ctx.cols.lane_c1] - yc1);
-            *ix += 1;
+            let s: [E; 12] = core::array::from_fn(|i| cur[ctx.cols.lane_index(i)]);
+            let s3 = s.map(|v| {
+                let v2 = v * v;
+                v2 * v
+            });
+
+            // y = MDS * s^3 + rc
+            let rc = &ctx.poseidon_rc[j];
+            let y: [E; 12] = core::array::from_fn(|i| {
+                let acc = (0..12).fold(E::ZERO, |acc, k| acc + E::from(mm[i][k]) * s3[k]);
+                acc + E::from(rc[i])
+            });
+
+            for (i, yi) in y.iter().enumerate() {
+                result[*ix] = pa * gr * (next[ctx.cols.lane_index(i)] - *yi);
+                *ix += 1;
+            }
         }
 
         // Hold lanes on non-round rows:
@@ -123,33 +98,28 @@ where
         let p_pad_last = periodic[1 + POSEIDON_ROUNDS + 2];
         let g_hold = p_pad - p_pad_last;
 
-        result[*ix] = g_hold * (next[ctx.cols.lane_l] - cur[ctx.cols.lane_l]);
-        *ix += 1;
-        result[*ix] = g_hold * (next[ctx.cols.lane_r] - cur[ctx.cols.lane_r]);
-        *ix += 1;
-        result[*ix] = g_hold * (next[ctx.cols.lane_c0] - cur[ctx.cols.lane_c0]);
-        *ix += 1;
-        result[*ix] = g_hold * (next[ctx.cols.lane_c1] - cur[ctx.cols.lane_c1]);
-        *ix += 1;
+        for i in 0..12 {
+            result[*ix] = g_hold * (next[ctx.cols.lane_index(i)] - cur[ctx.cols.lane_index(i)]);
+            *ix += 1;
+        }
 
-        // Bind map-row lanes to VM-selected
-        // inputs when sponge ops are enabled;
-        // gated by op_hash2 at map row.
+        // Bind map-row absorb lanes
+        // (0..9) to VM-selected inputs
+        // when sponge ops are enabled;
+        // gate by p_map, b_sponge and pose_active.
         if ctx.pub_inputs.get_features().vm && ctx.pub_inputs.get_features().sponge {
             let b_sponge = cur[ctx.cols.op_sponge];
+            let pa = cur[ctx.cols.pose_active];
 
-            let mut a_val = E::ZERO;
-            let mut b_val = E::ZERO;
+            for lane in 0..10 {
+                let mut sel_val = E::ZERO;
+                for r in 0..NR {
+                    sel_val += cur[ctx.cols.sel_s_index(lane, r)] * cur[ctx.cols.r_index(r)];
+                }
 
-            for i in 0..NR {
-                a_val += cur[ctx.cols.sel_a_index(i)] * cur[ctx.cols.r_index(i)];
-                b_val += cur[ctx.cols.sel_b_index(i)] * cur[ctx.cols.r_index(i)];
+                result[*ix] = p_map * pa * b_sponge * (cur[ctx.cols.lane_index(lane)] - sel_val);
+                *ix += 1;
             }
-
-            result[*ix] = p_map * b_sponge * (cur[ctx.cols.lane_l] - a_val);
-            *ix += 1;
-            result[*ix] = p_map * b_sponge * (cur[ctx.cols.lane_r] - b_val);
-            *ix += 1;
         }
     }
 }

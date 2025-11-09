@@ -4,7 +4,7 @@
 
 //! IR for zk-lisp
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
     // ALU
     Const { dst: u8, imm: u64 },
@@ -18,8 +18,12 @@ pub enum Op {
     Assert { dst: u8, c: u8 },               // enforces c==1 and writes 1 to dst
 
     // CRYPTO
-    SAbsorb2 { a: u8, b: u8 }, // Sponge: absorb 2 elements (rate=2)
-    SSqueeze { dst: u8 },      // Sponge: squeeze lane_l into dst
+    // Sponge: absorb up to 10 elements (rate=10)
+    SAbsorbN { regs: Vec<u8> },
+    // Sponge: squeeze lane 0 into dst
+    SSqueeze { dst: u8 },
+    // Sponge: absorb 2 elements (legacy)
+    SAbsorb2 { a: u8, b: u8 },
 
     // KV
     KvMap { dir: u32, sib_reg: u8 }, // one level of path
@@ -110,6 +114,11 @@ impl ProgramBuilder {
             SAbsorb2 { a, b } => {
                 self.touch_reg(a);
                 self.touch_reg(b);
+            }
+            SAbsorbN { ref regs } => {
+                for &r in regs {
+                    self.touch_reg(r);
+                }
             }
             SSqueeze { dst } => {
                 self.touch_reg(dst);
@@ -221,6 +230,13 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
             SSqueeze { dst } => {
                 out.push(0x0F);
                 out.push(dst);
+            }
+            SAbsorbN { ref regs } => {
+                out.push(0x10);
+                out.push(regs.len() as u8);
+                for &r in regs {
+                    out.push(r);
+                }
             }
         }
     }

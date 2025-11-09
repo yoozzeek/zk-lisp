@@ -12,8 +12,9 @@ use crate::layout::{NR, STEPS_PER_LEVEL_P2};
 pub struct VmCtrlBlock;
 
 impl VmCtrlBlock {
-    pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
-        // selector bits booleanity (4*NR)
+    pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>, sponge: bool) {
+        // selector bits booleanity
+        // for ALU roles (4*NR)
         for _ in 0..(4 * NR) {
             out.push(TransitionConstraintDegree::with_cycles(
                 2,
@@ -21,12 +22,33 @@ impl VmCtrlBlock {
             ));
         }
 
-        // selector sums (4)
+        // selector sums for
+        // ALU roles (4).
         for _ in 0..4 {
             out.push(TransitionConstraintDegree::with_cycles(
                 1,
                 vec![STEPS_PER_LEVEL_P2],
             ));
+        }
+
+        if sponge {
+            // Sponge lane selectors
+            // booleanity (10 * NR).
+            for _ in 0..(10 * NR) {
+                out.push(TransitionConstraintDegree::with_cycles(
+                    2,
+                    vec![STEPS_PER_LEVEL_P2],
+                ));
+            }
+
+            // Sponge lane
+            // selector sums (10)
+            for _ in 0..10 {
+                out.push(TransitionConstraintDegree::with_cycles(
+                    2,
+                    vec![STEPS_PER_LEVEL_P2],
+                ));
+            }
         }
 
         // select cond boolean
@@ -43,7 +65,8 @@ impl VmCtrlBlock {
             ));
         }
 
-        // one-hot across ops: sum is boolean (1)
+        // one-hot across ops:
+        // sum is boolean (1)
         out.push(TransitionConstraintDegree::with_cycles(
             2,
             vec![STEPS_PER_LEVEL_P2],
@@ -69,8 +92,11 @@ where
 
         // Mixer:
         // - s_low = p_last * p_map yields CE quotient degree ~120;
-        // - s_high = s_low * pi_prog raises CE quotient degree to ~247
-        //   (deg(p_last)=~127, deg(p_map)=~120, deg(pi_prog)=~127; minus z-degree 127).
+        // - s_high = s_low * pi_prog raises CE quotient degree to ~247;
+        //   deg(p_last)=~127,
+        //   deg(p_map)=~120,
+        //   deg(pi_prog)=~127,
+        //   minus z-degree 127.
         let p_last = periodic[1 + crate::layout::POSEIDON_ROUNDS + 3];
         let s_low = p_last * p_map;
         let pi_prog = cur[ctx.cols.pi_prog];
@@ -115,8 +141,8 @@ where
 
         // role usage gates: which roles
         // must select exactly one src.
-        let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_sponge;
-        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_sponge;
+        let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel;
+        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel;
         let uses_c = b_sel + b_assert;
         let op_any =
             b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_sponge + b_assert;
@@ -132,6 +158,28 @@ where
         *ix += 1;
         result[*ix] = p_map * (sum_c - uses_c) + s_low;
         *ix += 1;
+
+        // Sponge selectors booleanity
+        // and per-lane sum constraints
+        // (only when sponge feature is enabled).
+        if ctx.pub_inputs.get_features().sponge {
+            for lane in 0..10 {
+                let mut sum = E::ZERO;
+                for i in 0..NR {
+                    let sel = cur[ctx.cols.sel_s_index(lane, i)];
+
+                    // booleanity for each sel bit
+                    result[*ix] = p_map * b_sponge * sel * (sel - E::ONE) + s_high;
+                    *ix += 1;
+
+                    sum += sel;
+                }
+
+                // sum is boolean (0 or 1)
+                result[*ix] = p_map * b_sponge * sum * (sum - E::ONE) + s_low;
+                *ix += 1;
+            }
+        }
 
         // Select cond booleanity at map
         // Compute c_val = sum sel_c_i * r_i
@@ -165,14 +213,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Columns;
+    use crate::layout::{Columns, POSEIDON_ROUNDS};
     use winterfell::EvaluationFrame;
 
     #[test]
     fn two_ops_set_violation() {
         let cols = Columns::baseline();
         let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
-        let mut periodic = vec![BE::ZERO; 1 + crate::layout::POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         // map row
         periodic[0] = BE::ONE;
@@ -182,15 +230,25 @@ mod tests {
         frame.current_mut()[cols.op_sub] = BE::ONE;
 
         // Evaluate
-        let mut res = vec![BE::ZERO; 48];
+        let mut res = vec![BE::ZERO; 256];
         let mut ix = 0usize;
+
+        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_box = Box::new({
+            let mut m = [[BE::ZERO; 12]; 12];
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] = BE::ONE;
+            }
+
+            m
+        });
 
         VmCtrlBlock::eval_block(
             &BlockCtx::new(
                 &cols,
                 &Default::default(),
-                &Box::new([[BE::ZERO; 4]; crate::layout::POSEIDON_ROUNDS]),
-                &Box::new([[BE::ZERO; 4]; 4]),
+                &rc_vec,
+                &mds_box,
                 &Box::new([BE::ZERO; 2]),
             ),
             &frame,

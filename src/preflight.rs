@@ -91,9 +91,14 @@ pub(crate) fn run(
         // evaluate transition at step 0 using poly-evaluated periodic values
         let mut frame0 = EvaluationFrame::<BE>::new(trace.width());
 
-        for c in 0..trace.width() {
-            frame0.current_mut()[c] = trace.get(c, 0);
-            frame0.next_mut()[c] = trace.get(c, 1.min(trace.length() - 1));
+        // fill current row
+        for (c, dst) in frame0.current_mut().iter_mut().enumerate() {
+            *dst = trace.get(c, 0);
+        }
+
+        // fill next row
+        for (c, dst) in frame0.next_mut().iter_mut().enumerate() {
+            *dst = trace.get(c, 1.min(trace.length() - 1));
         }
 
         let mut res0 = vec![BE::ZERO; res_len];
@@ -145,11 +150,9 @@ pub(crate) fn run(
             let g_map = b01(frame.current()[cols.g_map]);
             let g_final = b01(frame.current()[cols.g_final]);
 
-            let mut rounds = Vec::new();
-
-            for j in 0..layout::POSEIDON_ROUNDS {
-                rounds.push(b01(frame.current()[cols.g_r_index(j)]));
-            }
+            let rounds: Vec<bool> = (0..layout::POSEIDON_ROUNDS)
+                .map(|j| b01(frame.current()[cols.g_r_index(j)]))
+                .collect();
 
             let lanes_cur = (
                 fe_s(frame.current()[cols.lane_l]),
@@ -164,30 +167,31 @@ pub(crate) fn run(
                 fe_s(frame.next()[cols.lane_c1]),
             );
 
-            // Optional Poseidon expected next values
-            let pose_constraints = 4 * layout::POSEIDON_ROUNDS;
+            // Optional Poseidon expected next values;
+            // first 2 rate lanes and 2 capacity lanes.
+            let pose_constraints = 12 * layout::POSEIDON_ROUNDS;
             let lanes_exp = if i < pose_constraints {
-                let j = i / 4;
-                let mm = poseidon::derive_poseidon_mds_cauchy_4x4(&pub_inputs.program_commitment);
-                let rc = poseidon::derive_poseidon_round_constants(&pub_inputs.program_commitment);
-                let sl = frame.current()[cols.lane_l];
-                let sr = frame.current()[cols.lane_r];
-                let sc0 = frame.current()[cols.lane_c0];
-                let sc1 = frame.current()[cols.lane_c1];
-                let sl3 = sl * sl * sl;
-                let sr3 = sr * sr * sr;
-                let sc03 = sc0 * sc0 * sc0;
-                let sc13 = sc1 * sc1 * sc1;
-                let yl =
-                    mm[0][0] * sl3 + mm[0][1] * sr3 + mm[0][2] * sc03 + mm[0][3] * sc13 + rc[j][0];
-                let yr =
-                    mm[1][0] * sl3 + mm[1][1] * sr3 + mm[1][2] * sc03 + mm[1][3] * sc13 + rc[j][1];
-                let yc0 =
-                    mm[2][0] * sl3 + mm[2][1] * sr3 + mm[2][2] * sc03 + mm[2][3] * sc13 + rc[j][2];
-                let yc1 =
-                    mm[3][0] * sl3 + mm[3][1] * sr3 + mm[3][2] * sc03 + mm[3][3] * sc13 + rc[j][3];
+                let j = i / 12;
+                let ps = poseidon::get_poseidon_suite(&pub_inputs.program_commitment);
+                let mm = ps.mds;
+                let rc = ps.rc;
 
-                Some((fe_s(yl), fe_s(yr), fe_s(yc0), fe_s(yc1)))
+                // current state s
+                let s: [BE; 12] = core::array::from_fn(|k| frame.current()[cols.lane_index(k)]);
+
+                // s^3
+                let s3 = s.map(|v| {
+                    let v2 = v * v;
+                    v2 * v
+                });
+
+                // y = MDS * s^3 + rc[j]
+                let y: [BE; 12] = core::array::from_fn(|ri| {
+                    let acc = (0..12).fold(BE::ZERO, |acc, c| acc + mm[ri][c] * s3[c]);
+                    acc + rc[j][ri]
+                });
+
+                Some((fe_s(y[0]), fe_s(y[1]), fe_s(y[10]), fe_s(y[11])))
             } else {
                 None
             };
@@ -225,12 +229,14 @@ pub(crate) fn run(
             let vm_snap = if (45..=52).contains(&i) {
                 let wi = i - 45;
                 let dst = frame.current()[cols.sel_dst_index(wi)];
+
                 let a_val = {
                     let mut a = BE::ZERO;
                     for k in 0..layout::NR {
                         a +=
                             frame.current()[cols.sel_a_index(k)] * frame.current()[cols.r_index(k)];
                     }
+
                     a
                 };
                 let b_val = {
@@ -239,6 +245,7 @@ pub(crate) fn run(
                         b +=
                             frame.current()[cols.sel_b_index(k)] * frame.current()[cols.r_index(k)];
                     }
+
                     b
                 };
                 let c_val = {
@@ -247,6 +254,7 @@ pub(crate) fn run(
                         c +=
                             frame.current()[cols.sel_c_index(k)] * frame.current()[cols.r_index(k)];
                     }
+
                     c
                 };
                 let b_const = frame.current()[cols.op_const];
@@ -258,7 +266,7 @@ pub(crate) fn run(
                 let b_sel = frame.current()[cols.op_select];
                 let b_sponge = frame.current()[cols.op_sponge];
                 let imm = frame.current()[cols.imm];
-                
+
                 let res_dbg = b_const * imm
                     + b_mov * a_val
                     + b_add * (a_val + b_val)
