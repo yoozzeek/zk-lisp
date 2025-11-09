@@ -1,14 +1,15 @@
 # zk-lisp
+# Copyright (c) Andrei Kochergin. All rights reserved.
 
-A Lisp-like dialect and compiler for writing zero-knowledge (ZK)
-programs, executable on an experimental virtual machine built on
-top of the Winterfell STARK prover and verifier.
+A Lisp dialect and compiler for running zero-knowledge (ZK)
+programs, executable on an experimental virtual machine built
+on top of the Winterfell STARK prover and verifier.
 
 Disclaimer:
 
-  This is a pure experiment. It 100% contains bugs and security
-  flaws. zk-lisp is not intended for production use, it doesn't
-  even have RAM support yet.
+  This program comes with ABSOLUTELY NO WARRANTY;
+  This is free software, and you are welcome to
+  redistribute it under certain conditions;
 
 How it works:
 
@@ -21,10 +22,15 @@ execution traces and AIR constraints, allowing developers to
 focus on product logic and business use cases
 instead of low-level STARK math.
 
+Program example:
+
+  (def (main x y)
+    (+ x y))
+
 Quickstart:
 
   Run a program:
-    cargo run --bin zk-lisp -- run examples/zk_example.zlisp -- 2 3
+    cargo run --bin zk-lisp -- run examples/zk_example.zlisp --arg 2 --arg 3
 
   Prove and verify:
     cargo run --bin zk-lisp -- \
@@ -35,6 +41,4 @@ Quickstart:
 
 License:
 
-  This project is licensed under the Apache 2.0 License. See LICENSE for details.
-
-Zeek <zeek@tuta.com>
+  This project is licensed under the GPL v3 License. See LICENSE for details.
