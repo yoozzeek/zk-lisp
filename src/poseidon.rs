@@ -2,6 +2,8 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 
@@ -12,6 +14,32 @@ const DOM_POSEIDON_DOM0: &str = "zkl/poseidon2/dom/c0";
 const DOM_POSEIDON_DOM1: &str = "zkl/poseidon2/dom/c1";
 const DOM_POSEIDON_MDS_X: &str = "zkl/poseidon2/mds/x";
 const DOM_POSEIDON_MDS_Y: &str = "zkl/poseidon2/mds/y";
+
+#[derive(Clone)]
+pub struct PoseidonSuite {
+    pub dom: [BE; 2],
+    pub mds: [[BE; 4]; 4],
+    pub rc: [[BE; 4]; POSEIDON_ROUNDS],
+}
+
+static POSEIDON_CACHE: OnceLock<RwLock<HashMap<[u8; 32], PoseidonSuite>>> = OnceLock::new();
+
+pub fn get_poseidon_suite(suite_id: &[u8; 32]) -> PoseidonSuite {
+    if let Some(found) = cache().read().ok().and_then(|m| m.get(suite_id).cloned()) {
+        return found;
+    }
+
+    let dom = derive_poseidon_domain_tags(suite_id);
+    let rc = derive_poseidon_round_constants(suite_id);
+    let mds = derive_poseidon_mds_cauchy_4x4(suite_id);
+    let suite = PoseidonSuite { dom, mds, rc };
+
+    if let Ok(mut w) = cache().write() {
+        w.insert(*suite_id, suite.clone());
+    }
+
+    suite
+}
 
 pub fn derive_poseidon_round_constants(suite_id: &[u8; 32]) -> [[BE; 4]; POSEIDON_ROUNDS] {
     let mut rc = [[BE::ZERO; 4]; POSEIDON_ROUNDS];
@@ -100,22 +128,35 @@ pub fn derive_poseidon_mds_cauchy_4x4(suite_id: &[u8; 32]) -> [[BE; 4]; 4] {
 }
 
 pub fn poseidon_hash_two_lanes(suite_id: &[u8; 32], left: BE, right: BE) -> BE {
-    let dom = derive_poseidon_domain_tags(suite_id);
-    let rc = derive_poseidon_round_constants(suite_id);
-    let m = derive_poseidon_mds_cauchy_4x4(suite_id);
+    let suite = get_poseidon_suite(suite_id);
+    let mut state = [left, right, suite.dom[0], suite.dom[1]];
 
-    let mut state = [left, right, dom[0], dom[1]];
-
-    for rc_r in rc.iter() {
+    for rc_r in suite.rc.iter() {
         let sl = state[0] * state[0] * state[0];
         let sr = state[1] * state[1] * state[1];
         let sc0 = state[2] * state[2] * state[2];
         let sc1 = state[3] * state[3] * state[3];
 
-        let yl = m[0][0] * sl + m[0][1] * sr + m[0][2] * sc0 + m[0][3] * sc1 + rc_r[0];
-        let yr = m[1][0] * sl + m[1][1] * sr + m[1][2] * sc0 + m[1][3] * sc1 + rc_r[1];
-        let yc0 = m[2][0] * sl + m[2][1] * sr + m[2][2] * sc0 + m[2][3] * sc1 + rc_r[2];
-        let yc1 = m[3][0] * sl + m[3][1] * sr + m[3][2] * sc0 + m[3][3] * sc1 + rc_r[3];
+        let yl = suite.mds[0][0] * sl
+            + suite.mds[0][1] * sr
+            + suite.mds[0][2] * sc0
+            + suite.mds[0][3] * sc1
+            + rc_r[0];
+        let yr = suite.mds[1][0] * sl
+            + suite.mds[1][1] * sr
+            + suite.mds[1][2] * sc0
+            + suite.mds[1][3] * sc1
+            + rc_r[1];
+        let yc0 = suite.mds[2][0] * sl
+            + suite.mds[2][1] * sr
+            + suite.mds[2][2] * sc0
+            + suite.mds[2][3] * sc1
+            + rc_r[2];
+        let yc1 = suite.mds[3][0] * sl
+            + suite.mds[3][1] * sr
+            + suite.mds[3][2] * sc0
+            + suite.mds[3][3] * sc1
+            + rc_r[3];
 
         state = [yl, yr, yc0, yc1];
     }
@@ -157,4 +198,8 @@ fn pow2_64() -> BE {
     }
 
     acc
+}
+
+fn cache() -> &'static RwLock<HashMap<[u8; 32], PoseidonSuite>> {
+    POSEIDON_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }

@@ -16,7 +16,7 @@ use winterfell::{
 use crate::air::ZkLispAir;
 use crate::pi::{PublicInputs, be_from_le8};
 use crate::trace::TraceBuilder;
-use crate::{ir, layout, logging, poseidon, schedule};
+use crate::{ir, layout, poseidon, schedule};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -24,6 +24,7 @@ pub enum Error {
     Backend(String),
 }
 
+#[derive(Debug)]
 pub struct ZkProver {
     options: ProofOptions,
     pub_inputs: PublicInputs,
@@ -37,9 +38,16 @@ impl ZkProver {
         }
     }
 
+    #[tracing::instrument(
+        level = "info",
+        skip(self, trace),
+        fields(
+            q = %self.options.num_queries(),
+            blowup = %self.options.blowup_factor(),
+            grind = %self.options.grinding_factor(),
+        )
+    )]
     pub fn prove(&self, trace: TraceTable<BE>) -> Result<Proof, Error> {
-        logging::init();
-
         self.pub_inputs
             .validate_flags()
             .map_err(|e| Error::Backend(e.to_string()))?;
@@ -102,70 +110,18 @@ impl WProver for ZkWinterfellProver {
     fn get_pub_inputs(&self, trace: &Self::Trace) -> <Self::Air as Air>::PublicInputs {
         let mut pi = self.pub_inputs.clone();
 
-        let cols = layout::Columns::baseline();
-        let steps = layout::STEPS_PER_LEVEL_P2;
-        let lvls = trace.length() / steps;
-
         if (pi.feature_mask & crate::pi::FM_KV) != 0 {
-            let mut mask: u128 = 0;
-
-            for lvl in 0..lvls {
-                let base = lvl * steps;
-                let row_map = base + schedule::pos_map();
-                if trace.get(cols.kv_g_map, row_map) == BE::ONE {
-                    mask |= 1u128 << lvl;
-                }
-            }
-
-            pi.kv_levels_mask = mask;
+            pi.kv_levels_mask = Self::compute_kv_levels_mask_from_trace(trace);
         }
 
         // Compute VM output location (last op level)
         if (pi.feature_mask & crate::pi::FM_VM) != 0 {
             // If caller provided explicit
             // VM_EXPECT (via builder/meta), respect it.
-            let has_vm_expect = (pi.feature_mask & crate::pi::FM_VM_EXPECT) != 0;
-            if !has_vm_expect {
-                let mut last_op_lvl: Option<usize> = None;
-                for lvl in (0..lvls).rev() {
-                    let base = lvl * steps;
-                    let row_map = base + schedule::pos_map();
-                    let op_bits = [
-                        cols.op_const,
-                        cols.op_mov,
-                        cols.op_add,
-                        cols.op_sub,
-                        cols.op_mul,
-                        cols.op_neg,
-                        cols.op_eq,
-                        cols.op_select,
-                        cols.op_hash2,
-                        cols.op_assert,
-                    ];
-
-                    if op_bits.iter().any(|&c| trace.get(c, row_map) == BE::ONE) {
-                        last_op_lvl = Some(lvl);
-                        break;
-                    }
-                }
-
-                if let Some(lvl) = last_op_lvl {
-                    let base = lvl * steps;
-                    let row_fin = base + schedule::pos_final();
-
-                    // detect dst reg at final row
-                    let mut out_reg = 0u8;
-
-                    for i in 0..layout::NR {
-                        if trace.get(cols.sel_dst_index(i), row_fin) == BE::ONE {
-                            out_reg = i as u8;
-                            break;
-                        }
-                    }
-
-                    pi.vm_out_reg = out_reg;
-                    pi.vm_out_row = (row_fin + 1) as u32; // value written to next row after final
-                }
+            if (pi.feature_mask & crate::pi::FM_VM_EXPECT) == 0 {
+                let (r, row) = Self::compute_vm_output_from_trace(trace);
+                pi.vm_out_reg = r;
+                pi.vm_out_row = row;
             }
         }
 
@@ -211,6 +167,89 @@ impl WProver for ZkWinterfellProver {
     }
 }
 
+impl ZkWinterfellProver {
+    #[inline]
+    fn compute_kv_levels_mask_from_trace(trace: &TraceTable<BE>) -> u128 {
+        let cols = layout::Columns::baseline();
+        let steps = layout::STEPS_PER_LEVEL_P2;
+        let lvls = trace.length() / steps;
+
+        let mut mask: u128 = 0;
+
+        for lvl in 0..lvls {
+            let base = lvl * steps;
+            let row_map = base + schedule::pos_map();
+
+            if trace.get(cols.kv_g_map, row_map) == BE::ONE {
+                mask |= 1u128 << lvl;
+            }
+        }
+
+        mask
+    }
+
+    #[inline]
+    fn compute_vm_output_from_trace(trace: &TraceTable<BE>) -> (u8, u32) {
+        let cols = layout::Columns::baseline();
+        let steps = layout::STEPS_PER_LEVEL_P2;
+        let lvls = trace.length() / steps;
+
+        let op_bits = [
+            cols.op_const,
+            cols.op_mov,
+            cols.op_add,
+            cols.op_sub,
+            cols.op_mul,
+            cols.op_neg,
+            cols.op_eq,
+            cols.op_select,
+            cols.op_hash2,
+            cols.op_assert,
+        ];
+
+        let mut last_op_lvl: usize = 0;
+        for lvl in (0..lvls).rev() {
+            let base = lvl * steps;
+            let row_map = base + schedule::pos_map();
+
+            if op_bits.iter().any(|&c| trace.get(c, row_map) == BE::ONE) {
+                last_op_lvl = lvl;
+                break;
+            }
+        }
+
+        let base = last_op_lvl * steps;
+        let row_fin = base + schedule::pos_final();
+
+        let mut out_reg = 0u8;
+        for i in 0..layout::NR {
+            if trace.get(cols.sel_dst_index(i), row_fin) == BE::ONE {
+                out_reg = i as u8;
+                break;
+            }
+        }
+
+        (out_reg, (row_fin + 1) as u32)
+    }
+}
+
+pub fn compute_kv_levels_mask(trace: &TraceTable<BE>) -> u128 {
+    ZkWinterfellProver::compute_kv_levels_mask_from_trace(trace)
+}
+
+pub fn compute_vm_output(trace: &TraceTable<BE>) -> (u8, u32) {
+    ZkWinterfellProver::compute_vm_output_from_trace(trace)
+}
+
+#[tracing::instrument(
+    level = "info",
+    skip(proof, pi, opts),
+    fields(
+        q = %opts.num_queries(),
+        blowup = %opts.blowup_factor(),
+        grind = %opts.grinding_factor(),
+    )
+)]
 pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Result<(), Error> {
     let acceptable = winterfell::AcceptableOptions::OptionSet(vec![opts.clone()]);
 
@@ -253,6 +292,7 @@ pub fn build_trace(program: &ir::Program) -> TraceTable<BE> {
 
 /// Build trace using PublicInputs
 /// to seed VM args at level 0 map row.
+#[tracing::instrument(level = "info", skip(program, pi))]
 pub fn build_trace_with_pi(program: &ir::Program, pi: &PublicInputs) -> TraceTable<BE> {
     let mut trace = TraceBuilder::build_from_program(program).expect("trace");
 

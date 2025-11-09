@@ -147,10 +147,11 @@ impl Air for ZkLispAir {
 
         Self::print_degrees_debug(&ctx, &pub_inputs, &features);
 
-        let suite = &pub_inputs.program_commitment;
-        let rc = poseidon_core::derive_poseidon_round_constants(suite);
-        let mds = poseidon_core::derive_poseidon_mds_cauchy_4x4(suite);
-        let dom = poseidon_core::derive_poseidon_domain_tags(suite);
+        let suite_id = &pub_inputs.program_commitment;
+        let ps = poseidon_core::get_poseidon_suite(suite_id);
+        let rc = ps.rc;
+        let mds = ps.mds;
+        let dom = ps.dom;
 
         Self {
             ctx,
@@ -360,10 +361,14 @@ impl Air for ZkLispAir {
         values[1 + POSEIDON_ROUNDS + 3] = p_last;
 
         // interpolate first (1 + R + 1 + 1 + 1)
-        // columns (excluding p_last) to polys over cycle
+        // columns (excluding p_last) all of which 
+        // have length "cycle"; compute twiddles once.
+        let inv_twiddles_cycle = fft::get_inv_twiddles::<BE>(cycle);
+        
         for col in values.iter_mut().take(1 + POSEIDON_ROUNDS + 1 + 1 + 1) {
-            let inv_twiddles = fft::get_inv_twiddles::<BE>(col.len());
-            fft::interpolate_poly(col, &inv_twiddles);
+            debug_assert_eq!(col.len(), cycle);
+            
+            fft::interpolate_poly(col, &inv_twiddles_cycle);
         }
 
         values

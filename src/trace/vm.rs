@@ -16,6 +16,7 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use super::TraceBuilder;
 
 impl TraceBuilder {
+    #[tracing::instrument(level = "info", skip(p))]
     pub fn build_from_program(p: &crate::ir::Program) -> crate::error::Result<TraceTable<BE>> {
         let levels = p.ops.len();
         let cols = Columns::baseline();
@@ -45,9 +46,9 @@ impl TraceBuilder {
 
             // set Poseidon domain tags
             // at map row for all levels
-            let dom = poseidon_core::derive_poseidon_domain_tags(&p.commitment);
-            trace.set(cols.lane_c0, row_map, dom[0]);
-            trace.set(cols.lane_c1, row_map, dom[1]);
+            let suite = poseidon_core::get_poseidon_suite(&p.commitment);
+            trace.set(cols.lane_c0, row_map, suite.dom[0]);
+            trace.set(cols.lane_c1, row_map, suite.dom[1]);
 
             // carry register file into
             // the new level at map row.
@@ -312,7 +313,7 @@ impl TraceBuilder {
 
         // Ensure Poseidon domain tags are
         // present on map rows for all levels.
-        let dom_all = poseidon_core::derive_poseidon_domain_tags(&p.commitment);
+        let dom_all = poseidon_core::get_poseidon_suite(&p.commitment).dom;
 
         for lvl in 0..total_levels {
             let base = lvl * steps;

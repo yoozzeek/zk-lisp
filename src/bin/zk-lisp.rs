@@ -1,4 +1,7 @@
-#![allow(dead_code)]
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
+// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
+
 #![allow(clippy::uninlined_format_args)]
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
@@ -6,8 +9,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use thiserror::Error;
-use winterfell::math::fields::f128::BaseElement as BE;
-use winterfell::math::{FieldElement, StarkField};
+use winterfell::math::StarkField;
 use winterfell::{BatchingMethod, FieldExtension, Proof, ProofOptions, Trace};
 
 #[derive(Parser, Debug, Clone)]
@@ -225,48 +227,6 @@ fn build_pi_for_program(program: &zk_lisp::ir::Program, args: &[u64]) -> zk_lisp
     }
 }
 
-fn detect_vm_output(trace: &winterfell::TraceTable<BE>) -> (u8, u32) {
-    let cols = zk_lisp::layout::Columns::baseline();
-    let steps = zk_lisp::layout::STEPS_PER_LEVEL_P2;
-    let lvls = trace.length() / steps;
-
-    let op_bits = [
-        cols.op_const,
-        cols.op_mov,
-        cols.op_add,
-        cols.op_sub,
-        cols.op_mul,
-        cols.op_neg,
-        cols.op_eq,
-        cols.op_select,
-        cols.op_hash2,
-        cols.op_assert,
-    ];
-
-    let mut last_op_lvl: usize = 0;
-    for lvl in (0..lvls).rev() {
-        let base = lvl * steps;
-        let row_map = base + zk_lisp::schedule::pos_map();
-        if op_bits.iter().any(|&c| trace.get(c, row_map) == BE::ONE) {
-            last_op_lvl = lvl;
-            break;
-        }
-    }
-
-    let base = last_op_lvl * steps;
-    let row_fin = base + zk_lisp::schedule::pos_final();
-
-    let mut out_reg = 0u8;
-    for i in 0..zk_lisp::layout::NR {
-        if trace.get(cols.sel_dst_index(i), row_fin) == BE::ONE {
-            out_reg = i as u8;
-            break;
-        }
-    }
-
-    (out_reg, (row_fin + 1) as u32)
-}
-
 fn cmd_run(args: RunArgs, json: bool, max_bytes: usize) -> Result<()> {
     let src = read_program(&args.path, max_bytes)?;
     let program = zk_lisp::compiler::compile_entry(&src, &args.args)
@@ -277,7 +237,7 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize) -> Result<()> {
     let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi);
 
     // Compute VM output position and value
-    let (out_reg, out_row) = detect_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::prove::compute_vm_output(&trace);
     let cols = zk_lisp::layout::Columns::baseline();
     let val = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
@@ -316,29 +276,13 @@ fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize) -> Result<()> {
     let mut pi = build_pi_for_program(&program, &args.args);
     let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi);
 
-    // Fill dynamic PI parts (kv mask, vm_out_* only if needed later)
-    // kv_levels_mask
+    // Fill dynamic PI parts (kv mask)
     if (pi.feature_mask & zk_lisp::pi::FM_KV) != 0 {
-        let cols = zk_lisp::layout::Columns::baseline();
-        let steps = zk_lisp::layout::STEPS_PER_LEVEL_P2;
-        let lvls = trace.length() / steps;
-
-        let mut mask: u128 = 0;
-
-        for lvl in 0..lvls {
-            let base = lvl * steps;
-            let row_map = base + zk_lisp::schedule::pos_map();
-
-            if trace.get(cols.kv_g_map, row_map) == BE::ONE {
-                mask |= 1u128 << lvl;
-            }
-        }
-
-        pi.kv_levels_mask = mask;
+        pi.kv_levels_mask = zk_lisp::prove::compute_kv_levels_mask(&trace);
     }
 
-    // VM output position (not setting VM_EXPECT here)
-    let (out_reg, out_row) = detect_vm_output(&trace);
+    // VM output position
+    let (out_reg, out_row) = zk_lisp::prove::compute_vm_output(&trace);
     pi.vm_out_reg = out_reg;
     pi.vm_out_row = out_row;
 
@@ -401,26 +345,11 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<()> {
     let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi);
 
     if (pi.feature_mask & zk_lisp::pi::FM_KV) != 0 {
-        let cols = zk_lisp::layout::Columns::baseline();
-        let steps = zk_lisp::layout::STEPS_PER_LEVEL_P2;
-        let lvls = trace.length() / steps;
-
-        let mut mask: u128 = 0;
-
-        for lvl in 0..lvls {
-            let base = lvl * steps;
-            let row_map = base + zk_lisp::schedule::pos_map();
-
-            if trace.get(cols.kv_g_map, row_map) == BE::ONE {
-                mask |= 1u128 << lvl;
-            }
-        }
-
-        pi.kv_levels_mask = mask;
+        pi.kv_levels_mask = zk_lisp::prove::compute_kv_levels_mask(&trace);
     }
 
-    // VM output location (even without VM_EXPECT)
-    let (out_reg, out_row) = detect_vm_output(&trace);
+    // VM output location
+    let (out_reg, out_row) = zk_lisp::prove::compute_vm_output(&trace);
     pi.vm_out_reg = out_reg;
     pi.vm_out_row = out_row;
 
@@ -454,9 +383,17 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<()> {
 }
 
 fn cmd_repl() -> Result<()> {
-    zk_lisp::logging::init();
+    zk_lisp::logging::init_with_level(None);
 
-    println!("zk-lisp REPL. Type :help for help. Ctrl-D to exit.");
+    println!(
+        r"zk-lisp REPL Copyright (C) 2025  Andrei Kochergin
+
+  Type :help for help. Ctrl-D to exit.
+
+  This program comes with ABSOLUTELY NO WARRANTY;
+  This is free software, and you are welcome to
+  redistribute it under certain conditions;"
+    );
 
     let mut _buf = String::new();
     let mut line = String::new();
@@ -536,7 +473,7 @@ fn cmd_repl() -> Result<()> {
             Ok(program) => {
                 let pi = build_pi_for_program(&program, &[]);
                 let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi);
-                let (out_reg, out_row) = detect_vm_output(&trace);
+                let (out_reg, out_row) = zk_lisp::prove::compute_vm_output(&trace);
                 let cols = zk_lisp::layout::Columns::baseline();
                 let val = trace.get(cols.r_index(out_reg as usize), out_row as usize);
                 let v: u128 = val.as_int();
@@ -566,9 +503,7 @@ fn proof_from_bytes(bytes: &[u8]) -> Result<Proof> {
 
 fn main() {
     let cli = Cli::parse();
-    zk_lisp::logging::init();
-
-    let _ = cli.log_level; // currently rely on RUST_LOG env; keep arg for future
+    zk_lisp::logging::init_with_level(Some(&cli.log_level));
 
     let code = match try_main(cli.clone()) {
         Ok(()) => 0,

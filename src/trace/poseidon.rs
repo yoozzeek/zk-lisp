@@ -22,23 +22,21 @@ pub fn apply_level(
     let base = level * steps;
     let row_map = base + schedule::pos_map();
 
-    let dom = poseidon::derive_poseidon_domain_tags(suite_id);
-    let mds = poseidon::derive_poseidon_mds_cauchy_4x4(suite_id);
-    let rc = poseidon::derive_poseidon_round_constants(suite_id);
+    let suite = poseidon::get_poseidon_suite(suite_id);
 
     // map row
     trace.set(cols.lane_l, row_map, left);
     trace.set(cols.lane_r, row_map, right);
-    trace.set(cols.lane_c0, row_map, dom[0]);
-    trace.set(cols.lane_c1, row_map, dom[1]);
+    trace.set(cols.lane_c0, row_map, suite.dom[0]);
+    trace.set(cols.lane_c1, row_map, suite.dom[1]);
 
     // iterate rounds
     let mut sl = left;
     let mut sr = right;
-    let mut sc0 = dom[0];
-    let mut sc1 = dom[1];
+    let mut sc0 = suite.dom[0];
+    let mut sc1 = suite.dom[1];
 
-    for (j, rcj) in rc.iter().enumerate().take(POSEIDON_ROUNDS) {
+    for (j, rcj) in suite.rc.iter().enumerate().take(POSEIDON_ROUNDS) {
         let r = base + 1 + j; // round row
 
         // set current state on round row (s_j)
@@ -53,10 +51,26 @@ pub fn apply_level(
         let sc03 = sc0 * sc0 * sc0;
         let sc13 = sc1 * sc1 * sc1;
 
-        let yl = mds[0][0] * sl3 + mds[0][1] * sr3 + mds[0][2] * sc03 + mds[0][3] * sc13 + rcj[0];
-        let yr = mds[1][0] * sl3 + mds[1][1] * sr3 + mds[1][2] * sc03 + mds[1][3] * sc13 + rcj[1];
-        let yc0 = mds[2][0] * sl3 + mds[2][1] * sr3 + mds[2][2] * sc03 + mds[2][3] * sc13 + rcj[2];
-        let yc1 = mds[3][0] * sl3 + mds[3][1] * sr3 + mds[3][2] * sc03 + mds[3][3] * sc13 + rcj[3];
+        let yl = suite.mds[0][0] * sl3
+            + suite.mds[0][1] * sr3
+            + suite.mds[0][2] * sc03
+            + suite.mds[0][3] * sc13
+            + rcj[0];
+        let yr = suite.mds[1][0] * sl3
+            + suite.mds[1][1] * sr3
+            + suite.mds[1][2] * sc03
+            + suite.mds[1][3] * sc13
+            + rcj[1];
+        let yc0 = suite.mds[2][0] * sl3
+            + suite.mds[2][1] * sr3
+            + suite.mds[2][2] * sc03
+            + suite.mds[2][3] * sc13
+            + rcj[2];
+        let yc1 = suite.mds[3][0] * sl3
+            + suite.mds[3][1] * sr3
+            + suite.mds[3][2] * sc03
+            + suite.mds[3][3] * sc13
+            + rcj[3];
 
         // advance state to s_{j+1}
         sl = yl;

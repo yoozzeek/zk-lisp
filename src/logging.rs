@@ -6,13 +6,16 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
-pub fn init() {
+pub fn init_with_level(level: Option<&str>) {
     INIT.call_once(|| {
         if tracing::dispatcher::has_been_set() {
             return;
         }
 
-        let env = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+        let env = match level {
+            Some(l) if !l.is_empty() => l.to_string(),
+            _ => std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+        };
         let filter = tracing_subscriber::EnvFilter::new(env);
 
         tracing_subscriber::fmt()
