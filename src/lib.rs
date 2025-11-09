@@ -4,7 +4,6 @@
 
 mod air;
 mod commit;
-mod debug;
 mod preflight;
 mod trace;
 mod utils;
@@ -18,3 +17,5 @@ pub mod pi;
 pub mod poseidon;
 pub mod prove;
 pub mod schedule;
+
+pub use preflight::PreflightMode;

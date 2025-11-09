@@ -17,7 +17,11 @@ use winterfell::{
 use crate::air::ZkLispAir;
 use crate::pi::PublicInputs;
 use crate::trace::TraceBuilder;
-use crate::{error, ir, layout, preflight::preflight, schedule};
+use crate::{
+    error, ir, layout,
+    preflight::{PreflightMode, run as run_preflight},
+    schedule,
+};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -33,14 +37,36 @@ pub enum Error {
 pub struct ZkProver {
     options: ProofOptions,
     pub_inputs: PublicInputs,
+    preflight: PreflightMode,
 }
 
 impl ZkProver {
     pub fn new(options: ProofOptions, pub_inputs: PublicInputs) -> Self {
+        let mut pf = if cfg!(debug_assertions) {
+            PreflightMode::Console
+        } else {
+            PreflightMode::Off
+        };
+
+        if let Ok(s) = std::env::var("ZKL_PREFLIGHT") {
+            pf = match s.to_ascii_lowercase().as_str() {
+                "off" => PreflightMode::Off,
+                "console" => PreflightMode::Console,
+                "json" => PreflightMode::Json,
+                _ => pf,
+            };
+        }
+
         Self {
             options,
             pub_inputs,
+            preflight: pf,
         }
+    }
+
+    pub fn with_preflight_mode(mut self, mode: PreflightMode) -> Self {
+        self.preflight = mode;
+        self
     }
 
     #[tracing::instrument(
@@ -65,9 +91,8 @@ impl ZkProver {
             "prove start",
         );
 
-        // Optional preflight in debug
-        if cfg!(debug_assertions) {
-            preflight(&self.options, &self.pub_inputs, &trace)?;
+        if !matches!(self.preflight, PreflightMode::Off) {
+            run_preflight(self.preflight, &self.options, &self.pub_inputs, &trace)?;
         }
 
         let prover = ZkWinterfellProver {
@@ -337,4 +362,13 @@ pub fn build_trace_with_pi(
     }
 
     Ok(trace)
+}
+
+pub fn preflight_check(
+    mode: PreflightMode,
+    options: &ProofOptions,
+    pub_inputs: &PublicInputs,
+    trace: &TraceTable<BE>,
+) -> Result<(), Error> {
+    run_preflight(mode, options, pub_inputs, trace)
 }

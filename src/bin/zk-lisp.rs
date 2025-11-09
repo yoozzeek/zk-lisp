@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 use winterfell::math::StarkField;
 use winterfell::{BatchingMethod, FieldExtension, Proof, ProofOptions, Trace};
-use zk_lisp::{compiler, error, prove};
+use zk_lisp::{PreflightMode, compiler, error, prove};
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -21,15 +21,16 @@ struct Cli {
     /// Global JSON output
     #[arg(long, global = true, default_value_t = false)]
     json: bool,
-
     /// Global log level (trace|debug|info|warn|error)
     #[arg(long, global = true, default_value = "info")]
     log_level: String,
-
     /// Max input file size in bytes
     #[arg(long, global = true, default_value_t = 1_048_576)]
     max_bytes: usize,
-
+    /// Preflight mode:
+    /// off|console|json|auto (auto: console in debug, off in release)
+    #[arg(long, global = true, default_value = "auto")]
+    preflight: String,
     #[command(subcommand)]
     command: Command,
 }
@@ -38,13 +39,10 @@ struct Cli {
 enum Command {
     /// Compile and execute a program, print result
     Run(RunArgs),
-
     /// Create a STARK proof for a program and args; prints proof hex
     Prove(ProveArgs),
-
     /// Verify a proof hex against a program and args
     Verify(VerifyArgs),
-
     /// Minimal interactive REPL
     Repl,
 }
@@ -119,6 +117,12 @@ enum CliError {
     Compile(#[from] compiler::Error),
     #[error("io error")]
     Io(#[from] io::Error),
+    #[error("io error: {source}: {path}")]
+    IoPath {
+        #[source]
+        source: io::Error,
+        path: PathBuf,
+    },
     #[error("prove error")]
     Prover(#[from] prove::Error),
     #[error("verify error")]
@@ -134,7 +138,7 @@ impl CliError {
         match self {
             CliError::InvalidInput(_) => 2,
             CliError::Compile(_) => 3,
-            CliError::Io(_) => 5,
+            CliError::Io(_) | CliError::IoPath { .. } => 5,
             CliError::Prover(_) => 6,
             CliError::Verify(_) => 7,
             CliError::Build(_) => 4,
@@ -145,8 +149,8 @@ impl CliError {
 
 fn try_main(cli: Cli) -> Result<(), CliError> {
     match cli.command {
-        Command::Run(args) => cmd_run(args, cli.json, cli.max_bytes),
-        Command::Prove(args) => cmd_prove(args, cli.json, cli.max_bytes),
+        Command::Run(args) => cmd_run(args, cli.json, cli.max_bytes, &cli.preflight),
+        Command::Prove(args) => cmd_prove(args, cli.json, cli.max_bytes, &cli.preflight),
         Command::Verify(args) => cmd_verify(args, cli.json, cli.max_bytes),
         Command::Repl => cmd_repl(),
     }
@@ -166,7 +170,10 @@ fn proof_opts(queries: u8, blowup: u8, grind: u32) -> ProofOptions {
 }
 
 fn read_program(path: &PathBuf, max_bytes: usize) -> Result<String, CliError> {
-    let meta = fs::metadata(path)?;
+    let meta = fs::metadata(path).map_err(|e| CliError::IoPath {
+        source: e,
+        path: path.clone(),
+    })?;
 
     if meta.len() as usize > max_bytes {
         return Err(CliError::InvalidInput(format!(
@@ -176,7 +183,10 @@ fn read_program(path: &PathBuf, max_bytes: usize) -> Result<String, CliError> {
         )));
     }
 
-    let s = fs::read_to_string(path)?;
+    let s = fs::read_to_string(path).map_err(|e| CliError::IoPath {
+        source: e,
+        path: path.clone(),
+    })?;
 
     Ok(s)
 }
@@ -226,13 +236,19 @@ fn build_pi_for_program(program: &zk_lisp::ir::Program, args: &[u64]) -> zk_lisp
     }
 }
 
-fn cmd_run(args: RunArgs, json: bool, max_bytes: usize) -> Result<(), CliError> {
+fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: &str) -> Result<(), CliError> {
     let src = read_program(&args.path, max_bytes)?;
     let program = compiler::compile_entry(&src, &args.args)?;
 
     let pi = build_pi_for_program(&program, &args.args);
     // Build trace with VM args
     let trace = prove::build_trace_with_pi(&program, &pi)?;
+
+    let pf_mode = parse_preflight_mode(pf);
+    if !matches!(pf_mode, PreflightMode::Off) {
+        let opts = proof_opts(1, 8, 0);
+        prove::preflight_check(pf_mode, &opts, &pi, &trace)?;
+    }
 
     // Compute VM output position and value
     let (out_reg, out_row) = prove::compute_vm_output(&trace);
@@ -263,7 +279,7 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize) -> Result<(), CliError> 
     Ok(())
 }
 
-fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize) -> Result<(), CliError> {
+fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize, pf: &str) -> Result<(), CliError> {
     if args.seed.is_some() {
         return Err(CliError::InvalidInput(
             "seed is not supported yet".to_string(),
@@ -287,14 +303,17 @@ fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize) -> Result<(), CliErr
     pi.vm_out_row = out_row;
 
     let opts = proof_opts(args.queries, args.blowup, args.grind);
-    let prover = prove::ZkProver::new(opts.clone(), pi.clone());
+    let pf_mode = parse_preflight_mode(pf);
+    let prover = prove::ZkProver::new(opts.clone(), pi.clone()).with_preflight_mode(pf_mode);
 
     let proof = prover.prove(trace)?;
 
     // Serialize proof to bytes and hex
     let proof_bytes = proof_to_bytes(&proof)?;
     if let Some(path) = args.out {
-        fs::write(&path, &proof_bytes)?;
+        if let Err(e) = fs::write(&path, &proof_bytes) {
+            return Err(CliError::IoPath { source: e, path });
+        }
     }
 
     let proof_hex = hex::encode(&proof_bytes);
@@ -320,7 +339,10 @@ fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize) -> Result<(), CliErr
 
 fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliError> {
     let proof_bytes = if let Some(path) = args.proof.strip_prefix('@') {
-        let meta = fs::metadata(path)?;
+        let meta = fs::metadata(path).map_err(|e| CliError::IoPath {
+            source: e,
+            path: PathBuf::from(path),
+        })?;
         if meta.len() as usize > max_bytes {
             return Err(CliError::InvalidInput(format!(
                 "proof file too large: {} bytes (limit {})",
@@ -329,7 +351,10 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliE
             )));
         }
 
-        fs::read(path)?
+        fs::read(path).map_err(|e| CliError::IoPath {
+            source: e,
+            path: PathBuf::from(path),
+        })?
     } else {
         let s = args.proof.strip_prefix("0x").unwrap_or(&args.proof);
         if s.len() / 2 > max_bytes {
@@ -492,8 +517,6 @@ fn cmd_repl() -> Result<(), CliError> {
     Ok(())
 }
 
-// --- Proof (de)serialization helpers ---
-
 fn proof_to_bytes(proof: &Proof) -> Result<Vec<u8>, CliError> {
     #[allow(clippy::let_and_return)]
     let bytes = proof.to_bytes();
@@ -504,6 +527,22 @@ fn proof_from_bytes(bytes: &[u8]) -> Result<Proof, CliError> {
     let p = Proof::from_bytes(bytes)
         .map_err(|e| CliError::InvalidInput(format!("invalid proof bytes: {e}")))?;
     Ok(p)
+}
+
+fn parse_preflight_mode(s: &str) -> PreflightMode {
+    match s.to_ascii_lowercase().as_str() {
+        "off" => PreflightMode::Off,
+        "console" => PreflightMode::Console,
+        "json" => PreflightMode::Json,
+        _ => {
+            // auto
+            if cfg!(debug_assertions) {
+                PreflightMode::Console
+            } else {
+                PreflightMode::Off
+            }
+        }
+    }
 }
 
 fn main() {

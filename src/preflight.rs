@@ -7,15 +7,68 @@ use crate::pi::{PublicInputs, be_from_le8};
 use crate::prove::Error;
 use crate::{layout, poseidon};
 
+use comfy_table::{Cell, CellAlignment, ContentArrangement, Table, presets::ASCII_BORDERS_ONLY};
+use serde::Serialize;
 use winterfell::math::fields::f128::BaseElement as BE;
-use winterfell::math::{FieldElement, polynom};
+use winterfell::math::{FieldElement, StarkField, polynom};
 use winterfell::{Air, EvaluationFrame, ProofOptions, Trace, TraceInfo, TraceTable};
 
-pub(crate) fn preflight(
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub enum PreflightMode {
+    Off,
+    Console,
+    Json,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PreflightReport {
+    pub row: usize,
+    pub constraint_idx: usize,
+    pub constraint_val: String,
+    pub pos: usize,
+    pub gates_map: bool,
+    pub gates_final: bool,
+    pub rounds: Vec<bool>,
+    pub lanes_cur: (String, String, String, String),
+    pub lanes_next: (String, String, String, String),
+    pub lanes_exp: Option<(String, String, String, String)>,
+    pub kv: Option<KvSnap>,
+    pub vm: Option<VmSnap>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct KvSnap {
+    pub p_map: String,
+    pub p_final: String,
+    pub ver_cur: String,
+    pub ver_next: String,
+    pub acc_cur: String,
+    pub acc_next: String,
+    pub expect_enabled: bool,
+    pub exp_map: String,
+    pub exp_fin: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct VmSnap {
+    pub dst_reg: Option<usize>,
+    pub a_val: String,
+    pub b_val: String,
+    pub c_val: String,
+    pub lhs: String,
+}
+
+pub(crate) fn run(
+    mode: PreflightMode,
     options: &ProofOptions,
     pub_inputs: &PublicInputs,
     trace: &TraceTable<BE>,
 ) -> Result<(), Error> {
+    if matches!(mode, PreflightMode::Off) {
+        return Ok(());
+    }
+
     let ti = TraceInfo::new(trace.width(), trace.length());
     let air = ZkLispAir::new(ti, pub_inputs.clone(), options.clone());
     let res_len = air.context().num_main_transition_constraints();
@@ -86,46 +139,35 @@ pub(crate) fn preflight(
         air.evaluate_transition(&frame, &pv, &mut res);
 
         if let Some((i, v)) = res.iter().enumerate().find(|&(_, &x)| x != BE::ZERO) {
+            // Build report
             let cols = layout::Columns::baseline();
             let pos = r % layout::STEPS_PER_LEVEL_P2;
-            let g_map = frame.current()[cols.g_map];
-            let g_final = frame.current()[cols.g_final];
+            let g_map = b01(frame.current()[cols.g_map]);
+            let g_final = b01(frame.current()[cols.g_final]);
 
-            let mut g_rounds = Vec::new();
+            let mut rounds = Vec::new();
 
             for j in 0..layout::POSEIDON_ROUNDS {
-                g_rounds.push(frame.current()[cols.g_r_index(j)]);
+                rounds.push(b01(frame.current()[cols.g_r_index(j)]));
             }
 
-            tracing::debug!(
-                target = "proof.preflight",
-                "[preflight] row={r} pos={pos} gates: map={g_map} final={g_final} rounds={g_rounds:?} first_bad={{idx:{i}, val:{v:?}}}"
+            let lanes_cur = (
+                fe_s(frame.current()[cols.lane_l]),
+                fe_s(frame.current()[cols.lane_r]),
+                fe_s(frame.current()[cols.lane_c0]),
+                fe_s(frame.current()[cols.lane_c1]),
+            );
+            let lanes_next = (
+                fe_s(frame.next()[cols.lane_l]),
+                fe_s(frame.next()[cols.lane_r]),
+                fe_s(frame.next()[cols.lane_c0]),
+                fe_s(frame.next()[cols.lane_c1]),
             );
 
-            // extra KV debug
-            let p_map = pc[0][r];
-            let p_final = pc[1 + layout::POSEIDON_ROUNDS][r];
-            let kv_ver = frame.current()[cols.kv_version];
-            let kv_ver_next = frame.next()[cols.kv_version];
-            let kv_acc_cur = frame.current()[cols.kv_acc];
-            let kv_acc_next = frame.next()[cols.kv_acc];
-            let exp_map = be_from_le8(&pub_inputs.kv_map_acc_bytes);
-            let exp_fin = be_from_le8(&pub_inputs.kv_fin_acc_bytes);
-            let exp_en = if (pub_inputs.feature_mask & crate::pi::FM_KV_EXPECT) != 0 {
-                1
-            } else {
-                0
-            };
-
-            tracing::debug!(
-                target = "proof.preflight",
-                "  kv: p_map={p_map:?} p_final={p_final:?} ver_cur={kv_ver:?} ver_next={kv_ver_next:?} acc_cur={kv_acc_cur:?} acc_next={kv_acc_next:?} exp_en={exp_en} exp_map={exp_map:?} exp_fin={exp_fin:?}"
-            );
-
-            // If in Poseidon block, dump lane values and expected next
+            // Optional Poseidon expected next values
             let pose_constraints = 4 * layout::POSEIDON_ROUNDS;
-            if i < pose_constraints {
-                let j = i / 4; // which round
+            let lanes_exp = if i < pose_constraints {
+                let j = i / 4;
                 let mm = poseidon::derive_poseidon_mds_cauchy_4x4(&pub_inputs.program_commitment);
                 let rc = poseidon::derive_poseidon_round_constants(&pub_inputs.program_commitment);
                 let sl = frame.current()[cols.lane_l];
@@ -136,7 +178,6 @@ pub(crate) fn preflight(
                 let sr3 = sr * sr * sr;
                 let sc03 = sc0 * sc0 * sc0;
                 let sc13 = sc1 * sc1 * sc1;
-
                 let yl =
                     mm[0][0] * sl3 + mm[0][1] * sr3 + mm[0][2] * sc03 + mm[0][3] * sc13 + rc[j][0];
                 let yr =
@@ -145,23 +186,46 @@ pub(crate) fn preflight(
                     mm[2][0] * sl3 + mm[2][1] * sr3 + mm[2][2] * sc03 + mm[2][3] * sc13 + rc[j][2];
                 let yc1 =
                     mm[3][0] * sl3 + mm[3][1] * sr3 + mm[3][2] * sc03 + mm[3][3] * sc13 + rc[j][3];
-                let nl = frame.next()[cols.lane_l];
-                let nr = frame.next()[cols.lane_r];
-                let nc0 = frame.next()[cols.lane_c0];
-                let nc1 = frame.next()[cols.lane_c1];
 
-                tracing::debug!(
-                    target = "proof.preflight",
-                    "[poseidon] j={j} cur=(l:{sl:?} r:{sr:?} c0:{sc0:?} c1:{sc1:?}) next=(l:{nl:?} r:{nr:?} c0:{nc0:?} c1:{nc1:?}) exp_next=(l:{yl:?} r:{yr:?} c0:{yc0:?} c1:{yc1:?})"
-                );
-            }
+                Some((fe_s(yl), fe_s(yr), fe_s(yc0), fe_s(yc1)))
+            } else {
+                None
+            };
 
-            // Also dump write-constraint context when in VM-only mode
-            // VM: ctrl=37, carry=8 (idx 37..44), writes=8 (idx 45..52), eq=2 (53..54)
-            if (45..=52).contains(&i) {
-                let wi = i - 45; // register index
+            // KV snapshot
+            let kv_snap = {
+                let p_map = pc[0][r];
+                let p_final = pc[1 + layout::POSEIDON_ROUNDS][r];
+                let kv_ver = frame.current()[cols.kv_version];
+                let kv_ver_next = frame.next()[cols.kv_version];
+                let kv_acc_cur = frame.current()[cols.kv_acc];
+                let kv_acc_next = frame.next()[cols.kv_acc];
+                let exp_map = be_from_le8(&pub_inputs.kv_map_acc_bytes);
+                let exp_fin = be_from_le8(&pub_inputs.kv_fin_acc_bytes);
+                let exp_en = (pub_inputs.feature_mask & crate::pi::FM_KV_EXPECT) != 0;
+
+                if (pub_inputs.feature_mask & crate::pi::FM_KV) != 0 {
+                    Some(KvSnap {
+                        p_map: fe_s(p_map),
+                        p_final: fe_s(p_final),
+                        ver_cur: fe_s(kv_ver),
+                        ver_next: fe_s(kv_ver_next),
+                        acc_cur: fe_s(kv_acc_cur),
+                        acc_next: fe_s(kv_acc_next),
+                        expect_enabled: exp_en,
+                        exp_map: fe_s(exp_map),
+                        exp_fin: fe_s(exp_fin),
+                    })
+                } else {
+                    None
+                }
+            };
+
+            // VM write snapshot (only if write constraint area)
+            let vm_snap = if (45..=52).contains(&i) {
+                let wi = i - 45;
                 let dst = frame.current()[cols.sel_dst_index(wi)];
-                let a_val_dbg = {
+                let a_val = {
                     let mut a = BE::ZERO;
                     for k in 0..layout::NR {
                         a +=
@@ -169,7 +233,7 @@ pub(crate) fn preflight(
                     }
                     a
                 };
-                let b_val_dbg = {
+                let b_val = {
                     let mut b = BE::ZERO;
                     for k in 0..layout::NR {
                         b +=
@@ -177,7 +241,7 @@ pub(crate) fn preflight(
                     }
                     b
                 };
-                let c_val_dbg = {
+                let c_val = {
                     let mut c = BE::ZERO;
                     for k in 0..layout::NR {
                         c +=
@@ -191,69 +255,54 @@ pub(crate) fn preflight(
                 let b_sub = frame.current()[cols.op_sub];
                 let b_mul = frame.current()[cols.op_mul];
                 let b_neg = frame.current()[cols.op_neg];
-                let b_eqb = frame.current()[cols.op_eq];
                 let b_sel = frame.current()[cols.op_select];
                 let b_hash = frame.current()[cols.op_hash2];
                 let imm = frame.current()[cols.imm];
                 let res_dbg = b_const * imm
-                    + b_mov * a_val_dbg
-                    + b_add * (a_val_dbg + b_val_dbg)
-                    + b_sub * (a_val_dbg - b_val_dbg)
-                    + b_mul * (a_val_dbg * b_val_dbg)
-                    + b_neg * (BE::ZERO - a_val_dbg)
-                    + b_sel * (c_val_dbg * a_val_dbg + (BE::ONE - c_val_dbg) * b_val_dbg)
+                    + b_mov * a_val
+                    + b_add * (a_val + b_val)
+                    + b_sub * (a_val - b_val)
+                    + b_mul * (a_val * b_val)
+                    + b_neg * (BE::ZERO - a_val)
+                    + b_sel * (c_val * a_val + (BE::ONE - c_val) * b_val)
                     + b_hash * frame.current()[cols.lane_l];
                 let lhs = frame.next()[cols.r_index(wi)]
                     - ((BE::ONE - dst) * frame.current()[cols.r_index(wi)] + dst * res_dbg);
 
-                tracing::debug!(
-                    target = "proof.preflight",
-                    "  write[idx={wi}] dst={dst:?} res={res_dbg:?} cur={:?} next={:?} lhs={lhs:?}",
-                    frame.current()[cols.r_index(wi)],
-                    frame.next()[cols.r_index(wi)]
-                );
+                Some(VmSnap {
+                    dst_reg: Some(wi),
+                    a_val: fe_s(a_val),
+                    b_val: fe_s(b_val),
+                    c_val: fe_s(c_val),
+                    lhs: fe_s(lhs),
+                })
+            } else {
+                None
+            };
 
-                let mut sel_dst_idxs = Vec::new();
-                let mut sel_a_idxs = Vec::new();
-                let mut sel_b_idxs = Vec::new();
-                let mut sel_c_idxs = Vec::new();
+            let report = PreflightReport {
+                row: r,
+                constraint_idx: i,
+                constraint_val: fe_s(*v),
+                pos,
+                gates_map: g_map,
+                gates_final: g_final,
+                rounds,
+                lanes_cur,
+                lanes_next,
+                lanes_exp,
+                kv: kv_snap,
+                vm: vm_snap,
+            };
 
-                for k in 0..layout::NR {
-                    if frame.current()[cols.sel_dst_index(k)] == BE::ONE {
-                        sel_dst_idxs.push(k);
-                    }
-                    if frame.current()[cols.sel_a_index(k)] == BE::ONE {
-                        sel_a_idxs.push(k);
-                    }
-                    if frame.current()[cols.sel_b_index(k)] == BE::ONE {
-                        sel_b_idxs.push(k);
-                    }
-                    if frame.current()[cols.sel_c_index(k)] == BE::ONE {
-                        sel_c_idxs.push(k);
-                    }
-                }
-
-                tracing::debug!(
-                    target = "proof.preflight",
-                    "  sel_dst={sel_dst_idxs:?} sel_a={sel_a_idxs:?} sel_b={sel_b_idxs:?} sel_c={sel_c_idxs:?}"
-                );
-                tracing::debug!(
-                    target = "proof.preflight",
-                    "  ops(const, mov, add, sub, mul, neg, eq, sel, hash)=({b_const:?},{b_mov:?},{b_add:?},{b_sub:?},{b_mul:?},{b_neg:?},{b_eqb:?},{b_sel:?},{b_hash:?}) a={a_val_dbg:?} b={b_val_dbg:?} c={c_val_dbg:?}"
-                );
+            match mode {
+                PreflightMode::Console => render_console(&report),
+                PreflightMode::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).unwrap_or_default()
+                ),
+                PreflightMode::Off => {}
             }
-
-            // also dump next row trace
-            let cols2 = layout::Columns::baseline();
-            tracing::debug!(
-                target = "proof.preflight",
-                "[next row {}] lanes: l={:?} r={:?} c0={:?} c1={:?}",
-                r + 1,
-                frame.next()[cols2.lane_l],
-                frame.next()[cols2.lane_r],
-                frame.next()[cols2.lane_c0],
-                frame.next()[cols2.lane_c1]
-            );
 
             return Err(Error::Backend(format!(
                 "preflight: constraint {i} non-zero at row {r}: {v:?}"
@@ -261,5 +310,110 @@ pub(crate) fn preflight(
         }
     }
 
+    match mode {
+        PreflightMode::Console => {
+            println!(
+                "preflight: OK (rows={}, constraints={})",
+                trace.length(),
+                res_len
+            );
+        }
+        PreflightMode::Json => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "rows": trace.length(),
+                    "constraints": res_len
+                })
+            );
+        }
+        PreflightMode::Off => {}
+    }
+
     Ok(())
+}
+
+fn render_console(report: &PreflightReport) {
+    let mut t = Table::new();
+    t.load_preset(ASCII_BORDERS_ONLY)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            "row",
+            "pos",
+            "idx",
+            "g_map",
+            "g_fin",
+            "rounds_nz",
+            "lanes(cur)",
+            "lanes(next)",
+            "lanes(exp)",
+            "kv",
+            "vm",
+        ]);
+
+    let rounds_nz = report.rounds.iter().filter(|b| **b).count();
+    let lanes_cur = format!(
+        "{},{},{},{}",
+        report.lanes_cur.0, report.lanes_cur.1, report.lanes_cur.2, report.lanes_cur.3
+    );
+    let lanes_next = format!(
+        "{},{},{},{}",
+        report.lanes_next.0, report.lanes_next.1, report.lanes_next.2, report.lanes_next.3
+    );
+    let lanes_exp = report
+        .lanes_exp
+        .as_ref()
+        .map(|l| format!("{},{},{},{}", l.0, l.1, l.2, l.3))
+        .unwrap_or_else(|| "-".into());
+
+    let kv = if let Some(kv) = &report.kv {
+        format!(
+            "p={} f={} ver {}->{} acc {}->{} exp_en={} map={} fin={}",
+            kv.p_map,
+            kv.p_final,
+            kv.ver_cur,
+            kv.ver_next,
+            kv.acc_cur,
+            kv.acc_next,
+            kv.expect_enabled,
+            kv.exp_map,
+            kv.exp_fin
+        )
+    } else {
+        "-".into()
+    };
+
+    let vm = if let Some(vm) = &report.vm {
+        format!(
+            "dst={:?} a={} b={} c={} lhs={}",
+            vm.dst_reg, vm.a_val, vm.b_val, vm.c_val, vm.lhs
+        )
+    } else {
+        "-".into()
+    };
+
+    t.add_row(vec![
+        Cell::new(format!("{}", report.row)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{}", report.pos)).set_alignment(CellAlignment::Right),
+        Cell::new(format!("{}", report.constraint_idx)).set_alignment(CellAlignment::Right),
+        Cell::new(if report.gates_map { "1" } else { "0" }),
+        Cell::new(if report.gates_final { "1" } else { "0" }),
+        Cell::new(format!("{rounds_nz}")).set_alignment(CellAlignment::Right),
+        Cell::new(lanes_cur),
+        Cell::new(lanes_next),
+        Cell::new(lanes_exp),
+        Cell::new(kv),
+        Cell::new(vm),
+    ]);
+
+    println!("{t}");
+}
+
+fn fe_s(x: BE) -> String {
+    format!("{}", x.as_int())
+}
+
+fn b01(x: BE) -> bool {
+    x == BE::ONE
 }
