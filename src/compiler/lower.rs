@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
+// Copyright (C) 2025  Andrew Kochergin <zeek@tuta.com>
+
 use crate::compiler::{Env, Error};
 use crate::ir::{Op, ProgramBuilder};
 use crate::layout::NR;
@@ -12,6 +16,7 @@ pub enum Ast {
 pub enum Atom {
     Int(u64),
     Sym(String),
+    Str(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +26,7 @@ pub enum Tok {
     Quote,
     Int(u64),
     Sym(String),
+    Str(String),
     Eof,
 }
 
@@ -33,7 +39,6 @@ enum BinOp {
 #[derive(Debug)]
 pub struct LowerCtx<'a> {
     pub b: ProgramBuilder,
-
     env: Env,
     free: Vec<u8>,
     call_stack: Vec<String>,
@@ -63,6 +68,13 @@ impl<'a> LowerCtx<'a> {
 
     fn free_reg(&mut self, r: u8) {
         self.free.push(r);
+    }
+
+    fn clone_reg(&mut self, src: u8) -> Result<u8, Error> {
+        let dst = self.alloc()?;
+        self.b.push(Op::Mov { dst, src });
+
+        Ok(dst)
     }
 
     fn map_var(&mut self, name: &str, r: u8) {
@@ -119,13 +131,17 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<u8, Error> {
 
             Ok(r)
         }
+        Ast::Atom(Atom::Str(_)) => {
+            // String literal must be used
+            // under a macro (str64 "...")
+            Err(Error::InvalidForm("string literal outside macro".into()))
+        }
         Ast::Atom(Atom::Sym(s)) => {
-            let src = cx.get_var(&s)?;
-            let dst = cx.alloc()?;
-
-            cx.b.push(Op::Mov { dst, src });
-
-            Ok(dst)
+            // Variables are cloned into temporaries
+            // to avoid  freeing live variable registers
+            // in nested expressions.
+            let r = cx.get_var(&s)?;
+            cx.clone_reg(r)
         }
         Ast::List(items) if !items.is_empty() => match &items[0] {
             Ast::Atom(Atom::Sym(s)) if s == "let" => lower_let(cx, &items[1..]),
@@ -144,6 +160,11 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<u8, Error> {
             }
             Ast::Atom(Atom::Sym(s)) if s == "assert" => lower_assert(cx, &items[1..]),
             Ast::Atom(Atom::Sym(s)) if s == "if" => lower_if(cx, &items[1..]),
+            Ast::Atom(Atom::Sym(s)) if s == "str64" => lower_str64(cx, &items[1..]),
+            Ast::Atom(Atom::Sym(s)) if s == "bytes32-from-hex" => {
+                lower_bytes32_from_hex(cx, &items[1..])
+            }
+            Ast::Atom(Atom::Sym(s)) if s == "in-set" => lower_in_set(cx, &items[1..]),
             Ast::Atom(Atom::Sym(name)) => {
                 // user function call: (f a b ...)
                 lower_call(cx, name, &items[1..])
@@ -361,8 +382,10 @@ fn lower_hash2(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     if rest.len() != 2 {
         return Err(Error::InvalidForm("hash2".into()));
     }
+
     let a = lower_expr(cx, rest[0].clone())?;
     let b = lower_expr(cx, rest[1].clone())?;
+
     let dst = cx.alloc()?;
 
     cx.b.push(Op::Hash2 { dst, a, b });
@@ -483,6 +506,7 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     if let Some(f1) = rest.get(1) {
         member_form = extract_member_from_quote(f1);
     }
+
     if member_form.is_none() {
         if let Some(f2) = rest.get(2) {
             member_form = extract_member_from_quote(f2);
@@ -570,6 +594,348 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     Ok(())
 }
 
+fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+    // (str64 "...") → digest
+    if rest.len() != 1 {
+        return Err(Error::InvalidForm("str64".into()));
+    }
+
+    let s = match &rest[0] {
+        Ast::Atom(Atom::Str(st)) => st.clone(),
+        _ => return Err(Error::InvalidForm("str64: expects string literal".into())),
+    };
+
+    let bytes_src = s.as_bytes();
+    if bytes_src.len() > 64 {
+        return Err(Error::InvalidForm("str64: length > 64".into()));
+    }
+
+    // Pad to 64
+    let mut buf = [0u8; 64];
+    buf[..bytes_src.len()].copy_from_slice(bytes_src);
+
+    // Build chunk commitments from u64 pairs via Hash2 only
+    // c0 = H(lo0, hi0), c1 = H(lo1, hi1), ...
+    let c_hash = |cx: &mut LowerCtx, lo: u64, hi: u64| -> Result<u8, Error> {
+        let r_lo = cx.alloc()?;
+        cx.b.push(Op::Const { dst: r_lo, imm: lo });
+
+        let r_hi = cx.alloc()?;
+        cx.b.push(Op::Const { dst: r_hi, imm: hi });
+
+        let r_c = cx.alloc()?;
+        cx.b.push(Op::Hash2 {
+            dst: r_c,
+            a: r_lo,
+            b: r_hi,
+        });
+
+        cx.free_reg(r_lo);
+        cx.free_reg(r_hi);
+
+        Ok(r_c)
+    };
+
+    let (lo0, hi0) = u64_pair_from_le_16(&buf[0..16]);
+    let r_c0 = c_hash(cx, lo0, hi0)?;
+    let (lo1, hi1) = u64_pair_from_le_16(&buf[16..32]);
+    let r_c1 = c_hash(cx, lo1, hi1)?;
+    let r_p01 = {
+        let dst = cx.alloc()?;
+        cx.b.push(Op::Hash2 {
+            dst,
+            a: r_c0,
+            b: r_c1,
+        });
+
+        cx.free_reg(r_c0);
+        cx.free_reg(r_c1);
+
+        dst
+    };
+
+    let (lo2, hi2) = u64_pair_from_le_16(&buf[32..48]);
+    let r_c2 = c_hash(cx, lo2, hi2)?;
+    let (lo3, hi3) = u64_pair_from_le_16(&buf[48..64]);
+    let r_c3 = c_hash(cx, lo3, hi3)?;
+    let r_p23 = {
+        let dst = cx.alloc()?;
+        cx.b.push(Op::Hash2 {
+            dst,
+            a: r_c2,
+            b: r_c3,
+        });
+
+        cx.free_reg(r_c2);
+        cx.free_reg(r_c3);
+
+        dst
+    };
+
+    let r_payload = {
+        let dst = cx.alloc()?;
+        cx.b.push(Op::Hash2 {
+            dst,
+            a: r_p01,
+            b: r_p23,
+        });
+
+        cx.free_reg(r_p01);
+        cx.free_reg(r_p23);
+
+        dst
+    };
+
+    // t0 = H(TAG, L), TAG is 64-bit constant derived from blake3("zkl/str64")
+    let tag8 = {
+        let d = blake3::hash(b"zkl/str64");
+        let mut t = [0u8; 8];
+        t.copy_from_slice(&d.as_bytes()[0..8]);
+
+        u64::from_le_bytes(t)
+    };
+
+    let r_tag = cx.alloc()?;
+    cx.b.push(Op::Const {
+        dst: r_tag,
+        imm: tag8,
+    });
+
+    let r_len = cx.alloc()?;
+    cx.b.push(Op::Const {
+        dst: r_len,
+        imm: bytes_src.len() as u64,
+    });
+
+    let r_t0 = {
+        let dst = cx.alloc()?;
+        cx.b.push(Op::Hash2 {
+            dst,
+            a: r_tag,
+            b: r_len,
+        });
+
+        cx.free_reg(r_tag);
+        cx.free_reg(r_len);
+
+        dst
+    };
+
+    // digest = H(t0, payload)
+    let r_digest = cx.alloc()?;
+    cx.b.push(Op::Hash2 {
+        dst: r_digest,
+        a: r_t0,
+        b: r_payload,
+    });
+
+    cx.free_reg(r_t0);
+    cx.free_reg(r_payload);
+
+    Ok(r_digest)
+}
+
+fn lower_bytes32_from_hex(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+    // (bytes32-from-hex "0x...")
+    if rest.len() != 1 {
+        return Err(Error::InvalidForm("bytes32-from-hex".into()));
+    }
+
+    let s = match &rest[0] {
+        Ast::Atom(Atom::Str(st)) => st.clone(),
+        _ => {
+            return Err(Error::InvalidForm(
+                "bytes32-from-hex: expects string literal".into(),
+            ));
+        }
+    };
+
+    let hex_str = s.strip_prefix("0x").unwrap_or(&s);
+    let decoded = match hex::decode(hex_str) {
+        Ok(b) => b,
+        Err(_) => return Err(Error::InvalidForm("bytes32-from-hex: invalid hex".into())),
+    };
+
+    if decoded.len() > 32 {
+        return Err(Error::InvalidForm("bytes32-from-hex: length > 32".into()));
+    }
+
+    // Pad to 32
+    let mut buf = [0u8; 32];
+    buf[..decoded.len()].copy_from_slice(&decoded);
+
+    // Build chunk commitments
+    // from u64 pairs via Hash2.
+    let c_hash = |cx: &mut LowerCtx, lo: u64, hi: u64| -> Result<u8, Error> {
+        let r_lo = cx.alloc()?;
+        cx.b.push(Op::Const { dst: r_lo, imm: lo });
+
+        let r_hi = cx.alloc()?;
+        cx.b.push(Op::Const { dst: r_hi, imm: hi });
+
+        let r_c = cx.alloc()?;
+        cx.b.push(Op::Hash2 {
+            dst: r_c,
+            a: r_lo,
+            b: r_hi,
+        });
+
+        cx.free_reg(r_lo);
+        cx.free_reg(r_hi);
+
+        Ok(r_c)
+    };
+
+    let (lo0, hi0) = u64_pair_from_le_16(&buf[0..16]);
+    let r_c0 = c_hash(cx, lo0, hi0)?;
+    let (lo1, hi1) = u64_pair_from_le_16(&buf[16..32]);
+    let r_c1 = c_hash(cx, lo1, hi1)?;
+
+    let r_payload = {
+        let dst = cx.alloc()?;
+        cx.b.push(Op::Hash2 {
+            dst,
+            a: r_c0,
+            b: r_c1,
+        });
+
+        cx.free_reg(r_c0);
+        cx.free_reg(r_c1);
+
+        dst
+    };
+
+    // t0 = H(TAG, L)
+    let tag8 = {
+        let d = blake3::hash(b"zkl/bytes32");
+        let mut t = [0u8; 8];
+        t.copy_from_slice(&d.as_bytes()[0..8]);
+
+        u64::from_le_bytes(t)
+    };
+
+    let r_tag = cx.alloc()?;
+    cx.b.push(Op::Const {
+        dst: r_tag,
+        imm: tag8,
+    });
+
+    let r_len = cx.alloc()?;
+    cx.b.push(Op::Const {
+        dst: r_len,
+        imm: decoded.len() as u64,
+    });
+
+    let r_t0 = {
+        let dst = cx.alloc()?;
+        cx.b.push(Op::Hash2 {
+            dst,
+            a: r_tag,
+            b: r_len,
+        });
+
+        cx.free_reg(r_tag);
+        cx.free_reg(r_len);
+
+        dst
+    };
+
+    // digest = H(t0, payload)
+    let r_digest = cx.alloc()?;
+    cx.b.push(Op::Hash2 {
+        dst: r_digest,
+        a: r_t0,
+        b: r_payload,
+    });
+
+    cx.free_reg(r_t0);
+    cx.free_reg(r_payload);
+
+    Ok(r_digest)
+}
+
+fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
+    // (in-set x (s1 s2 ...)) -> assert(prod(x - si) == 0)
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("in-set".into()));
+    }
+
+    let x = lower_expr(cx, rest[0].clone())?;
+    let set_list = match &rest[1] {
+        Ast::List(items) => items.clone(),
+        _ => return Err(Error::InvalidForm("in-set: expects list".into())),
+    };
+
+    if set_list.is_empty() {
+        return Err(Error::InvalidForm("in-set: empty set".into()));
+    }
+
+    // Build product
+    let mut r_prod: Option<u8> = None;
+
+    for it in set_list.into_iter() {
+        let si = lower_expr(cx, it)?;
+        let r_diff = cx.alloc()?;
+
+        cx.b.push(Op::Sub {
+            dst: r_diff,
+            a: x,
+            b: si,
+        });
+
+        cx.free_reg(si);
+
+        r_prod = Some(match r_prod.take() {
+            None => r_diff,
+            Some(prev) => {
+                let r_mul = cx.alloc()?;
+
+                cx.b.push(Op::Mul {
+                    dst: r_mul,
+                    a: prev,
+                    b: r_diff,
+                });
+
+                cx.free_reg(prev);
+                cx.free_reg(r_diff);
+
+                r_mul
+            }
+        });
+    }
+
+    let r_zero = cx.alloc()?;
+
+    cx.b.push(Op::Const {
+        dst: r_zero,
+        imm: 0,
+    });
+
+    let prev = r_prod.unwrap();
+    let r_eq = cx.alloc()?;
+
+    cx.b.push(Op::Eq {
+        dst: r_eq,
+        a: prev,
+        b: r_zero,
+    });
+
+    cx.free_reg(r_zero);
+    cx.free_reg(prev);
+
+    let r_out = cx.alloc()?;
+
+    cx.b.push(Op::Assert {
+        dst: r_out,
+        c: r_eq,
+    });
+
+    cx.free_reg(r_eq);
+    cx.free_reg(x);
+
+    Ok(r_out)
+}
+
 // find the quoted (member ...)
 // list at rest[1] or rest[2]
 fn extract_member_from_quote(ast: &Ast) -> Option<&Ast> {
@@ -592,4 +958,15 @@ fn extract_member_from_quote(ast: &Ast) -> Option<&Ast> {
     }
 
     None
+}
+
+fn u64_pair_from_le_16(b16: &[u8]) -> (u64, u64) {
+    debug_assert!(b16.len() == 16);
+
+    let mut lo8 = [0u8; 8];
+    let mut hi8 = [0u8; 8];
+    lo8.copy_from_slice(&b16[0..8]);
+    hi8.copy_from_slice(&b16[8..16]);
+
+    (u64::from_le_bytes(lo8), u64::from_le_bytes(hi8))
 }

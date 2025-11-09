@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
+// Copyright (C) 2025  Andrew Kochergin <zeek@tuta.com>
+
 mod lower;
 
 use crate::ir::{Op, Program};
@@ -165,20 +169,105 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
             '(' => {
                 out.push(Tok::LParen);
                 it.next();
-
                 i += 1;
             }
             ')' => {
                 out.push(Tok::RParen);
                 it.next();
-
                 i += 1;
             }
             '\'' => {
                 out.push(Tok::Quote);
                 it.next();
-
                 i += 1;
+            }
+            '"' => {
+                it.next(); // consume opening quote
+                i += 1;
+
+                let mut s = String::new();
+                while let Some(&c2) = it.peek() {
+                    match c2 {
+                        '"' => {
+                            it.next();
+                            i += 1;
+
+                            break;
+                        }
+                        '\\' => {
+                            it.next();
+                            i += 1;
+
+                            let Some(&e) = it.peek() else {
+                                return Err(Error::Eof);
+                            };
+                            match e {
+                                '"' => {
+                                    s.push('"');
+                                    it.next();
+
+                                    i += 1;
+                                }
+                                '\\' => {
+                                    s.push('\\');
+                                    it.next();
+
+                                    i += 1;
+                                }
+                                'n' => {
+                                    s.push('\n');
+                                    it.next();
+                                    i += 1;
+                                }
+                                'r' => {
+                                    s.push('\r');
+                                    it.next();
+                                    i += 1;
+                                }
+                                't' => {
+                                    s.push('\t');
+                                    it.next();
+                                    i += 1;
+                                }
+                                'x' => {
+                                    it.next();
+                                    i += 1;
+
+                                    let h1 = it.peek().copied().ok_or(Error::Eof)?;
+                                    let _ = it.next();
+                                    i += 1;
+
+                                    let h2 = it.peek().copied().ok_or(Error::Eof)?;
+                                    let _ = it.next();
+                                    i += 1;
+
+                                    let parse_hex = |hc: char| -> Option<u8> {
+                                        match hc {
+                                            '0'..='9' => Some(hc as u8 - b'0'),
+                                            'a'..='f' => Some(hc as u8 - b'a' + 10),
+                                            'A'..='F' => Some(hc as u8 - b'A' + 10),
+                                            _ => None,
+                                        }
+                                    };
+
+                                    let hi = parse_hex(h1).ok_or(Error::Lex(h1, i))?;
+                                    let lo = parse_hex(h2).ok_or(Error::Lex(h2, i))?;
+                                    let val = (hi << 4) | lo;
+
+                                    s.push(val as char);
+                                }
+                                other => return Err(Error::Lex(other, i)),
+                            }
+                        }
+                        c => {
+                            s.push(c);
+                            it.next();
+                            i += 1;
+                        }
+                    }
+                }
+
+                out.push(Tok::Str(s));
             }
             ' ' | '\n' | '\r' | '\t' => {
                 it.next();
@@ -190,7 +279,6 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
                     if c2.is_ascii_digit() {
                         s.push(c2);
                         it.next();
-
                         i += 1;
                     } else {
                         break;
@@ -207,7 +295,6 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
                         if is_sym_continue(c2) {
                             s.push(c2);
                             it.next();
-
                             i += 1;
                         } else {
                             break;
@@ -279,6 +366,7 @@ fn parse_one(q: &mut VecDeque<Tok>) -> Result<Ast, Error> {
         Tok::RParen => Err(Error::Unmatched),
         Tok::Int(v) => Ok(Ast::Atom(Atom::Int(v))),
         Tok::Sym(s) => Ok(Ast::Atom(Atom::Sym(s))),
+        Tok::Str(s) => Ok(Ast::Atom(Atom::Str(s))),
         Tok::Eof => Err(Error::Eof),
     }
 }
