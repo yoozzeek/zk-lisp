@@ -25,20 +25,21 @@ impl PoseidonBlock {
         }
 
         // Hold constraints on non-round rows:
-        // map/final/pad except last pad;
-        // base=3 to cover x^3 terms and s_pos; 
-        // cycles=2 to conservatively account for 
-        // two periodic factors (e.g. p_map and p_last)
-        // in mixers.
+        // pad rows except last pad)
+        // base=1 (linear), cycles=1
         for _ in 0..4 {
             out.push(TransitionConstraintDegree::with_cycles(
-                3,
+                1,
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
+    }
 
+    pub fn push_degrees_vm_bind(out: &mut Vec<TransitionConstraintDegree>) {
         // VM->lane binding at map row for
         // Hash2 (lane_l and lane_r).
+        // base=3 (b_hash * (lane - sum sel*reg)),
+        // cycles=1 (p_map)
         for _ in 0..2 {
             out.push(TransitionConstraintDegree::with_cycles(
                 3,
@@ -64,14 +65,9 @@ where
         let cur = frame.current();
         let next = frame.next();
         let mm = ctx.poseidon_mds;
-        let ver = cur[ctx.cols.kv_version];
-
-        // mixers for Poseidon constraints:
-        // use deg~(1 + 1) after dividing by z
-        // s_pos = p_last * p_map * kv_version
+        
+        // Gate for map-row constraints
         let p_map = periodic[0];
-        let p_last = periodic[1 + POSEIDON_ROUNDS + 3];
-        let s_pos = p_last * p_map * ver * ver;
 
         for j in 0..POSEIDON_ROUNDS {
             let gr = periodic[1 + j];
@@ -108,13 +104,13 @@ where
                 + E::from(mm[3][3]) * sc13
                 + E::from(rc[3]);
 
-            result[*ix] = gr * (next[ctx.cols.lane_l] - yl) + s_pos;
+            result[*ix] = gr * (next[ctx.cols.lane_l] - yl);
             *ix += 1;
-            result[*ix] = gr * (next[ctx.cols.lane_r] - yr) + s_pos;
+            result[*ix] = gr * (next[ctx.cols.lane_r] - yr);
             *ix += 1;
-            result[*ix] = gr * (next[ctx.cols.lane_c0] - yc0) + s_pos;
+            result[*ix] = gr * (next[ctx.cols.lane_c0] - yc0);
             *ix += 1;
-            result[*ix] = gr * (next[ctx.cols.lane_c1] - yc1) + s_pos;
+            result[*ix] = gr * (next[ctx.cols.lane_c1] - yc1);
             *ix += 1;
         }
 
@@ -124,30 +120,31 @@ where
         let p_pad_last = periodic[1 + POSEIDON_ROUNDS + 2];
         let g_hold = p_pad - p_pad_last;
 
-        result[*ix] = g_hold * (next[ctx.cols.lane_l] - cur[ctx.cols.lane_l]) + s_pos;
+        result[*ix] = g_hold * (next[ctx.cols.lane_l] - cur[ctx.cols.lane_l]);
         *ix += 1;
-        result[*ix] = g_hold * (next[ctx.cols.lane_r] - cur[ctx.cols.lane_r]) + s_pos;
+        result[*ix] = g_hold * (next[ctx.cols.lane_r] - cur[ctx.cols.lane_r]);
         *ix += 1;
-        result[*ix] = g_hold * (next[ctx.cols.lane_c0] - cur[ctx.cols.lane_c0]) + s_pos;
+        result[*ix] = g_hold * (next[ctx.cols.lane_c0] - cur[ctx.cols.lane_c0]);
         *ix += 1;
-        result[*ix] = g_hold * (next[ctx.cols.lane_c1] - cur[ctx.cols.lane_c1]) + s_pos;
+        result[*ix] = g_hold * (next[ctx.cols.lane_c1] - cur[ctx.cols.lane_c1]);
         *ix += 1;
 
-        // Bind map-row lanes to
-        // VM-selected inputs for Hash2
-        let b_hash = cur[ctx.cols.op_hash2];
+        // Bind map-row lanes to VM-selected inputs for Hash2
+        if ctx.pub_inputs.get_features().vm && ctx.pub_inputs.get_features().hash2 {
+            let b_hash = cur[ctx.cols.op_hash2];
 
-        let mut a_val = E::ZERO;
-        let mut b_val = E::ZERO;
+            let mut a_val = E::ZERO;
+            let mut b_val = E::ZERO;
 
-        for i in 0..NR {
-            a_val += cur[ctx.cols.sel_a_index(i)] * cur[ctx.cols.r_index(i)];
-            b_val += cur[ctx.cols.sel_b_index(i)] * cur[ctx.cols.r_index(i)];
+            for i in 0..NR {
+                a_val += cur[ctx.cols.sel_a_index(i)] * cur[ctx.cols.r_index(i)];
+                b_val += cur[ctx.cols.sel_b_index(i)] * cur[ctx.cols.r_index(i)];
+            }
+
+            result[*ix] = p_map * b_hash * (cur[ctx.cols.lane_l] - a_val);
+            *ix += 1;
+            result[*ix] = p_map * b_hash * (cur[ctx.cols.lane_r] - b_val);
+            *ix += 1;
         }
-
-        result[*ix] = p_map * b_hash * (cur[ctx.cols.lane_l] - a_val) + s_pos;
-        *ix += 1;
-        result[*ix] = p_map * b_hash * (cur[ctx.cols.lane_r] - b_val) + s_pos;
-        *ix += 1;
     }
 }

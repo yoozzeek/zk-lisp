@@ -94,6 +94,10 @@ impl Air for ZkLispAir {
         let features = pub_inputs.get_features();
         if features.poseidon {
             PoseidonBlock::push_degrees(&mut degrees);
+
+            if features.vm && features.hash2 {
+                PoseidonBlock::push_degrees_vm_bind(&mut degrees);
+            }
         }
         if features.vm {
             VmCtrlBlock::push_degrees(&mut degrees);
