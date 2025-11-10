@@ -1,96 +1,270 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of zk-lisp.
-
-//! generate_root: host-side helper to compute commitment and expected root
-//! for the merkle_inclusion example program with main+branching.
-//!
-//! Usage:
-//!   cargo run --example generate_root -- <dir:0|1> <sibling:u64>
-//! Prints:
-//!   commitment and expected_root_hex suitable for merkle_inclusion
+// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use std::env;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField};
 use zk_lisp::logging;
 
-fn parse_args() -> Result<(u64, u64), String> {
-    let mut it = env::args().skip(1);
-
-    let d = it.next().ok_or_else(|| "missing <dir:0|1>".to_string())?;
-    let dir = d
-        .parse::<u64>()
-        .map_err(|_| format!("invalid dir: '{d}'"))?;
-
-    if dir > 1 {
-        return Err("dir must be 0 or 1".into());
-    }
-
-    let s = it
-        .next()
-        .ok_or_else(|| "missing <sibling:u64>".to_string())?;
-    let sib = s
-        .parse::<u64>()
-        .map_err(|_| format!("invalid sibling: '{s}'"))?;
-
-    Ok((dir, sib))
-}
-
 fn main() {
     logging::init_with_level(None);
+    tracing::info!(target = "examples.generate_root", "start");
 
-    let (dir, sib) = match parse_args() {
-        Ok(v) => v,
-        Err(msg) => {
+    let mut it = env::args().skip(1);
+    let mode = match it.next() {
+        Some(m) => m,
+        None => {
             tracing::error!(
                 target = "examples.generate_root",
-                "usage: cargo run --example generate_root -- <dir:0|1> <sibling:u64>\nerror: {msg}"
+                "usage: airdrop <addr> <amount> <d:s,...> | verify <leaf> <d:s,...>"
             );
             return;
         }
     };
 
-    // Program must match merkle_inclusion
-    let src = r#"
-(def (main dir sib)
-  (let ((x (kv-step dir sib)))
-    (kv-final)))
-"#;
-    // compile_entry to mirror merkle_inclusion
-    let program = zk_lisp::compiler::compile_entry(src, &[dir, sib]).expect("compile");
-    let suite_id = program.commitment;
+    match mode.as_str() {
+        "airdrop" => {
+            let addr = match it.next().and_then(|s| s.parse::<u64>().ok()) {
+                Some(v) => v,
+                None => {
+                    tracing::error!(target = "examples.generate_root", "missing <addr>");
+                    return;
+                }
+            };
+            let amount = match it.next().and_then(|s| s.parse::<u64>().ok()) {
+                Some(v) => v,
+                None => {
+                    tracing::error!(target = "examples.generate_root", "missing <amount>");
+                    return;
+                }
+            };
+            let pairs_s = match it.next() {
+                Some(v) => v,
+                None => {
+                    tracing::error!(target = "examples.generate_root", "missing <path_pairs>");
+                    return;
+                }
+            };
+            let pairs = match parse_pairs(&pairs_s) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(target = "examples.generate_root", "{e}");
+                    return;
+                }
+            };
 
-    // Expected root for one KV step with acc0=0 and dynamic dir.
-    // left = (1 - dir) * acc0 + dir * sib = dir * sib
-    // right = (1 - dir) * sib + dir * acc0 = (1 - dir) * sib
-    let d = BE::from(dir);
-    let sib_fe = BE::from(sib);
-    let left = (BE::ONE - d) * BE::ZERO + d * sib_fe;
-    let right = (BE::ONE - d) * sib_fe + d * BE::ZERO;
-    let h = zk_lisp::poseidon::poseidon_hash_two_lanes(&suite_id, left, right);
-    let n: u128 = h.as_int();
+            let program = build_airdrop_program(addr, amount, &pairs);
+            let root = compute_root_for_airdrop(&program.commitment, addr, amount, &pairs);
+            let commit_hex = format!(
+                "0x{}",
+                program
+                    .commitment
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            );
+            let root_hex = be_to_hex128(root);
 
-    // Hex helpers
-    let commit_hex = format!(
-        "0x{}",
-        suite_id
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    );
-    let root_hex = format!("0x{n:032x}");
+            tracing::info!(
+                target = "examples.generate_root",
+                "commitment = {commit_hex}"
+            );
+            tracing::info!(
+                target = "examples.generate_root",
+                "expected_root_hex = {root_hex}"
+            );
+            tracing::info!(target = "examples.generate_root", "-- verify with:");
+            tracing::info!(
+                target = "examples.generate_root",
+                "cargo run --example merkle_airdrop_claim -- {addr} {amount} {pairs_s} {root_hex}"
+            );
+        }
+        "verify" => {
+            let leaf = match it.next().and_then(|s| s.parse::<u64>().ok()) {
+                Some(v) => v,
+                None => {
+                    tracing::error!(target = "examples.generate_root", "missing <leaf>");
+                    return;
+                }
+            };
+            let pairs_s = match it.next() {
+                Some(v) => v,
+                None => {
+                    tracing::error!(target = "examples.generate_root", "missing <path_pairs>");
+                    return;
+                }
+            };
+            let pairs = match parse_pairs(&pairs_s) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(target = "examples.generate_root", "{e}");
+                    return;
+                }
+            };
 
-    tracing::info!(
-        target = "examples.generate_root",
-        "commitment = {commit_hex}"
+            let program = build_verify_program(leaf, &pairs);
+            let root = compute_root_for_leaf(&program.commitment, leaf, &pairs);
+            let commit_hex = format!(
+                "0x{}",
+                program
+                    .commitment
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            );
+            let root_hex = be_to_hex128(root);
+
+            tracing::info!(
+                target = "examples.generate_root",
+                "commitment = {commit_hex}"
+            );
+            tracing::info!(
+                target = "examples.generate_root",
+                "expected_root_hex = {root_hex}"
+            );
+            tracing::info!(target = "examples.generate_root", "-- verify with:");
+            tracing::info!(
+                target = "examples.generate_root",
+                "cargo run --example merkle_verify -- {leaf} {pairs_s} {root_hex}"
+            );
+        }
+        _ => {
+            tracing::error!(
+                target = "examples.generate_root",
+                "unknown mode: {mode}. Use 'airdrop' or 'verify'"
+            );
+        }
+    }
+}
+
+fn parse_pairs(s: &str) -> Result<Vec<(u64, u64)>, String> {
+    if s.trim().is_empty() {
+        return Err("empty path".into());
+    }
+
+    let mut out = Vec::new();
+    for (i, part) in s.split(',').enumerate() {
+        let mut it = part.split(':');
+        let d = it
+            .next()
+            .ok_or_else(|| format!("pair {i}: missing dir"))?
+            .parse::<u64>()
+            .map_err(|_| format!("pair {i}: invalid dir"))?;
+
+        if d > 1 {
+            return Err(format!("pair {i}: dir must be 0 or 1"));
+        }
+
+        let s = it
+            .next()
+            .ok_or_else(|| format!("pair {i}: missing sib"))?
+            .parse::<u64>()
+            .map_err(|_| format!("pair {i}: invalid sib"))?;
+
+        out.push((d, s));
+    }
+
+    Ok(out)
+}
+
+fn be_to_hex128(v: BE) -> String {
+    let n: u128 = v.as_int();
+    format!("0x{n:032x}")
+}
+
+fn build_airdrop_program(
+    addr: u64,
+    amount: u64,
+    pairs: &[(u64, u64)],
+) -> zk_lisp::compiler::ir::Program {
+    let mut params = vec!["addr".to_string(), "amount".to_string()];
+    let mut pairs_src = String::new();
+
+    for (i, _) in pairs.iter().enumerate() {
+        params.push(format!("d{i}"));
+        params.push(format!("s{i}"));
+
+        if !pairs_src.is_empty() {
+            pairs_src.push(' ');
+        }
+
+        pairs_src.push_str(&format!("(d{i} s{i})"));
+    }
+
+    let src = format!(
+        r#"(def (main {}) (let ((r (hash2 addr amount))) (merkle-verify r ({})) r))"#,
+        params.join(" "),
+        pairs_src
     );
-    tracing::info!(
-        target = "examples.generate_root",
-        "expected_root_hex = {root_hex}"
+
+    let mut argv: Vec<u64> = vec![addr, amount];
+    for &(d, s) in pairs {
+        argv.push(d);
+        argv.push(s);
+    }
+
+    zk_lisp::compiler::compile_entry(&src, &argv).expect("compile")
+}
+
+fn build_verify_program(leaf: u64, pairs: &[(u64, u64)]) -> zk_lisp::compiler::ir::Program {
+    let mut params = vec!["leaf".to_string()];
+    let mut pairs_src = String::new();
+
+    for (i, _) in pairs.iter().enumerate() {
+        params.push(format!("d{i}"));
+        params.push(format!("s{i}"));
+        if !pairs_src.is_empty() {
+            pairs_src.push(' ');
+        }
+        pairs_src.push_str(&format!("(d{i} s{i})"));
+    }
+
+    let src = format!(
+        r#"(def (main {}) (merkle-verify leaf ({})))"#,
+        params.join(" "),
+        pairs_src
     );
-    tracing::info!(target = "examples.generate_root", "-- verify with:");
-    tracing::info!(
-        target = "examples.generate_root",
-        "cargo run --example merkle_inclusion -- {dir} {sib} {root_hex}"
-    );
+
+    let mut argv: Vec<u64> = vec![leaf];
+    for &(d, s) in pairs {
+        argv.push(d);
+        argv.push(s);
+    }
+
+    zk_lisp::compiler::compile_entry(&src, &argv).expect("compile")
+}
+
+fn compute_root_for_airdrop(
+    commitment: &[u8; 32],
+    addr: u64,
+    amount: u64,
+    pairs: &[(u64, u64)],
+) -> BE {
+    let mut acc =
+        zk_lisp::poseidon::poseidon_hash_two_lanes(commitment, BE::from(addr), BE::from(amount));
+    for &(d, s) in pairs {
+        let dir = BE::from(d);
+        let sib = BE::from(s);
+        let left = (BE::ONE - dir) * acc + dir * sib;
+        let right = (BE::ONE - dir) * sib + dir * acc;
+
+        acc = zk_lisp::poseidon::poseidon_hash_two_lanes(commitment, left, right);
+    }
+
+    acc
+}
+
+fn compute_root_for_leaf(commitment: &[u8; 32], leaf: u64, pairs: &[(u64, u64)]) -> BE {
+    let mut acc = BE::from(leaf);
+    for &(d, s) in pairs {
+        let dir = BE::from(d);
+        let sib = BE::from(s);
+        let left = (BE::ONE - dir) * acc + dir * sib;
+        let right = (BE::ONE - dir) * sib + dir * acc;
+
+        acc = zk_lisp::poseidon::poseidon_hash_two_lanes(commitment, left, right);
+    }
+
+    acc
 }

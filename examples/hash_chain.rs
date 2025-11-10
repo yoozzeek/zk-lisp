@@ -3,6 +3,7 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use std::env;
+use std::error::Error;
 use winterfell::ProofOptions;
 use winterfell::math::StarkField;
 use winterfell::math::fields::f128::BaseElement as BE;
@@ -10,7 +11,6 @@ use zk_lisp::compiler::compile_entry;
 use zk_lisp::logging;
 use zk_lisp::poseidon::poseidon_hash_two_lanes;
 use zk_lisp::prove::{self, ZkProver, verify_proof};
-use std::error::Error;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -127,7 +127,7 @@ fn main() {
     match prover.prove(trace) {
         Err(e) => {
             tracing::error!(target = "examples.hash_chain", "prove failed: {e}");
-            
+
             let mut s = e.source();
             while let Some(c) = s {
                 tracing::error!(target = "examples.hash_chain", "caused by: {}", c);
@@ -140,13 +140,13 @@ fn main() {
                 Ok(()) => tracing::info!(target = "examples.hash_chain", "OK"),
                 Err(e) => {
                     tracing::error!(target = "examples.hash_chain", "VERIFY FAILED: {e}");
-                    
+
                     let mut s = e.source();
                     while let Some(c) = s {
                         tracing::error!(target = "examples.hash_chain", "caused by: {}", c);
                         s = c.source();
                     }
-                },
+                }
             }
         }
     }
