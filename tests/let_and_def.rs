@@ -25,15 +25,17 @@ fn let_nested_and_shadowing_positive() {
     // Two independent let scenarios
     // cover nested binds and shadowing
     let src = r"
-        (let ((x 2) (y 3))
-            (let ((z (+ x y)))
+        (def (main)
+          (+
+            (let ((x 2) (y 3))
+              (let ((z (+ x y)))
                 (assert (= z 5))))
-        (let ((x 2))
-            (let ((x 3))
-                (assert (= x 3))))
+            (let ((x 2))
+              (let ((x 3))
+                (assert (= x 3))))))
     ";
 
-    let program = compile_str(src).expect("compile");
+    let program = zk_lisp::compiler::compile_entry(src, &[]).expect("compile");
     let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
@@ -59,10 +61,10 @@ fn def_function_and_call_positive() {
     // Define and call a function
     let src = r"
         (def (add2 a b) (+ a b))
-        (assert (= (add2 7 8) 15))
+        (def (main) (assert (= (add2 7 8) 15)))
     ";
 
-    let program = compile_str(src).expect("compile");
+    let program = zk_lisp::compiler::compile_entry(src, &[]).expect("compile");
     let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
