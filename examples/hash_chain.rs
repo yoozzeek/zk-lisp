@@ -8,9 +8,8 @@ use winterfell::math::StarkField;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp::compiler::compile_entry;
 use zk_lisp::logging;
-use zk_lisp::pi::PublicInputsBuilder;
 use zk_lisp::poseidon::poseidon_hash_two_lanes;
-use zk_lisp::prove::{ZkProver, verify_proof};
+use zk_lisp::prove::{self, ZkProver, verify_proof};
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -109,14 +108,15 @@ fn main() {
         b
     };
 
-    // Build PI and trace using ProgramMeta
-    let pi = PublicInputsBuilder::for_program(&program)
+    // Build PI via builder and disable SPONGE explicitly
+    let pi = zk_lisp::pi::PublicInputsBuilder::for_program(&program)
         .vm_args(&[x, y, z])
+        .sponge(false)
         .vm_expect_from_meta(&program, &expected_bytes)
         .build()
         .expect("pi");
 
-    let trace = zk_lisp::prove::build_trace_with_pi(&program, &pi).expect("trace");
+    let trace = prove::build_trace_with_pi(&program, &pi).expect("trace");
 
     tracing::info!(target = "examples.hash_chain", "proving...");
 
