@@ -94,43 +94,40 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
     let mut y = derive_points(DOM_POSEIDON_MDS_Y, suite_id, 12);
 
     // Ensure x_i + y_j != 0 for all i,j
-    for (j, yj_mut) in y.iter_mut().enumerate().take(12) {
-        let mut tries: u32 = 0;
-        loop {
-            let yj = *yj_mut;
-            let mut ok = true;
-
-            for xi in &x {
-                if *xi + yj == BE::ZERO {
+    // using global deterministic adjustments
+    let mut adj_ctr: u32 = 0;
+    loop {
+        let mut ok = true;
+        'outer: for xi in &x {
+            for yj in &y {
+                if *xi + *yj == BE::ZERO {
                     ok = false;
-                    break;
+                    break 'outer;
                 }
             }
+        }
 
-            if ok {
-                break;
-            }
+        if ok {
+            break;
+        }
 
-            // derive next candidate
-            // deterministically.
-            tries = tries.wrapping_add(1);
+        // Adjust whole Y set deterministically
+        for (j, yj) in y.iter_mut().enumerate() {
+            let j_b = [j as u8];
+            let adj_b = adj_ctr.to_le_bytes();
+            let cand = ro_from_slices(DOM_POSEIDON_MDS_Y, &[&suite_id[..], &j_b[..], &adj_b[..]]);
 
-            if tries < (1 << 20) {
-                let j_b = [j as u8];
-                let ctr_b = tries.to_le_bytes();
-                let cand =
-                    ro_from_slices(DOM_POSEIDON_MDS_Y, &[&suite_id[..], &j_b[..], &ctr_b[..]]);
-
-                *yj_mut = if cand == BE::ZERO {
-                    BE::from(1u64)
-                } else {
-                    cand
-                };
+            *yj = if cand == BE::ZERO {
+                BE::from(1u64)
             } else {
-                // fallback avoiding trivial zeros
-                let cand = BE::from(1u64 + j as u64 + tries as u64);
-                *yj_mut = cand;
-            }
+                cand
+            };
+        }
+
+        adj_ctr = adj_ctr.wrapping_add(1);
+
+        if adj_ctr > (1 << 24) {
+            panic!("poseidon MDS derivation did not converge");
         }
     }
 

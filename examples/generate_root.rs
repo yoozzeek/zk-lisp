@@ -54,7 +54,13 @@ fn main() {
                 }
             };
 
-            let program = build_airdrop_program(addr, amount, &pairs);
+            let program = match build_airdrop_program(addr, amount, &pairs) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(target = "examples.generate_root", "compile failed: {e}");
+                    return;
+                }
+            };
             let root = compute_root_for_airdrop(&program.commitment, addr, amount, &pairs);
             let commit_hex = format!(
                 "0x{}",
@@ -103,7 +109,13 @@ fn main() {
                 }
             };
 
-            let program = build_verify_program(leaf, &pairs);
+            let program = match build_verify_program(leaf, &pairs) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(target = "examples.generate_root", "compile failed: {e}");
+                    return;
+                }
+            };
             let root = compute_root_for_leaf(&program.commitment, leaf, &pairs);
             let commit_hex = format!(
                 "0x{}",
@@ -177,7 +189,7 @@ fn build_airdrop_program(
     addr: u64,
     amount: u64,
     pairs: &[(u64, u64)],
-) -> zk_lisp::compiler::ir::Program {
+) -> Result<zk_lisp::compiler::ir::Program, zk_lisp::compiler::Error> {
     let mut params = vec!["addr".to_string(), "amount".to_string()];
     let mut pairs_src = String::new();
 
@@ -204,10 +216,13 @@ fn build_airdrop_program(
         argv.push(s);
     }
 
-    zk_lisp::compiler::compile_entry(&src, &argv).expect("compile")
+    zk_lisp::compiler::compile_entry(&src, &argv)
 }
 
-fn build_verify_program(leaf: u64, pairs: &[(u64, u64)]) -> zk_lisp::compiler::ir::Program {
+fn build_verify_program(
+    leaf: u64,
+    pairs: &[(u64, u64)],
+) -> Result<zk_lisp::compiler::ir::Program, zk_lisp::compiler::Error> {
     let mut params = vec!["leaf".to_string()];
     let mut pairs_src = String::new();
 
@@ -232,7 +247,7 @@ fn build_verify_program(leaf: u64, pairs: &[(u64, u64)]) -> zk_lisp::compiler::i
         argv.push(s);
     }
 
-    zk_lisp::compiler::compile_entry(&src, &argv).expect("compile")
+    zk_lisp::compiler::compile_entry(&src, &argv)
 }
 
 fn compute_root_for_airdrop(

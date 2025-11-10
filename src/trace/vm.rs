@@ -384,11 +384,21 @@ impl TraceBuilder {
 
                     pose_active = BE::ONE;
 
-                    let prev_fin = if lvl > 0 {
-                        (lvl - 1) * steps + schedule::pos_final()
-                    } else {
-                        row_map
-                    };
+                    // Find previous Merkle
+                    // level's final row
+                    let mut prev_fin = row_map;
+                    if lvl > 0 {
+                        for pl in (0..lvl).rev() {
+                            let pbase = pl * steps;
+                            let pmap = pbase + schedule::pos_map();
+
+                            if trace.get(cols.merkle_g, pmap) == BE::ONE {
+                                prev_fin = pbase + schedule::pos_final();
+                                break;
+                            }
+                        }
+                    }
+
                     let acc_prev = trace.get(cols.merkle_acc, prev_fin);
                     trace.set(cols.merkle_acc, row_map, acc_prev);
 
@@ -417,11 +427,19 @@ impl TraceBuilder {
 
                     pose_active = BE::ONE;
 
-                    let prev_fin = if lvl > 0 {
-                        (lvl - 1) * steps + schedule::pos_final()
-                    } else {
-                        row_map
-                    };
+                    let mut prev_fin = row_map;
+                    if lvl > 0 {
+                        for pl in (0..lvl).rev() {
+                            let pbase = pl * steps;
+                            let pmap = pbase + schedule::pos_map();
+
+                            if trace.get(cols.merkle_g, pmap) == BE::ONE {
+                                prev_fin = pbase + schedule::pos_final();
+                                break;
+                            }
+                        }
+                    }
+
                     let acc_prev = trace.get(cols.merkle_acc, prev_fin);
                     trace.set(cols.merkle_acc, row_map, acc_prev);
 

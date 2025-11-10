@@ -36,10 +36,17 @@ pub enum Error {
     Recursion(String),
 }
 
+// register or immediate
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Binding {
+    Reg(u8),
+    Imm(u64),
+}
+
 #[derive(Default, Debug, Clone)]
 struct Env {
-    // variable -> register
-    vars: BTreeMap<String, u8>,
+    // variable -> binding
+    vars: BTreeMap<String, Binding>,
     // function name -> (params, body)
     funs: BTreeMap<String, (Vec<String>, Ast)>,
 }
@@ -132,6 +139,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
 
     // Lower (main ...) as expression
     let res_v = lower::lower_expr(&mut cx, call_ast)?;
+    let res_v = res_v.into_owned(&mut cx)?;
     let res_reg = res_v.reg();
 
     // Normalize main return into r0
@@ -346,7 +354,7 @@ fn is_sym_start(c: char) -> bool {
 }
 
 fn is_sym_continue(c: char) -> bool {
-    is_sym_start(c) || matches!(c, '0'..='9' | '/' | ':')
+    is_sym_start(c) || matches!(c, '0'..='9' | '/' | ':' | '?')
 }
 
 // Parser: program := forms*

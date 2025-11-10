@@ -204,8 +204,12 @@ fn sponge_overflow_more_than_10_inputs_errors() {
 #[test]
 fn vm_only_vs_vm_plus_sponge_both_verify() {
     // VM-only: simple arithmetic
-    let src_vm = "(let ((x 7) (y 9)) (+ x y))";
-    let program_vm = compile_str(src_vm).expect("compile vm");
+    let src_vm = r"
+(def (main)
+  (let ((x 7) (y 9))
+    (+ x y)))
+";
+    let program_vm = zk_lisp::compiler::compile_entry(src_vm, &[]).expect("compile vm");
     let trace_vm = prove::build_trace(&program_vm).expect("trace vm");
 
     let pi_vm = PublicInputs {
@@ -296,8 +300,8 @@ fn kv_and_sponge_mix_prove_verify() {
 #[test]
 fn schedule_preflight_ok() {
     // Simple program should pass preflight
-    let src = "(let ((x 5) (y 6)) (+ x y))";
-    let program = compile_str(src).expect("compile");
+    let src = "(def (main) (let ((x 5) (y 6)) (+ x y)))";
+    let program = zk_lisp::compiler::compile_entry(src, &[]).expect("compile");
     let trace = prove::build_trace(&program).expect("trace");
 
     let pi = PublicInputsBuilder::for_program(&program)

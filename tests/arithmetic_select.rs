@@ -3,15 +3,19 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::ProofOptions;
-use zk_lisp::compiler::compile_str;
+use zk_lisp::compiler::compile_entry;
 use zk_lisp::pi::{self, PublicInputs};
 use zk_lisp::prove::{ZkProver, build_trace, verify_proof};
 
 #[test]
 fn arithmetic_select_prove_verify() {
     // Lisp: arithmetic + select
-    let src = "(let ((a 7) (b 9)) (select (= a b) (+ a b) 0))";
-    let program = compile_str(src).expect("compile");
+    let src = r"
+ (def (main)
+   (let ((a 7) (b 9))
+     (select (= a b) (+ a b) 0)))
+ ";
+    let program = compile_entry(src, &[]).expect("compile");
 
     let trace = build_trace(&program).expect("trace");
 

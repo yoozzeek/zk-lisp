@@ -9,8 +9,15 @@ use zk_lisp::prove::{ZkProver, build_trace, verify_proof};
 
 #[test]
 fn assert_positive() {
-    let src = "(def (eq1 x y) (= x y)) (let ((a 7) (b 7)) (assert (eq1 a b)))";
-    let program = compile_str(src).expect("compile");
+    // Use compile_entry to ensure a minimal
+    // VM shape even if the assert folds to a constant.
+    let src = r"
+(def (eq1 x y) (= x y))
+(def (main)
+  (let ((a 7) (b 7))
+    (assert (eq1 a b))))
+";
+    let program = zk_lisp::compiler::compile_entry(src, &[]).expect("compile");
     let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
@@ -43,8 +50,8 @@ fn assert_positive() {
 
 #[test]
 fn if_positive() {
-    let src = "(if 1 5 9)";
-    let program = compile_str(src).expect("compile");
+    let src = "(def (main) (if 1 5 9))";
+    let program = zk_lisp::compiler::compile_entry(src, &[]).expect("compile");
     let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
@@ -77,36 +84,45 @@ fn if_positive() {
 
 #[test]
 fn assert_negative_fails() {
-    // assert(false) must fail
+    // assert(false) must fail; after constant folding
+    // this may be detected at compile time.
     let src = "(let ((a 5) (b 6)) (assert (= a b)))";
-    let program = compile_str(src).expect("compile");
-    let trace = build_trace(&program).expect("trace");
 
-    let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_VM;
-    pi.program_commitment = program.commitment;
-
-    let opts = ProofOptions::new(
-        1,
-        8,
-        0,
-        winterfell::FieldExtension::None,
-        2,
-        1,
-        winterfell::BatchingMethod::Linear,
-        winterfell::BatchingMethod::Linear,
-    );
-
-    let prover = ZkProver::new(opts.clone(), pi.clone());
-
-    match prover.prove(trace) {
-        Err(_) => {
-            // In debug, preflight should fail — this is OK
+    match compile_str(src) {
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(msg.contains("assert: constant false"));
         }
-        Ok(proof) => {
-            // In release, proving may succeed,
-            // but verification must fail.
-            verify_proof(proof, pi, &opts).expect_err("verify must fail");
+        Ok(program) => {
+            let trace = build_trace(&program).expect("trace");
+
+            let mut pi = PublicInputs::default();
+            pi.feature_mask = pi::FM_VM;
+            pi.program_commitment = program.commitment;
+
+            let opts = ProofOptions::new(
+                1,
+                8,
+                0,
+                winterfell::FieldExtension::None,
+                2,
+                1,
+                winterfell::BatchingMethod::Linear,
+                winterfell::BatchingMethod::Linear,
+            );
+
+            let prover = ZkProver::new(opts.clone(), pi.clone());
+
+            match prover.prove(trace) {
+                Err(_) => {
+                    // In debug, preflight should fail — this is OK
+                }
+                Ok(proof) => {
+                    // In release, proving may succeed,
+                    // but verification must fail.
+                    verify_proof(proof, pi, &opts).expect_err("verify must fail");
+                }
+            }
         }
     }
 }
