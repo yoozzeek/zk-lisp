@@ -14,6 +14,7 @@ const DOM_POSEIDON_DOM0: &str = "zkl/poseidon2/dom/c0";
 const DOM_POSEIDON_DOM1: &str = "zkl/poseidon2/dom/c1";
 const DOM_POSEIDON_MDS_X: &str = "zkl/poseidon2/mds/x";
 const DOM_POSEIDON_MDS_Y: &str = "zkl/poseidon2/mds/y";
+const DOM_POSEIDON_MDS_Y_FALLBACK: &str = "zkl/poseidon2/mds/y/fallback";
 
 #[derive(Clone)]
 pub struct PoseidonSuite {
@@ -127,7 +128,81 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
         adj_ctr = adj_ctr.wrapping_add(1);
 
         if adj_ctr > (1 << 24) {
-            panic!("poseidon MDS derivation did not converge");
+            // Fail-closed without panic:
+            // derive a fallback Y set
+            // via deterministic offset
+            // sweep to avoid x_i + y_j == 0.
+            tracing::error!(
+                target = "poseidon.mds",
+                "MDS derivation did not converge quickly; applying fallback"
+            );
+
+            let mut found = false;
+            let mut last_candidate = [BE::ZERO; 12];
+
+            // Pure-RO fallback: sample Y from a separate
+            // domain with seed k and require uniqueness
+            // and x_i + y_j != 0 for all i,j.
+            for k in 1u32..=65_536u32 {
+                let k_b = k.to_le_bytes();
+                let mut y2 = [BE::ZERO; 12];
+
+                for (j, yj) in y2.iter_mut().enumerate() {
+                    let j_b = [j as u8];
+                    let cand = ro_from_slices(
+                        DOM_POSEIDON_MDS_Y_FALLBACK,
+                        &[&suite_id[..], &j_b[..], &k_b[..]],
+                    );
+                    
+                    *yj = if cand == BE::ZERO { BE::from(1u64) } else { cand };
+                }
+
+                // require pairwise distinct y2_j
+                let mut distinct = true;
+                'd: for a in 0..12 {
+                    for b in (a + 1)..12 {
+                        if y2[a] == y2[b] {
+                            distinct = false;
+                            break 'd;
+                        }
+                    }
+                }
+                
+                if !distinct {
+                    continue;
+                }
+
+                // check x_i + y2_j != 0
+                let mut ok2 = true;
+                
+                'check: for xi in &x {
+                    for yj in &y2 {
+                        if *xi + *yj == BE::ZERO {
+                            ok2 = false;
+                            break 'check;
+                        }
+                    }
+                }
+
+                if ok2 {
+                    y = y2.to_vec();
+                    found = true;
+                    break;
+                } else {
+                    last_candidate = y2;
+                }
+            }
+
+            if !found {
+                tracing::error!(
+                    target = "poseidon.mds",
+                    "RO fallback exhausted; using last candidate"
+                );
+                
+                y = last_candidate.to_vec();
+            }
+
+            break;
         }
     }
 

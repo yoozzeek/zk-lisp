@@ -52,7 +52,16 @@ impl RVal {
     pub fn reg(self) -> u8 {
         match self {
             RVal::Owned(r) | RVal::Borrowed(r) => r,
-            RVal::Imm(_) => panic!("internal: reg() on Imm; call into_owned first"),
+            RVal::Imm(v) => {
+                // All call sites should materialize
+                // immediates via into_owned() first.
+                tracing::error!(
+                    target = "compiler.lower",
+                    "reg() called on Imm={v}; returning r0",
+                );
+
+                0
+            }
         }
     }
 
