@@ -93,39 +93,45 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
     let x = derive_points(DOM_POSEIDON_MDS_X, suite_id, 12);
     let mut y = derive_points(DOM_POSEIDON_MDS_Y, suite_id, 12);
 
-    let mut adj_ctr: u32 = 0;
+    // Ensure x_i + y_j != 0 for all i,j
+    for (j, yj_mut) in y.iter_mut().enumerate().take(12) {
+        let mut tries: u32 = 0;
+        loop {
+            let yj = *yj_mut;
+            let mut ok = true;
 
-    loop {
-        let mut ok = true;
-
-        'outer: for xi in &x {
-            for yj in &y {
-                if *xi + *yj == BE::ZERO {
+            for xi in &x {
+                if *xi + yj == BE::ZERO {
                     ok = false;
-                    break 'outer;
+                    break;
                 }
             }
-        }
 
-        if ok {
-            break;
-        }
+            if ok {
+                break;
+            }
 
-        // Adjust Y set deterministically
-        // until all sums are non-zero
-        for (j, yj) in y.iter_mut().enumerate() {
-            let j_b = [j as u8];
-            let adj_b = adj_ctr.to_le_bytes();
-            let cand = ro_from_slices(DOM_POSEIDON_MDS_Y, &[&suite_id[..], &j_b[..], &adj_b[..]]);
+            // derive next candidate
+            // deterministically.
+            tries = tries.wrapping_add(1);
 
-            *yj = if cand == BE::ZERO {
-                BE::from(1u64)
+            if tries < (1 << 20) {
+                let j_b = [j as u8];
+                let ctr_b = tries.to_le_bytes();
+                let cand =
+                    ro_from_slices(DOM_POSEIDON_MDS_Y, &[&suite_id[..], &j_b[..], &ctr_b[..]]);
+
+                *yj_mut = if cand == BE::ZERO {
+                    BE::from(1u64)
+                } else {
+                    cand
+                };
             } else {
-                cand
-            };
+                // fallback avoiding trivial zeros
+                let cand = BE::from(1u64 + j as u64 + tries as u64);
+                *yj_mut = cand;
+            }
         }
-
-        adj_ctr = adj_ctr.wrapping_add(1);
     }
 
     // Build Cauchy matrix M[i][j] = 1 / (x_i + y_j)
@@ -141,7 +147,8 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
     m
 }
 
-// Legacy function for compatibility: compute hash via sponge
+// Legacy function for compatibility:
+// compute hash via sponge
 pub fn poseidon_hash_two_lanes(suite_id: &[u8; 32], left: BE, right: BE) -> BE {
     let suite = get_poseidon_suite(suite_id);
     let mut state = [

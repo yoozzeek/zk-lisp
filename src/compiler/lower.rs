@@ -689,7 +689,9 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     let r_payload = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorb2 { a: r_p01, b: r_p23 });
+        cx.b.push(Op::SAbsorbN {
+            regs: vec![r_p01, r_p23],
+        });
         cx.b.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_p01);
@@ -837,7 +839,9 @@ fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> 
 
     let r_t0 = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorb2 { a: r_tag, b: r_len });
+        cx.b.push(Op::SAbsorbN {
+            regs: vec![r_tag, r_len],
+        });
         cx.b.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_tag);
@@ -848,9 +852,8 @@ fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> 
 
     // digest = H(t0, payload)
     let r_digest = cx.alloc()?;
-    cx.b.push(Op::SAbsorb2 {
-        a: r_t0,
-        b: r_payload,
+    cx.b.push(Op::SAbsorbN {
+        regs: vec![r_t0, r_payload],
     });
     cx.b.push(Op::SSqueeze { dst: r_digest });
 

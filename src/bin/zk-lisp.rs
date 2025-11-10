@@ -100,13 +100,13 @@ struct VerifyArgs {
     #[arg(long = "arg", value_delimiter = ',')]
     args: Vec<u64>,
 
-    /// Number of FRI queries (must match)
+    /// Number of FRI queries
     #[arg(long, default_value_t = 1)]
     queries: u8,
-    /// Blowup factor (must match)
+    /// Blowup factor
     #[arg(long, default_value_t = 8)]
     blowup: u8,
-    /// Grinding factor (must match)
+    /// Grinding factor
     #[arg(long, default_value_t = 0)]
     grind: u32,
     /// Optional seed
@@ -216,7 +216,6 @@ fn build_pi_for_program(
                 | Op::Eq { .. }
                 | Op::Select { .. }
                 | Op::Assert { .. }
-                | Op::SAbsorb2 { .. }
                 | Op::SAbsorbN { .. }
                 | Op::SSqueeze { .. }
         )
@@ -228,24 +227,19 @@ fn build_pi_for_program(
     if program.ops.iter().any(|op| {
         matches!(
             op,
-            Op::SAbsorb2 { .. }
-                | Op::SAbsorbN { .. }
-                | Op::SSqueeze { .. }
-                | Op::KvMap { .. }
-                | Op::KvFinal
+            Op::SAbsorbN { .. } | Op::SSqueeze { .. } | Op::KvMap { .. } | Op::KvFinal
         )
     }) {
         mask |= zk_lisp::pi::FM_POSEIDON;
     }
 
     // Sponge feature when
-    // SAbsorb2/SSqueeze appear.
-    if program.ops.iter().any(|op| {
-        matches!(
-            op,
-            Op::SAbsorb2 { .. } | Op::SAbsorbN { .. } | Op::SSqueeze { .. }
-        )
-    }) {
+    // SAbsorbN/SSqueeze appear.
+    if program
+        .ops
+        .iter()
+        .any(|op| matches!(op, Op::SAbsorbN { .. } | Op::SSqueeze { .. }))
+    {
         mask |= zk_lisp::pi::FM_SPONGE;
     }
 

@@ -59,11 +59,6 @@ pub enum Op {
     SSqueeze {
         dst: u8,
     },
-    // Sponge: absorb 2 elements (legacy)
-    SAbsorb2 {
-        a: u8,
-        b: u8,
-    },
 
     // KV
     KvMap {
@@ -168,10 +163,6 @@ impl ProgramBuilder {
             Assert { dst, c } => {
                 self.touch_reg(dst);
                 self.touch_reg(c);
-            }
-            SAbsorb2 { a, b } => {
-                self.touch_reg(a);
-                self.touch_reg(b);
             }
             SAbsorbN { ref regs } => {
                 for &r in regs {
@@ -293,11 +284,6 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(0x0D);
                 out.push(dst);
                 out.push(c);
-            }
-            SAbsorb2 { a, b } => {
-                out.push(0x0E);
-                out.push(a);
-                out.push(b);
             }
             SSqueeze { dst } => {
                 out.push(0x0F);

@@ -171,6 +171,7 @@ fn merkle_two_steps_positive_prove_verify() {
     }
 }
 
+#[allow(clippy::single_match)]
 #[test]
 fn merkle_wrong_root_verify_fails() {
     let src = r#"
@@ -206,6 +207,7 @@ fn merkle_wrong_root_verify_fails() {
     }
 }
 
+#[allow(clippy::single_match)]
 #[test]
 fn merkle_wrong_sibling_verify_fails() {
     // Same as positive, but s1 is wrong

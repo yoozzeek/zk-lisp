@@ -171,13 +171,11 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
 }
 
 #[test]
-fn sponge_overflow_more_than_10_inputs_ignores_extras() {
-    // Set r0..r7 = 1..=8
-    // Absorb 6 chunks (12 indices),
-    // only first 10 should be used
-    // Sequence collected: [0,1,2,3,4,5,6,7,0,1]
-    // (then 2,3 ignored). Values
-    // at SSqueeze time: r0=1..r7=8
+fn sponge_overflow_more_than_10_inputs_errors() {
+    // With strict rate semantics,
+    // attempting to absorb more than
+    // 10 inputs before a squeeze
+    // must be rejected with an error.
     let mut b = ProgramBuilder::new();
 
     for r in 0u8..NR as u8 {
@@ -187,58 +185,20 @@ fn sponge_overflow_more_than_10_inputs_ignores_extras() {
         });
     }
 
-    b.push(Op::SAbsorbN { regs: vec![0, 1] }); // 2
-    b.push(Op::SAbsorbN { regs: vec![2, 3] }); // 4
-    b.push(Op::SAbsorbN { regs: vec![4, 5] }); // 6
-    b.push(Op::SAbsorbN { regs: vec![6, 7] }); // 8
-    b.push(Op::SAbsorbN { regs: vec![0, 1] }); // 10
-    b.push(Op::SAbsorbN { regs: vec![2, 3] }); // would be 12, but ignored
+    // 12 absorbed indices in total (will exceed rate)
+    b.push(Op::SAbsorbN { regs: vec![0, 1] });
+    b.push(Op::SAbsorbN { regs: vec![2, 3] });
+    b.push(Op::SAbsorbN { regs: vec![4, 5] });
+    b.push(Op::SAbsorbN { regs: vec![6, 7] });
+    b.push(Op::SAbsorbN { regs: vec![0, 1] });
+    b.push(Op::SAbsorbN { regs: vec![2, 3] });
 
     b.push(Op::SSqueeze { dst: 0 });
     b.push(Op::End);
 
     let program = b.finalize();
-    let trace = prove::build_trace(&program).expect("trace");
-
-    // Expected uses first 10 indices only
-    let expected_inputs: Vec<BE> = vec![
-        BE::from(1u64),
-        BE::from(2u64),
-        BE::from(3u64),
-        BE::from(4u64),
-        BE::from(5u64),
-        BE::from(6u64),
-        BE::from(7u64),
-        BE::from(8u64),
-        BE::from(1u64),
-        BE::from(2u64),
-    ];
-    let expected = sponge12_ref(&expected_inputs, &program.commitment);
-
-    let steps = STEPS_PER_LEVEL_P2;
-    let lvl_ssq = 8 /*consts*/ + 6 /*absorbs*/; // SSqueeze index
-    let out_row = (lvl_ssq * steps + zk_lisp::schedule::pos_final() + 1) as u32;
-
-    let pi = PublicInputs {
-        feature_mask: zk_lisp::pi::FM_VM | zk_lisp::pi::FM_POSEIDON | zk_lisp::pi::FM_VM_EXPECT,
-        program_commitment: program.commitment,
-        vm_out_reg: 0,
-        vm_out_row: out_row,
-        vm_expected_bytes: be_to_bytes32(expected),
-        ..Default::default()
-    };
-
-    let prover = ZkProver::new(opts(), pi.clone());
-    let proof = prover.prove(trace).expect("prove");
-
-    match prove::verify_proof(proof, pi, &opts()) {
-        Ok(()) => {}
-        Err(e) => {
-            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
-                panic!("verify failed: {e}");
-            }
-        }
-    }
+    let res = prove::build_trace(&program);
+    assert!(res.is_err(), "expected sponge rate overflow error");
 }
 
 #[test]

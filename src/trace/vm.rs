@@ -234,31 +234,6 @@ impl TraceBuilder {
                     // write 1 at final
                     next_regs[dst as usize] = BE::ONE;
                 }
-                Op::SAbsorb2 { a, b } => {
-                    // Treat as SAbsorbN with 2 regs;
-                    // do not execute permutation now.
-                    trace.set(cols.op_sponge, row_map, BE::ONE);
-                    trace.set(cols.op_sponge, row_final, BE::ONE);
-
-                    // Set sponge lane selectors
-                    // for lanes 0..N-1.
-                    trace.set(cols.sel_s_index(0, a as usize), row_map, BE::ONE);
-                    trace.set(cols.sel_s_index(1, b as usize), row_map, BE::ONE);
-                    trace.set(cols.sel_s_index(0, a as usize), row_final, BE::ONE);
-                    trace.set(cols.sel_s_index(1, b as usize), row_final, BE::ONE);
-
-                    // Accumulate regs for later
-                    // permutation at SSqueeze.
-                    if pending_regs.len() < 10 {
-                        pending_regs.push(a);
-                    }
-                    if pending_regs.len() < 10 {
-                        pending_regs.push(b);
-                    }
-
-                    // This level is inactive for Poseidon
-                    pose_active = BE::ZERO;
-                }
                 Op::SSqueeze { dst } => {
                     // Execute one permutation
                     // absorbing all pending regs (<=10)
@@ -287,16 +262,16 @@ impl TraceBuilder {
                     trace.set(cols.op_sponge, row_final, BE::ONE);
 
                     for (i, &r) in rr.iter().enumerate() {
+                        // Enforce lane index bound
                         if i >= 10 {
-                            break;
+                            return Err(crate::error::Error::InvalidInput("sponge rate overflow"));
                         }
 
                         trace.set(cols.sel_s_index(i, r as usize), row_map, BE::ONE);
                         trace.set(cols.sel_s_index(i, r as usize), row_final, BE::ONE);
 
-                        if pending_regs.len() < 10 {
-                            pending_regs.push(r);
-                        }
+                        // Strictly enforce total pending inputs <= 10
+                        push_absorb(&mut pending_regs, r)?;
                     }
 
                     // No permutation at absorb rows
@@ -521,6 +496,20 @@ fn set_sel(trace: &mut TraceTable<BE>, row: usize, sel_start: usize, idx: u8) {
     trace.set(sel_start + (idx as usize), row, BE::ONE);
 }
 
+// Push an absorbed register
+// with strict rate bound
+#[inline]
+fn push_absorb(pending: &mut Vec<u8>, r: u8) -> crate::error::Result<()> {
+    // rate = 10 lanes for absorption
+    if pending.len() >= 10 {
+        return Err(crate::error::Error::InvalidInput("sponge rate overflow"));
+    }
+
+    pending.push(r);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,7 +606,7 @@ mod tests {
         let mut b = ir::ProgramBuilder::new();
         b.push(Op::Const { dst: 0, imm: 1 });
         b.push(Op::Const { dst: 1, imm: 2 });
-        b.push(Op::SAbsorb2 { a: 0, b: 1 });
+        b.push(Op::SAbsorbN { regs: vec![0, 1] });
         b.push(Op::SSqueeze { dst: 3 });
         b.push(Op::End);
 

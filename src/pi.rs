@@ -82,7 +82,7 @@ impl PublicInputsBuilder {
                 | Eq { .. }
                 | Select { .. }
                 | Assert { .. } => vm = true,
-                SAbsorb2 { .. } | SAbsorbN { .. } => {
+                SAbsorbN { .. } => {
                     vm = true;
                     pose = true;
                     self.pi.feature_mask |= FM_SPONGE;

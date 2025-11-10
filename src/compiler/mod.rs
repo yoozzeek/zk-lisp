@@ -425,7 +425,7 @@ mod tests {
         assert!(
             p.ops
                 .iter()
-                .any(|op| matches!(op, Op::SAbsorb2 { .. } | Op::SSqueeze { .. }))
+                .any(|op| matches!(op, Op::SAbsorbN { .. } | Op::SSqueeze { .. }))
         );
         assert!(p.ops.iter().any(|op| matches!(op, Op::KvMap { .. })));
         assert!(p.ops.iter().any(|op| matches!(op, Op::KvFinal)));
