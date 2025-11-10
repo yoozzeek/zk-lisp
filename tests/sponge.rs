@@ -7,7 +7,7 @@ use winterfell::math::{FieldElement, StarkField};
 use winterfell::{BatchingMethod, FieldExtension, ProofOptions, Trace};
 
 use zk_lisp::compiler::compile_str;
-use zk_lisp::ir::{Op, ProgramBuilder};
+use zk_lisp::compiler::ir::{Op, ProgramBuilder};
 use zk_lisp::layout::{NR, STEPS_PER_LEVEL_P2};
 use zk_lisp::pi::{PublicInputs, PublicInputsBuilder};
 use zk_lisp::poseidon;

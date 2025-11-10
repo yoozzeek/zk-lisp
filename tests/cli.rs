@@ -66,11 +66,11 @@ fn prove_and_verify_ok() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     if output.status.success() {
-        assert!(stdout.contains("\"ok\":true"), "stdout: {}", stdout);
+        assert!(stdout.contains("\"ok\":true"), "stdout: {stdout}");
     } else {
         // JSON error with code field; accept code 7 (verify error)
-        assert!(stdout.contains("\"ok\":false"), "stdout: {}", stdout);
-        assert!(stdout.contains("\"code\":7"), "stdout: {}", stdout);
+        assert!(stdout.contains("\"ok\":false"), "stdout: {stdout}");
+        assert!(stdout.contains("\"code\":7"), "stdout: {stdout}");
     }
 }
 
