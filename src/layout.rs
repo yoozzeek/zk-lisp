@@ -45,6 +45,8 @@ pub struct Columns {
     pub op_select: usize,
     pub op_sponge: usize,
     pub op_assert: usize,
+    pub op_assert_bit: usize,
+    pub op_assert_range: usize,
 
     // Operand selectors
     // one-hot per role (8 each).
@@ -88,6 +90,10 @@ pub struct Columns {
     // Poseidon per-level activity gate
     pub pose_active: usize,
 
+    // Gadget witnesses:
+    // 64 columns for bit decomposition
+    pub rng_b_start: usize,
+
     width: usize,
 }
 
@@ -116,8 +122,10 @@ impl Columns {
         let op_select = op_eq + 1;
         let op_sponge = op_select + 1;
         let op_assert = op_sponge + 1;
+        let op_assert_bit = op_assert + 1;
+        let op_assert_range = op_assert_bit + 1;
 
-        let sel_dst_start = op_assert + 1; // 8 cols
+        let sel_dst_start = op_assert_range + 1; // 8 cols
         let sel_a_start = sel_dst_start + NR; // 8 cols
         let sel_b_start = sel_a_start + NR; // 8 cols
         let sel_c_start = sel_b_start + NR; // 8 cols
@@ -153,10 +161,13 @@ impl Columns {
         // Extra KV column placed after PI
         let kv_prev_acc = pi_prog + 1;
 
-        // Append pose_active at the very end
+        // Append pose_active followed
+        // by gadget witness columns
         let pose_active = kv_prev_acc + 1;
 
-        let width = pose_active + 1;
+        // Gadget: range bits (max 64)
+        let rng_b_start = pose_active + 1;
+        let width = rng_b_start + 32;
 
         Self {
             lane_l,
@@ -179,6 +190,8 @@ impl Columns {
             op_select,
             op_sponge,
             op_assert,
+            op_assert_bit,
+            op_assert_range,
             sel_dst_start,
             sel_a_start,
             sel_b_start,
@@ -202,6 +215,7 @@ impl Columns {
             merkle_leaf,
             pi_prog,
             pose_active,
+            rng_b_start,
             width,
         }
     }
@@ -247,6 +261,11 @@ impl Columns {
         debug_assert!(reg < NR);
 
         self.sel_s_start + lane * NR + reg
+    }
+
+    pub fn rng_b_index(&self, i: usize) -> usize {
+        debug_assert!(i < 32);
+        self.rng_b_start + i
     }
 
     pub fn lane_index(&self, i: usize) -> usize {

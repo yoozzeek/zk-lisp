@@ -58,8 +58,8 @@ impl VmCtrlBlock {
             vec![STEPS_PER_LEVEL_P2],
         ));
 
-        // op_* booleans (10)
-        for _ in 0..10 {
+        // op_* booleans (12)
+        for _ in 0..12 {
             out.push(TransitionConstraintDegree::with_cycles(
                 2,
                 vec![STEPS_PER_LEVEL_P2],
@@ -112,6 +112,8 @@ where
         let b_sel = cur[ctx.cols.op_select];
         let b_sponge = cur[ctx.cols.op_sponge];
         let b_assert = cur[ctx.cols.op_assert];
+        let b_assert_bit = cur[ctx.cols.op_assert_bit];
+        let b_assert_range = cur[ctx.cols.op_assert_range];
 
         let mut sum_dst = E::ZERO;
         let mut sum_a = E::ZERO;
@@ -143,9 +145,19 @@ where
         // must select exactly one src.
         let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel;
         let uses_b = b_add + b_sub + b_mul + b_eq + b_sel;
-        let uses_c = b_sel + b_assert;
-        let op_any =
-            b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_sponge + b_assert;
+        let uses_c = b_sel + b_assert + b_assert_bit + b_assert_range;
+        let op_any = b_const
+            + b_mov
+            + b_add
+            + b_sub
+            + b_mul
+            + b_neg
+            + b_eq
+            + b_sel
+            + b_sponge
+            + b_assert
+            + b_assert_bit
+            + b_assert_range;
 
         // dst required only for ops that
         // write a destination at final.
@@ -197,14 +209,35 @@ where
         // op_* booleanity and one-hot,
         // at most one op per map row.
         for b in [
-            b_const, b_mov, b_add, b_sub, b_mul, b_neg, b_eq, b_sel, b_sponge, b_assert,
+            b_const,
+            b_mov,
+            b_add,
+            b_sub,
+            b_mul,
+            b_neg,
+            b_eq,
+            b_sel,
+            b_sponge,
+            b_assert,
+            b_assert_bit,
+            b_assert_range,
         ] {
             result[*ix] = p_map * b * (b - E::ONE) + s_high;
             *ix += 1;
         }
 
-        let op_sum =
-            b_const + b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_sponge + b_assert;
+        let op_sum = b_const
+            + b_mov
+            + b_add
+            + b_sub
+            + b_mul
+            + b_neg
+            + b_eq
+            + b_sel
+            + b_sponge
+            + b_assert
+            + b_assert_bit
+            + b_assert_range;
         result[*ix] = p_map * op_sum * (op_sum - E::ONE) + s_low;
         *ix += 1;
     }

@@ -12,7 +12,25 @@ use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 pub struct PoseidonBlock;
 
 impl PoseidonBlock {
-    pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
+    pub fn push_degrees_vm_bind(out: &mut Vec<TransitionConstraintDegree>) {
+        // VM->lane binding at map row
+        // for sponge absorb lanes (0..9).
+        // base=3 (pa * b_sponge * (lane - sum sel_s*reg)),
+        // cycles=1 (p_map)
+        for _ in 0..10 {
+            out.push(TransitionConstraintDegree::with_cycles(
+                3,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+    }
+}
+
+impl<E> AirBlock<E> for PoseidonBlock
+where
+    E: FieldElement<BaseField = BE> + From<BE>,
+{
+    fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
         // Per-round Poseidon transitions
         for _ in 0..POSEIDON_ROUNDS {
             for _ in 0..12 {
@@ -33,26 +51,6 @@ impl PoseidonBlock {
             ));
         }
     }
-
-    pub fn push_degrees_vm_bind(out: &mut Vec<TransitionConstraintDegree>) {
-        // VM->lane binding at map row
-        // for sponge absorb lanes (0..9).
-        // base=3 (pa * b_sponge * (lane - sum sel_s*reg)),
-        // cycles=1 (p_map)
-        for _ in 0..10 {
-            out.push(TransitionConstraintDegree::with_cycles(
-                3,
-                vec![STEPS_PER_LEVEL_P2],
-            ));
-        }
-    }
-}
-
-impl<E> AirBlock<E> for PoseidonBlock
-where
-    E: FieldElement<BaseField = BE> + From<BE>,
-{
-    fn push_degrees(_out: &mut Vec<TransitionConstraintDegree>) {}
 
     fn eval_block(
         ctx: &BlockCtx<E>,

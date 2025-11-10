@@ -95,7 +95,7 @@ impl Air for ZkLispAir {
 
         let features = pub_inputs.get_features();
         if features.poseidon {
-            PoseidonBlock::push_degrees(&mut degrees);
+            <PoseidonBlock as AirBlock<BE>>::push_degrees(&mut degrees);
 
             // When VM is enabled AND sponge ops
             // are present enforce VM->lane bindings
@@ -106,13 +106,13 @@ impl Air for ZkLispAir {
         }
         if features.vm {
             VmCtrlBlock::push_degrees(&mut degrees, features.sponge);
-            VmAluBlock::push_degrees(&mut degrees);
+            <VmAluBlock as AirBlock<BE>>::push_degrees(&mut degrees);
         }
         if features.kv {
-            KvBlock::push_degrees(&mut degrees);
+            <KvBlock as AirBlock<BE>>::push_degrees(&mut degrees);
         }
         if features.merkle {
-            MerkleBlock::push_degrees(&mut degrees);
+            <MerkleBlock as AirBlock<BE>>::push_degrees(&mut degrees);
         }
 
         // Boundary assertions count per level:

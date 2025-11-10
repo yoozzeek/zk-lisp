@@ -34,21 +34,35 @@ pub enum Op {
         dst: u8,
         a: u8,
     },
+    // 0/1 result
     Eq {
         dst: u8,
         a: u8,
         b: u8,
-    }, // 0/1 result
+    },
+    // dst = c?a:b, c ∈ {0,1}
     Select {
         dst: u8,
         c: u8,
         a: u8,
         b: u8,
-    }, // dst = c?a:b, c ∈ {0,1}
+    },
+    // enforces c==1 and writes 1 to dst
     Assert {
         dst: u8,
         c: u8,
-    }, // enforces c==1 and writes 1 to dst
+    },
+    // enforces r in {0,1}; writes 1 to dst
+    AssertBit {
+        dst: u8,
+        r: u8,
+    },
+    // enforces r in [0, 2^bits); writes 1 to dst
+    AssertRange {
+        dst: u8,
+        r: u8,
+        bits: u8,
+    },
 
     // CRYPTO
     // Sponge: absorb up to 10 elements (rate=10)
@@ -61,10 +75,11 @@ pub enum Op {
     },
 
     // KV
+    // one level of path
     KvMap {
         dir_reg: u8,
         sib_reg: u8,
-    }, // one level of path
+    },
     KvFinal,
 
     // MERKLE
@@ -163,6 +178,14 @@ impl ProgramBuilder {
             Assert { dst, c } => {
                 self.touch_reg(dst);
                 self.touch_reg(c);
+            }
+            AssertBit { dst, r } => {
+                self.touch_reg(dst);
+                self.touch_reg(r);
+            }
+            AssertRange { dst, r, .. } => {
+                self.touch_reg(dst);
+                self.touch_reg(r);
             }
             SAbsorbN { ref regs } => {
                 for &r in regs {
@@ -315,6 +338,17 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(0x13);
                 out.push(dir_reg);
                 out.push(sib_reg);
+            }
+            AssertBit { dst, r } => {
+                out.push(0x14);
+                out.push(dst);
+                out.push(r);
+            }
+            AssertRange { dst, r, bits } => {
+                out.push(0x15);
+                out.push(dst);
+                out.push(r);
+                out.push(bits);
             }
         }
     }

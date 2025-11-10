@@ -13,8 +13,11 @@ use super::{AirBlock, BlockCtx};
 
 pub struct MerkleBlock;
 
-impl MerkleBlock {
-    pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
+impl<E> AirBlock<E> for MerkleBlock
+where
+    E: FieldElement<BaseField = BE> + From<BE>,
+{
+    fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
         // dir boolean at map
         out.push(TransitionConstraintDegree::with_cycles(
             3,
@@ -51,13 +54,6 @@ impl MerkleBlock {
             vec![STEPS_PER_LEVEL_P2],
         ));
     }
-}
-
-impl<E> AirBlock<E> for MerkleBlock
-where
-    E: FieldElement<BaseField = BE> + From<BE>,
-{
-    fn push_degrees(_out: &mut Vec<TransitionConstraintDegree>) {}
 
     fn eval_block(
         ctx: &BlockCtx<E>,

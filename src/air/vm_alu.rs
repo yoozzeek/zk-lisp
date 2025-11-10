@@ -12,8 +12,11 @@ use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
 pub struct VmAluBlock;
 
-impl VmAluBlock {
-    pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
+impl<E> AirBlock<E> for VmAluBlock
+where
+    E: FieldElement<BaseField = BE> + From<BE>,
+{
+    fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
         // carry registers on non-final rows
         for _ in 0..NR {
             out.push(TransitionConstraintDegree::with_cycles(
@@ -43,14 +46,28 @@ impl VmAluBlock {
             5,
             vec![STEPS_PER_LEVEL_P2],
         ));
-    }
-}
 
-impl<E> AirBlock<E> for VmAluBlock
-where
-    E: FieldElement<BaseField = BE> + From<BE>,
-{
-    fn push_degrees(_out: &mut Vec<TransitionConstraintDegree>) {}
+        // AssertBit:
+        // booleanity r(r-1)=0 at final
+        out.push(TransitionConstraintDegree::with_cycles(
+            5,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
+        // AssertRange (32-bit): 
+        // 32 bit booleanities + equality r - sum(2^i b_i) = 0
+        for _ in 0..32 {
+            out.push(TransitionConstraintDegree::with_cycles(
+                5,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+
+        out.push(TransitionConstraintDegree::with_cycles(
+            5,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+    }
 
     fn eval_block(
         ctx: &BlockCtx<E>,
@@ -112,6 +129,8 @@ where
         let b_sel = cur[ctx.cols.op_select];
         let b_sponge = cur[ctx.cols.op_sponge];
         let b_assert = cur[ctx.cols.op_assert];
+        let b_assert_bit = cur[ctx.cols.op_assert_bit];
+        let b_assert_range = cur[ctx.cols.op_assert_range];
 
         // include Eq via dst_next so
         // generic write can be uniform.
@@ -129,7 +148,9 @@ where
             + b_sel * (c_val * a_val + (E::ONE - c_val) * b_val)
             + b_sponge * cur[ctx.cols.lane_l]
             + b_eq * dst_next
-            + b_assert * E::ONE;
+            + b_assert * E::ONE
+            + b_assert_bit * E::ONE
+            + b_assert_range * E::ONE;
 
         // write at final: r' = (1-dst)*r + dst*res (uniform for all ops)
         for i in 0..NR {
@@ -158,6 +179,31 @@ where
         result[*ix] =
             p_final * (b_assert * (c_val - E::ONE) + b_sel * (c_val * (c_val - E::ONE))) + s_eq;
         *ix += 1;
+
+        // AssertBit: c_val in {0,1}
+        result[*ix] = p_final * b_assert_bit * (c_val * (c_val - E::ONE)) + s_eq;
+        *ix += 1;
+
+        // AssertRange: booleanity for witness
+        // bits and reconstruction equality
+        let mut sum = E::ZERO;
+        let mut pow2 = E::ONE;
+        for i in 0..32 {
+            let bi = cur[ctx.cols.rng_b_index(i)];
+            // booleanity for each bi
+            result[*ix] = p_final * b_assert_range * (bi * (bi - E::ONE)) + s_eq;
+            *ix += 1;
+
+            sum += pow2 * bi;
+            // multiply by 2 via addition
+            // to avoid constants table.
+            pow2 = pow2 + pow2;
+        }
+
+        // reconstruction:
+        // c_val == sum(2^i * b_i)
+        result[*ix] = p_final * b_assert_range * (c_val - sum) + s_eq;
+        *ix += 1;
     }
 }
 
@@ -183,7 +229,9 @@ mod tests {
 
         // next row copies registers
         // (not used for assert constraint besides dst)
-        let mut res = vec![BE::ZERO; 19];
+        // Allocate a sufficiently large buffer
+        // for all constraints in this block.
+        let mut res = vec![BE::ZERO; 1024];
         let mut ix = 0usize;
 
         let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);

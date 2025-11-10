@@ -209,6 +209,7 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "assert" => lower_assert(cx, tail),
                     "bit?" => lower_bit_pred(cx, tail),
                     "assert-bit" => lower_assert_bit(cx, tail),
+                    "assert-range" => lower_assert_range(cx, tail),
                     "in-set" => lower_in_set(cx, tail),
                     "kv-step" => lower_kv_step(cx, tail)
                         .map(|_| RVal::Borrowed(cx.get_reg_opt("_kv_last").unwrap_or(0))),
@@ -1360,25 +1361,69 @@ fn lower_assert_bit(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         return Err(Error::InvalidForm("assert-bit".into()));
     }
 
-    let pred = lower_bit_pred(cx, rest)?;
-    if let Some(v) = pred.as_imm() {
-        if v == 1 {
+    let x = lower_expr(cx, rest[0].clone())?;
+    if let Some(v) = x.as_imm() {
+        if v == 0 || v == 1 {
             return Ok(RVal::Imm(1));
         } else {
-            return Err(Error::InvalidForm("assert-bit: constant false".into()));
+            return Err(Error::InvalidForm("assert-bit: constant not a bit".into()));
         }
     }
 
-    let pred = pred.into_owned(cx)?;
+    let x = x.into_owned(cx)?;
     let dst = cx.alloc()?;
 
-    tracing::debug!(
-        target = "compiler.lower",
-        "alloc dst for assert-bit -> r{dst}"
-    );
+    cx.b.push(Op::AssertBit { dst, r: x.reg() });
 
-    cx.b.push(Op::Assert { dst, c: pred.reg() });
-    cx.free_reg(pred.reg());
+    free_if_owned(cx, x);
+
+    Ok(RVal::Owned(dst))
+}
+
+fn lower_assert_range(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("assert-range".into()));
+    }
+
+    // parse bits
+    let bits = match &rest[1] {
+        Ast::Atom(Atom::Int(v)) => *v,
+        _ => {
+            return Err(Error::InvalidForm(
+                "assert-range: bits must be integer".into(),
+            ));
+        }
+    };
+
+    if bits != 32 {
+        return Err(Error::InvalidForm("assert-range: bits must be 32".into()));
+    }
+
+    let x = lower_expr(cx, rest[0].clone())?;
+
+    if let Some(v) = x.as_imm() {
+        // compile-time check
+        let limit = 1u128 << 32;
+        // field canon to integer within limit
+        if (v as u128) < limit {
+            return Ok(RVal::Imm(1));
+        } else {
+            return Err(Error::InvalidForm(
+                "assert-range: constant out of range".into(),
+            ));
+        }
+    }
+
+    let x = x.into_owned(cx)?;
+    let dst = cx.alloc()?;
+
+    cx.b.push(Op::AssertRange {
+        dst,
+        r: x.reg(),
+        bits: bits as u8,
+    });
+
+    free_if_owned(cx, x);
 
     Ok(RVal::Owned(dst))
 }

@@ -12,6 +12,7 @@ use crate::trace::poseidon;
 
 use winterfell::TraceTable;
 use winterfell::math::FieldElement;
+use winterfell::math::StarkField;
 use winterfell::math::fields::f128::BaseElement as BE;
 
 use super::TraceBuilder;
@@ -85,6 +86,8 @@ impl TraceBuilder {
                 cols.op_select,
                 cols.op_sponge,
                 cols.op_assert,
+                cols.op_assert_bit,
+                cols.op_assert_range,
             ];
 
             for &c in &ops {
@@ -232,6 +235,45 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_final, cols.sel_c_start, c);
 
                     // write 1 at final
+                    next_regs[dst as usize] = BE::ONE;
+                }
+                Op::AssertBit { dst, r } => {
+                    trace.set(cols.op_assert_bit, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_c_start, r);
+
+                    trace.set(cols.op_assert_bit, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_c_start, r);
+
+                    next_regs[dst as usize] = BE::ONE;
+                }
+                Op::AssertRange { dst, r, bits } => {
+                    trace.set(cols.op_assert_range, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_c_start, r);
+
+                    trace.set(cols.op_assert_range, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_c_start, r);
+
+                    // Set witness bits for
+                    // range decomposition.
+                    let x = regs[r as usize];
+                    let mut n: u128 = x.as_int();
+                    let k = (bits as usize).min(32);
+                    
+                    for i in 0..32 {
+                        let bit_val = if i < k { (n & 1) as u64 } else { 0u64 };
+                        let v = BE::from(bit_val);
+                        trace.set(cols.rng_b_index(i), row_map, v);
+                        trace.set(cols.rng_b_index(i), row_final, v);
+
+                        if i < k {
+                            n >>= 1;
+                        }
+                    }
+
                     next_regs[dst as usize] = BE::ONE;
                 }
                 Op::SSqueeze { dst } => {
