@@ -2,7 +2,8 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
-use crate::ir::Op;
+use crate::compiler::ir;
+use crate::compiler::ir::Op;
 use crate::layout::{Columns, NR, STEPS_PER_LEVEL_P2};
 use crate::pi;
 use crate::poseidon as poseidon_core;
@@ -17,7 +18,7 @@ use super::TraceBuilder;
 
 impl TraceBuilder {
     #[tracing::instrument(level = "info", skip(p))]
-    pub fn build_from_program(p: &crate::ir::Program) -> crate::error::Result<TraceTable<BE>> {
+    pub fn build_from_program(p: &ir::Program) -> crate::error::Result<TraceTable<BE>> {
         let levels = p.ops.len();
         let cols = Columns::baseline();
         let steps = STEPS_PER_LEVEL_P2;
@@ -359,6 +360,116 @@ impl TraceBuilder {
                         trace.set(cols.kv_version, r, ver + BE::ONE);
                     }
                 }
+                Op::MerkleStepFirst {
+                    leaf_reg,
+                    dir_reg,
+                    sib_reg,
+                } => {
+                    // mark merkle level active
+                    // across the whole level.
+                    for r in base..(base + steps) {
+                        trace.set(cols.merkle_g, r, BE::ONE);
+                    }
+
+                    // Poseidon active on this level
+                    pose_active = BE::ONE;
+
+                    // first flag and leaf/acc at map
+                    let leaf = regs[leaf_reg as usize];
+                    trace.set(cols.merkle_first, row_map, BE::ONE);
+                    trace.set(cols.merkle_leaf, row_map, leaf);
+                    trace.set(cols.merkle_acc, row_map, leaf);
+
+                    // hold acc until final
+                    for r in (row_map + 1)..row_final {
+                        trace.set(cols.merkle_acc, r, leaf);
+                    }
+
+                    // dir/sib
+                    let d = regs[dir_reg as usize];
+                    let s = regs[sib_reg as usize];
+                    trace.set(cols.merkle_dir, row_map, d);
+                    trace.set(cols.merkle_sib, row_map, s);
+
+                    // lanes and apply poseidon
+                    let left = (BE::ONE - d) * leaf + d * s;
+                    let right = (BE::ONE - d) * s + d * leaf;
+                    poseidon::apply_level_absorb(&mut trace, &p.commitment, lvl, &[left, right]);
+
+                    // acc at/after final = lane_l(final)
+                    let out = trace.get(cols.lane_l, row_final);
+                    for r in row_final..(base + steps) {
+                        trace.set(cols.merkle_acc, r, out);
+                    }
+                }
+                Op::MerkleStep { dir_reg, sib_reg } => {
+                    for r in base..(base + steps) {
+                        trace.set(cols.merkle_g, r, BE::ONE);
+                    }
+
+                    pose_active = BE::ONE;
+
+                    let prev_fin = if lvl > 0 {
+                        (lvl - 1) * steps + schedule::pos_final()
+                    } else {
+                        row_map
+                    };
+                    let acc_prev = trace.get(cols.merkle_acc, prev_fin);
+                    trace.set(cols.merkle_acc, row_map, acc_prev);
+
+                    for r in (row_map + 1)..row_final {
+                        trace.set(cols.merkle_acc, r, acc_prev);
+                    }
+
+                    let d = regs[dir_reg as usize];
+                    let s = regs[sib_reg as usize];
+                    trace.set(cols.merkle_dir, row_map, d);
+                    trace.set(cols.merkle_sib, row_map, s);
+
+                    let left = (BE::ONE - d) * acc_prev + d * s;
+                    let right = (BE::ONE - d) * s + d * acc_prev;
+                    poseidon::apply_level_absorb(&mut trace, &p.commitment, lvl, &[left, right]);
+
+                    let out = trace.get(cols.lane_l, row_final);
+                    for r in row_final..(base + steps) {
+                        trace.set(cols.merkle_acc, r, out);
+                    }
+                }
+                Op::MerkleStepLast { dir_reg, sib_reg } => {
+                    for r in base..(base + steps) {
+                        trace.set(cols.merkle_g, r, BE::ONE);
+                    }
+
+                    pose_active = BE::ONE;
+
+                    let prev_fin = if lvl > 0 {
+                        (lvl - 1) * steps + schedule::pos_final()
+                    } else {
+                        row_map
+                    };
+                    let acc_prev = trace.get(cols.merkle_acc, prev_fin);
+                    trace.set(cols.merkle_acc, row_map, acc_prev);
+
+                    for r in (row_map + 1)..row_final {
+                        trace.set(cols.merkle_acc, r, acc_prev);
+                    }
+
+                    let d = regs[dir_reg as usize];
+                    let s = regs[sib_reg as usize];
+                    trace.set(cols.merkle_dir, row_map, d);
+                    trace.set(cols.merkle_sib, row_map, s);
+
+                    let left = (BE::ONE - d) * acc_prev + d * s;
+                    let right = (BE::ONE - d) * s + d * acc_prev;
+                    poseidon::apply_level_absorb(&mut trace, &p.commitment, lvl, &[left, right]);
+
+                    trace.set(cols.merkle_last, row_final, BE::ONE);
+
+                    let out = trace.get(cols.lane_l, row_final);
+                    for r in row_final..(base + steps) {
+                        trace.set(cols.merkle_acc, r, out);
+                    }
+                }
                 Op::End => {}
             }
 
@@ -413,13 +524,13 @@ fn set_sel(trace: &mut TraceTable<BE>, row: usize, sel_start: usize, idx: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::Op;
+    use crate::compiler::ir::Op;
     use winterfell::Trace;
     // for length()
 
     #[test]
     fn alu_const_add() {
-        let mut b = crate::ir::ProgramBuilder::new();
+        let mut b = ir::ProgramBuilder::new();
         b.push(Op::Const { dst: 0, imm: 7 });
         b.push(Op::Const { dst: 1, imm: 9 });
         b.push(Op::Add { dst: 2, a: 0, b: 1 });
@@ -461,7 +572,7 @@ mod tests {
 
     #[test]
     fn alu_eq_and_select() {
-        let mut b = crate::ir::ProgramBuilder::new();
+        let mut b = ir::ProgramBuilder::new();
         b.push(Op::Const { dst: 0, imm: 5 });
         b.push(Op::Const { dst: 1, imm: 5 });
         b.push(Op::Eq { dst: 2, a: 0, b: 1 }); // r2=1
@@ -503,7 +614,7 @@ mod tests {
     fn sponge_absorb_squeeze_simple() {
         // Check that SAbsorb2+SSqueeze writes
         // Poseidon(left,right) into dst.
-        let mut b = crate::ir::ProgramBuilder::new();
+        let mut b = ir::ProgramBuilder::new();
         b.push(Op::Const { dst: 0, imm: 1 });
         b.push(Op::Const { dst: 1, imm: 2 });
         b.push(Op::SAbsorb2 { a: 0, b: 1 });
@@ -532,7 +643,7 @@ mod tests {
 
     #[test]
     fn program_commit_bound_at_level0() {
-        let mut b = crate::ir::ProgramBuilder::new();
+        let mut b = ir::ProgramBuilder::new();
         b.push(Op::Const { dst: 0, imm: 1 });
         b.push(Op::End);
 

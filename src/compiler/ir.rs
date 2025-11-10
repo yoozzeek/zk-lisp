@@ -2,32 +2,90 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
-//! IR for zk-lisp
+//! Intermediate representation for zk-lisp
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
     // ALU
-    Const { dst: u8, imm: u64 },
-    Mov { dst: u8, src: u8 },
-    Add { dst: u8, a: u8, b: u8 },
-    Sub { dst: u8, a: u8, b: u8 },
-    Mul { dst: u8, a: u8, b: u8 },
-    Neg { dst: u8, a: u8 },
-    Eq { dst: u8, a: u8, b: u8 },            // 0/1 result
-    Select { dst: u8, c: u8, a: u8, b: u8 }, // dst = c?a:b, c ∈ {0,1}
-    Assert { dst: u8, c: u8 },               // enforces c==1 and writes 1 to dst
+    Const {
+        dst: u8,
+        imm: u64,
+    },
+    Mov {
+        dst: u8,
+        src: u8,
+    },
+    Add {
+        dst: u8,
+        a: u8,
+        b: u8,
+    },
+    Sub {
+        dst: u8,
+        a: u8,
+        b: u8,
+    },
+    Mul {
+        dst: u8,
+        a: u8,
+        b: u8,
+    },
+    Neg {
+        dst: u8,
+        a: u8,
+    },
+    Eq {
+        dst: u8,
+        a: u8,
+        b: u8,
+    }, // 0/1 result
+    Select {
+        dst: u8,
+        c: u8,
+        a: u8,
+        b: u8,
+    }, // dst = c?a:b, c ∈ {0,1}
+    Assert {
+        dst: u8,
+        c: u8,
+    }, // enforces c==1 and writes 1 to dst
 
     // CRYPTO
     // Sponge: absorb up to 10 elements (rate=10)
-    SAbsorbN { regs: Vec<u8> },
+    SAbsorbN {
+        regs: Vec<u8>,
+    },
     // Sponge: squeeze lane 0 into dst
-    SSqueeze { dst: u8 },
+    SSqueeze {
+        dst: u8,
+    },
     // Sponge: absorb 2 elements (legacy)
-    SAbsorb2 { a: u8, b: u8 },
+    SAbsorb2 {
+        a: u8,
+        b: u8,
+    },
 
     // KV
-    KvMap { dir_reg: u8, sib_reg: u8 }, // one level of path
+    KvMap {
+        dir_reg: u8,
+        sib_reg: u8,
+    }, // one level of path
     KvFinal,
+
+    // MERKLE
+    MerkleStepFirst {
+        leaf_reg: u8,
+        dir_reg: u8,
+        sib_reg: u8,
+    },
+    MerkleStep {
+        dir_reg: u8,
+        sib_reg: u8,
+    },
+    MerkleStepLast {
+        dir_reg: u8,
+        sib_reg: u8,
+    },
 
     // CTRL
     End,
@@ -128,6 +186,19 @@ impl ProgramBuilder {
                 self.touch_reg(sib_reg);
             }
             KvFinal => {}
+            MerkleStepFirst {
+                leaf_reg,
+                dir_reg,
+                sib_reg,
+            } => {
+                self.touch_reg(leaf_reg);
+                self.touch_reg(dir_reg);
+                self.touch_reg(sib_reg);
+            }
+            MerkleStep { dir_reg, sib_reg } | MerkleStepLast { dir_reg, sib_reg } => {
+                self.touch_reg(dir_reg);
+                self.touch_reg(sib_reg);
+            }
             End => {}
         }
 
@@ -238,6 +309,26 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 for &r in regs {
                     out.push(r);
                 }
+            }
+            MerkleStepFirst {
+                leaf_reg,
+                dir_reg,
+                sib_reg,
+            } => {
+                out.push(0x11);
+                out.push(leaf_reg);
+                out.push(dir_reg);
+                out.push(sib_reg);
+            }
+            MerkleStep { dir_reg, sib_reg } => {
+                out.push(0x12);
+                out.push(dir_reg);
+                out.push(sib_reg);
+            }
+            MerkleStepLast { dir_reg, sib_reg } => {
+                out.push(0x13);
+                out.push(dir_reg);
+                out.push(sib_reg);
             }
         }
     }

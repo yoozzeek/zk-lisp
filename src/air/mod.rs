@@ -3,6 +3,7 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 mod kv;
+mod merkle;
 mod mixers;
 mod poseidon;
 mod schedule;
@@ -10,8 +11,8 @@ mod vm_alu;
 mod vm_ctrl;
 
 use crate::air::{
-    kv::KvBlock, poseidon::PoseidonBlock, schedule::ScheduleBlock, vm_alu::VmAluBlock,
-    vm_ctrl::VmCtrlBlock,
+    kv::KvBlock, merkle::MerkleBlock, poseidon::PoseidonBlock, schedule::ScheduleBlock,
+    vm_alu::VmAluBlock, vm_ctrl::VmCtrlBlock,
 };
 use crate::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::pi::{FeaturesMap, PublicInputs};
@@ -109,6 +110,9 @@ impl Air for ZkLispAir {
         }
         if features.kv {
             KvBlock::push_degrees(&mut degrees);
+        }
+        if features.merkle {
+            MerkleBlock::push_degrees(&mut degrees);
         }
 
         // Boundary assertions count per level:
@@ -210,6 +214,9 @@ impl Air for ZkLispAir {
         }
         if self.features.kv {
             kv::KvBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+        }
+        if self.features.merkle {
+            merkle::MerkleBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
         }
 
         debug_assert_eq!(ix, result.len());

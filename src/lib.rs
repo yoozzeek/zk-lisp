@@ -10,7 +10,6 @@ mod utils;
 
 pub mod compiler;
 pub mod error;
-pub mod ir;
 pub mod layout;
 pub mod logging;
 pub mod pi;

@@ -4,7 +4,9 @@
 
 mod lower;
 
-use crate::ir::{Op, Program};
+pub mod ir;
+
+use crate::compiler::ir::{Op, Program};
 use crate::{layout, schedule};
 
 use lower::{Ast, Atom, LowerCtx, Tok};

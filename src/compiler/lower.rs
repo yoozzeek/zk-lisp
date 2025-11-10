@@ -2,8 +2,8 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
+use crate::compiler::ir::{Op, ProgramBuilder};
 use crate::compiler::{Env, Error};
-use crate::ir::{Op, ProgramBuilder};
 use crate::layout::NR;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +175,7 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "neg" => lower_neg(cx, tail),
                     "str64" => lower_str64(cx, tail),
                     "hash2" => lower_hash2(cx, tail),
+                    "merkle-verify" => lower_merkle_verify(cx, tail),
                     "select" => lower_select(cx, tail),
                     "assert" => lower_assert(cx, tail),
                     "in-set" => lower_in_set(cx, tail),
@@ -982,6 +983,97 @@ fn lower_kv_final(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     // returns dummy reg 0 if not present;
     // the op itself writes KV columns
     Ok(*cx.env.vars.get("_kv_last").unwrap_or(&0))
+}
+
+fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("merkle-verify".into()));
+    }
+
+    let leaf_v = lower_expr(cx, rest[0].clone())?;
+    let leaf_r = leaf_v.reg();
+
+    let pairs_ast = match &rest[1] {
+        Ast::List(items) => items.clone(),
+        _ => return Err(Error::InvalidForm("merkle-verify: path".into())),
+    };
+    if pairs_ast.is_empty() {
+        return Err(Error::InvalidForm("merkle-verify: empty path".into()));
+    }
+
+    // First step
+    let (dir0_v, sib0_v) = {
+        let p = &pairs_ast[0];
+        let (d_ast, s_ast) = match p {
+            Ast::List(ps) if ps.len() == 2 => (&ps[0], &ps[1]),
+            _ => return Err(Error::InvalidForm("merkle-verify: pair".into())),
+        };
+
+        let d = lower_expr(cx, d_ast.clone())?;
+        let s = lower_expr(cx, s_ast.clone())?;
+
+        (d, s)
+    };
+
+    cx.b.push(Op::MerkleStepFirst {
+        leaf_reg: leaf_r,
+        dir_reg: dir0_v.reg(),
+        sib_reg: sib0_v.reg(),
+    });
+
+    // free temps
+    free_if_owned(cx, leaf_v);
+    free_if_owned(cx, dir0_v);
+    free_if_owned(cx, sib0_v);
+
+    // Middle steps
+    for p in pairs_ast
+        .iter()
+        .skip(1)
+        .take(pairs_ast.len().saturating_sub(2))
+    {
+        let (d_ast, s_ast) = match p {
+            Ast::List(ps) if ps.len() == 2 => (&ps[0], &ps[1]),
+            _ => return Err(Error::InvalidForm("merkle-verify: pair".into())),
+        };
+
+        let d = lower_expr(cx, d_ast.clone())?;
+        let s = lower_expr(cx, s_ast.clone())?;
+
+        cx.b.push(Op::MerkleStep {
+            dir_reg: d.reg(),
+            sib_reg: s.reg(),
+        });
+
+        free_if_owned(cx, d);
+        free_if_owned(cx, s);
+    }
+
+    // Last step (if path len >= 2)
+    if pairs_ast.len() >= 2 {
+        let p_last = pairs_ast.last().unwrap();
+        let (d_ast, s_ast) = match p_last {
+            Ast::List(ps) if ps.len() == 2 => (&ps[0], &ps[1]),
+            _ => return Err(Error::InvalidForm("merkle-verify: pair".into())),
+        };
+
+        let d = lower_expr(cx, d_ast.clone())?;
+        let s = lower_expr(cx, s_ast.clone())?;
+
+        cx.b.push(Op::MerkleStepLast {
+            dir_reg: d.reg(),
+            sib_reg: s.reg(),
+        });
+
+        free_if_owned(cx, d);
+        free_if_owned(cx, s);
+    }
+
+    // Return 0; verification encoded in AIR
+    let dst = cx.alloc()?;
+    cx.b.push(Op::Const { dst, imm: 0 });
+
+    Ok(RVal::Owned(dst))
 }
 
 // find the quoted (member ...)

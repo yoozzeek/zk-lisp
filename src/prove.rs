@@ -15,10 +15,11 @@ use winterfell::{
 };
 
 use crate::air::ZkLispAir;
+use crate::compiler::ir;
 use crate::pi::PublicInputs;
 use crate::trace::TraceBuilder;
 use crate::{
-    error, ir, layout,
+    error, layout,
     preflight::{PreflightMode, run as run_preflight},
     schedule,
 };

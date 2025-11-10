@@ -70,10 +70,18 @@ pub fn apply_level_absorb(
         s = y;
     }
 
-    // set final row to last state for convenience
+    // set final row to last state
     let row_fin = base + schedule::pos_final();
     for (i, &v) in s.iter().enumerate() {
         trace.set(cols.lane_index(i), row_fin, v);
+    }
+
+    // fill pad rows after
+    // final with final state
+    for r in (row_fin + 1)..(base + layout::STEPS_PER_LEVEL_P2) {
+        for (i, &v) in s.iter().enumerate() {
+            trace.set(cols.lane_index(i), r, v);
+        }
     }
 }
 

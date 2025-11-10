@@ -5,8 +5,9 @@
 //! Public inputs and features
 
 use crate::error::{Error, Result};
-use crate::{ir, utils};
+use crate::utils;
 
+use crate::compiler::ir;
 use winterfell::math::fields::f128::BaseElement as BE;
 
 // Feature bits
@@ -16,6 +17,7 @@ pub const FM_KV: u64 = 1 << 2;
 pub const FM_KV_EXPECT: u64 = 1 << 3;
 pub const FM_VM_EXPECT: u64 = 1 << 4;
 pub const FM_SPONGE: u64 = 1 << 5;
+pub const FM_MERKLE: u64 = 1 << 6;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FeaturesMap {
@@ -25,6 +27,7 @@ pub struct FeaturesMap {
     pub kv_expect: bool,
     pub vm_expect: bool,
     pub sponge: bool,
+    pub merkle: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -62,7 +65,7 @@ impl PublicInputsBuilder {
     }
 
     fn infer_features(&mut self, program: &ir::Program) {
-        use crate::ir::Op::*;
+        use crate::compiler::ir::Op::*;
 
         let mut vm = false;
         let mut pose = false;
@@ -92,6 +95,10 @@ impl PublicInputsBuilder {
                 KvMap { .. } | KvFinal => {
                     kv = true;
                     pose = true;
+                }
+                MerkleStepFirst { .. } | MerkleStep { .. } | MerkleStepLast { .. } => {
+                    pose = true;
+                    self.pi.feature_mask |= FM_MERKLE;
                 }
                 End => {}
             }
@@ -172,6 +179,7 @@ impl PublicInputs {
             kv_expect: (m & FM_KV_EXPECT) != 0,
             vm_expect: (m & FM_VM_EXPECT) != 0,
             sponge: (m & FM_SPONGE) != 0,
+            merkle: (m & FM_MERKLE) != 0,
         }
     }
 

@@ -2,11 +2,6 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
-//! Poseidon2 parameters (t=12: r=10, c=2)
-//! for BaseElement (f128)
-//! Conservative, self-derived
-//! from suite_id via domain-separated RO.
-
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 use winterfell::math::FieldElement;

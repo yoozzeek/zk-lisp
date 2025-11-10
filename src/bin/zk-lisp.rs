@@ -196,8 +196,11 @@ fn read_program(path: &PathBuf, max_bytes: usize) -> Result<String, CliError> {
     Ok(s)
 }
 
-fn build_pi_for_program(program: &zk_lisp::ir::Program, args: &[u64]) -> zk_lisp::pi::PublicInputs {
-    use zk_lisp::ir::Op;
+fn build_pi_for_program(
+    program: &zk_lisp::compiler::ir::Program,
+    args: &[u64],
+) -> zk_lisp::pi::PublicInputs {
+    use zk_lisp::compiler::ir::Op;
     let mut mask: u64 = 0;
 
     // VM is used by any ALU/select/eq/sponge op

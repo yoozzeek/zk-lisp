@@ -73,6 +73,15 @@ pub struct Columns {
     pub kv_version: usize,
     pub kv_prev_acc: usize,
 
+    // Merkle columns
+    pub merkle_g: usize,
+    pub merkle_dir: usize,
+    pub merkle_sib: usize,
+    pub merkle_acc: usize,
+    pub merkle_first: usize,
+    pub merkle_last: usize,
+    pub merkle_leaf: usize,
+
     // PI columns
     pub pi_prog: usize,
 
@@ -129,8 +138,17 @@ impl Columns {
         let kv_acc = kv_sib + 1;
         let kv_version = kv_acc + 1;
 
+        // Merkle block columns after KV
+        let merkle_g = kv_version + 1;
+        let merkle_dir = merkle_g + 1;
+        let merkle_sib = merkle_dir + 1;
+        let merkle_acc = merkle_sib + 1;
+        let merkle_first = merkle_acc + 1;
+        let merkle_last = merkle_first + 1;
+        let merkle_leaf = merkle_last + 1;
+
         // PI columns
-        let pi_prog = kv_version + 1;
+        let pi_prog = merkle_leaf + 1;
 
         // Extra KV column placed after PI
         let kv_prev_acc = pi_prog + 1;
@@ -175,6 +193,13 @@ impl Columns {
             kv_acc,
             kv_version,
             kv_prev_acc,
+            merkle_g,
+            merkle_dir,
+            merkle_sib,
+            merkle_acc,
+            merkle_first,
+            merkle_last,
+            merkle_leaf,
             pi_prog,
             pose_active,
             width,

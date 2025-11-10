@@ -1,9 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
+// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
+
 use crate::layout::POSEIDON_ROUNDS;
 use winterfell::math::FieldElement;
-
-// Constraint mixing helpers for AIR blocks.
-// These are NOT cryptographic; they shape CE degrees and
-// gate contributions to the last-row exemption and map rows.
 
 pub(crate) fn low<E: FieldElement>(periodic: &[E]) -> E {
     // s_low = p_last * p_map
