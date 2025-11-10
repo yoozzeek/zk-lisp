@@ -115,11 +115,7 @@ impl PublicInputsBuilder {
         self
     }
 
-    pub fn vm_expect_from_meta(
-        mut self,
-        program: &crate::ir::Program,
-        expected: &[u8; 32],
-    ) -> Self {
+    pub fn vm_expect_from_meta(mut self, program: &ir::Program, expected: &[u8; 32]) -> Self {
         self.pi.vm_out_reg = program.meta.out_reg;
         self.pi.vm_out_row = program.meta.out_row;
         self.pi.vm_expected_bytes = *expected;
@@ -133,6 +129,16 @@ impl PublicInputsBuilder {
         self.pi.vm_out_row = row;
         self.pi.vm_expected_bytes = *expected;
         self.pi.feature_mask |= FM_VM | FM_VM_EXPECT;
+
+        self
+    }
+
+    pub fn sponge(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.pi.feature_mask |= FM_SPONGE;
+        } else {
+            self.pi.feature_mask &= !FM_SPONGE;
+        }
 
         self
     }
