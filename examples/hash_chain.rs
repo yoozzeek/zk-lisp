@@ -10,10 +10,11 @@ use zk_lisp::compiler::compile_entry;
 use zk_lisp::logging;
 use zk_lisp::poseidon::poseidon_hash_two_lanes;
 use zk_lisp::prove::{self, ZkProver, verify_proof};
+use std::error::Error;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
-        20,
+        64,
         8,
         0,
         winterfell::FieldExtension::None,
@@ -126,12 +127,26 @@ fn main() {
     match prover.prove(trace) {
         Err(e) => {
             tracing::error!(target = "examples.hash_chain", "prove failed: {e}");
+            
+            let mut s = e.source();
+            while let Some(c) = s {
+                tracing::error!(target = "examples.hash_chain", "caused by: {}", c);
+                s = c.source();
+            }
         }
         Ok(proof) => {
             tracing::info!(target = "examples.hash_chain", "verifying...");
             match verify_proof(proof, pi, &opts) {
                 Ok(()) => tracing::info!(target = "examples.hash_chain", "OK"),
-                Err(e) => tracing::error!(target = "examples.hash_chain", "VERIFY FAILED: {e}"),
+                Err(e) => {
+                    tracing::error!(target = "examples.hash_chain", "VERIFY FAILED: {e}");
+                    
+                    let mut s = e.source();
+                    while let Some(c) = s {
+                        tracing::error!(target = "examples.hash_chain", "caused by: {}", c);
+                        s = c.source();
+                    }
+                },
             }
         }
     }

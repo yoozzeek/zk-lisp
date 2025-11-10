@@ -7,10 +7,11 @@ use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
 use zk_lisp::logging;
 use zk_lisp::pi::{self};
 use zk_lisp::prove::{self, ZkProver, verify_proof};
+use std::error::Error;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
-        20,
+        64,
         8,
         0,
         FieldExtension::None,
@@ -120,12 +121,26 @@ fn main() {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(target = "examples.merkle_inclusion", "prove failed: {e}");
+            
+            let mut s = e.source();
+            while let Some(c) = s {
+                tracing::error!(target = "examples.merkle_inclusion", "caused by: {}", c);
+                s = c.source();
+            }
+            
             return;
         }
     };
 
     if let Err(e) = verify_proof(proof, pi, &opts()) {
         tracing::error!(target = "examples.merkle_inclusion", "verify failed: {e}");
+        
+        let mut s = e.source();
+        while let Some(c) = s {
+            tracing::error!(target = "examples.merkle_inclusion", "caused by: {}", c);
+            s = c.source();
+        }
+        
         return;
     }
 

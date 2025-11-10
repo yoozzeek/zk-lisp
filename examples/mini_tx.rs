@@ -9,10 +9,11 @@ use zk_lisp::compiler::compile_entry;
 use zk_lisp::logging;
 use zk_lisp::pi::PublicInputsBuilder;
 use zk_lisp::prove::{self, ZkProver, verify_proof};
+use std::error::Error;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
-        20,
+        64,
         8,
         0,
         FieldExtension::None,
@@ -147,12 +148,26 @@ fn main() {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(target = "examples.mini_tx", "prove failed: {e}");
+            
+            let mut s = e.source();
+            while let Some(c) = s {
+                tracing::error!(target = "examples.mini_tx", "caused by: {}", c);
+                s = c.source();
+            }
+            
             return;
         }
     };
 
     if let Err(e) = verify_proof(proof, pi, &opts()) {
         tracing::error!(target = "examples.mini_tx", "verify failed: {e}");
+        
+        let mut s = e.source();
+        while let Some(c) = s {
+            tracing::error!(target = "examples.mini_tx", "caused by: {}", c);
+            s = c.source();
+        }
+        
         return;
     }
 
