@@ -217,3 +217,38 @@ fn ro_from_slices(domain: &str, parts: &[&[u8]]) -> BE {
 fn cache() -> &'static RwLock<HashMap<[u8; 32], PoseidonSuite>> {
     POSEIDON_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mds_12x12_basic() {
+        let sid = [42u8; 32];
+        let m = derive_poseidon_mds_cauchy_12x12(&sid);
+        assert_eq!(m.len(), 12);
+        assert_eq!(m[0].len(), 12);
+        assert!(m.iter().flatten().any(|v| *v != BE::ZERO));
+    }
+
+    #[test]
+    fn rc_12_len_matches_rounds() {
+        let sid = [7u8; 32];
+        let rc = derive_poseidon_round_constants_12(&sid, POSEIDON_ROUNDS);
+        assert_eq!(rc.len(), POSEIDON_ROUNDS);
+        assert_ne!(rc[0][0], BE::ZERO);
+        assert_ne!(rc[POSEIDON_ROUNDS - 1][11], BE::ZERO);
+    }
+
+    #[test]
+    fn suite_determinism_and_cache() {
+        let sid = [1u8; 32];
+        let a = get_poseidon_suite(&sid);
+        let b = get_poseidon_suite(&sid);
+        assert_eq!(a.dom, b.dom);
+        assert_eq!(a.mds, b.mds);
+        assert_eq!(a.rc.len(), b.rc.len());
+        // spot check
+        assert_eq!(a.rc[0][0], b.rc[0][0]);
+    }
+}

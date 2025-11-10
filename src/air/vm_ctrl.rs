@@ -217,6 +217,94 @@ mod tests {
     use winterfell::EvaluationFrame;
 
     #[test]
+    fn sponge_selectors_gated_off_without_feature() {
+        let cols = Columns::baseline();
+
+        let mut frame_a = EvaluationFrame::<BE>::new(cols.width(0));
+        let mut frame_b = EvaluationFrame::<BE>::new(cols.width(0));
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
+
+        // Map row active
+        periodic[0] = BE::ONE;
+
+        // op_sponge set; all ALU selectors 0
+        frame_a.current_mut()[cols.op_sponge] = BE::ONE;
+        frame_b.current_mut()[cols.op_sponge] = BE::ONE;
+
+        // differ only in sel_s for lane0, reg0
+        // frame_a: sel=2 (invalid); frame_b: sel=1 (valid)
+        frame_a.current_mut()[cols.sel_s_index(0, 0)] = BE::from(2u64);
+        frame_b.current_mut()[cols.sel_s_index(0, 0)] = BE::from(1u64);
+
+        // Build ctx without SPONGE feature
+        let pi_no_sponge = crate::pi::PublicInputs::default();
+        let rc_binding = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_binding = [[BE::ZERO; 12]; 12];
+        let dom_binding = [BE::ZERO; 2];
+
+        let ctx = BlockCtx::new(
+            &cols,
+            &pi_no_sponge,
+            &rc_binding,
+            &mds_binding,
+            &dom_binding,
+        );
+
+        let mut ra = vec![BE::ZERO; 256];
+        let mut rb = vec![BE::ZERO; 256];
+        let mut ia = 0usize;
+        let mut ib = 0usize;
+
+        VmCtrlBlock::eval_block(&ctx, &frame_a, &periodic, &mut ra, &mut ia);
+        VmCtrlBlock::eval_block(&ctx, &frame_b, &periodic, &mut rb, &mut ib);
+
+        // With sponge disabled, changing sel_s must not change evaluation
+        assert_eq!(ia, ib);
+        assert_eq!(ra, rb);
+    }
+
+    #[test]
+    fn sponge_selectors_on_feature_affect_eval() {
+        let cols = Columns::baseline();
+
+        let mut frame_a = EvaluationFrame::<BE>::new(cols.width(0));
+        let mut frame_b = EvaluationFrame::<BE>::new(cols.width(0));
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
+
+        // Map row active
+        periodic[0] = BE::ONE;
+
+        // op_sponge set; all ALU selectors 0
+        frame_a.current_mut()[cols.op_sponge] = BE::ONE;
+        frame_b.current_mut()[cols.op_sponge] = BE::ONE;
+
+        // differ only in sel_s for lane0, reg0
+        frame_a.current_mut()[cols.sel_s_index(0, 0)] = BE::from(2u64); // invalid
+        frame_b.current_mut()[cols.sel_s_index(0, 0)] = BE::from(1u64); // valid
+
+        // Build ctx with SPONGE feature
+        let mut pi = crate::pi::PublicInputs::default();
+        pi.feature_mask |= crate::pi::FM_SPONGE | crate::pi::FM_VM;
+
+        let rc_binding = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_binding = [[BE::ZERO; 12]; 12];
+        let dom_binding = [BE::ZERO; 2];
+
+        let ctx = BlockCtx::new(&cols, &pi, &rc_binding, &mds_binding, &dom_binding);
+
+        let mut ra = vec![BE::ZERO; 256];
+        let mut rb = vec![BE::ZERO; 256];
+        let mut ia = 0usize;
+        let mut ib = 0usize;
+
+        VmCtrlBlock::eval_block(&ctx, &frame_a, &periodic, &mut ra, &mut ia);
+        VmCtrlBlock::eval_block(&ctx, &frame_b, &periodic, &mut rb, &mut ib);
+
+        assert_eq!(ia, ib);
+        assert_ne!(ra, rb);
+    }
+
+    #[test]
     fn two_ops_set_violation() {
         let cols = Columns::baseline();
         let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
