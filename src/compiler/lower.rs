@@ -3,8 +3,11 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use crate::compiler::ir::{Op, ProgramBuilder};
-use crate::compiler::{Env, Error};
+use crate::compiler::{Binding, Env, Error};
 use crate::layout::NR;
+
+use winterfell::math::fields::f128::BaseElement as BE;
+use winterfell::math::{FieldElement, StarkField};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ast {
@@ -41,6 +44,7 @@ enum BinOp {
 pub enum RVal {
     Owned(u8),
     Borrowed(u8),
+    Imm(u64),
 }
 
 impl RVal {
@@ -48,6 +52,15 @@ impl RVal {
     pub fn reg(self) -> u8 {
         match self {
             RVal::Owned(r) | RVal::Borrowed(r) => r,
+            RVal::Imm(_) => panic!("internal: reg() on Imm; call into_owned first"),
+        }
+    }
+
+    #[inline]
+    pub fn as_imm(self) -> Option<u64> {
+        match self {
+            RVal::Imm(v) => Some(v),
+            _ => None,
         }
     }
 
@@ -57,6 +70,12 @@ impl RVal {
             RVal::Borrowed(s) => {
                 let dst = cx.alloc()?;
                 cx.b.push(Op::Mov { dst, src: s });
+
+                Ok(RVal::Owned(dst))
+            }
+            RVal::Imm(v) => {
+                let dst = cx.alloc()?;
+                cx.b.push(Op::Const { dst, imm: v });
 
                 Ok(RVal::Owned(dst))
             }
@@ -89,25 +108,33 @@ impl<'a> LowerCtx<'a> {
     }
 
     fn alloc(&mut self) -> Result<u8, Error> {
-        self.free
-            .pop()
-            .ok_or(Error::RegOverflow { need: 1, have: 0 })
+        match self.free.pop() {
+            Some(r) => Ok(r),
+            None => Err(Error::RegOverflow { need: 1, have: 0 }),
+        }
     }
 
     fn free_reg(&mut self, r: u8) {
         self.free.push(r);
     }
 
-    fn map_var(&mut self, name: &str, r: u8) {
-        self.env.vars.insert(name.to_string(), r);
+    fn map_var(&mut self, name: &str, b: Binding) {
+        self.env.vars.insert(name.to_string(), b);
     }
 
-    fn get_var(&self, name: &str) -> Result<u8, Error> {
+    fn get_binding(&self, name: &str) -> Result<Binding, Error> {
         self.env
             .vars
             .get(name)
-            .copied()
+            .cloned()
             .ok_or_else(|| Error::UnknownSymbol(name.to_string()))
+    }
+
+    fn get_reg_opt(&self, name: &str) -> Option<u8> {
+        match self.env.vars.get(name) {
+            Some(Binding::Reg(r)) => Some(*r),
+            _ => None,
+        }
     }
 
     fn define_fun(&mut self, name: &str, params: Vec<String>, body: Ast) {
@@ -147,10 +174,9 @@ pub fn lower_top(cx: &mut LowerCtx, ast: Ast) -> Result<(), Error> {
 pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
     match ast {
         Ast::Atom(Atom::Int(v)) => {
-            let r = cx.alloc()?;
-            cx.b.push(Op::Const { dst: r, imm: v });
-
-            Ok(RVal::Owned(r))
+            // Keep literal as immediate,
+            // materialize only on demand.
+            Ok(RVal::Imm(v))
         }
         Ast::Atom(Atom::Str(_)) => {
             // String literal must be used
@@ -158,9 +184,12 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
             Err(Error::InvalidForm("string literal outside macro".into()))
         }
         Ast::Atom(Atom::Sym(s)) => {
-            // Return borrowed register for variables
-            let r = cx.get_var(&s)?;
-            Ok(RVal::Borrowed(r))
+            // Variable may be bound to
+            // a register or an immediate.
+            match cx.get_binding(&s)? {
+                Binding::Reg(r) => Ok(RVal::Borrowed(r)),
+                Binding::Imm(v) => Ok(RVal::Imm(v)),
+            }
         }
         Ast::List(items) if !items.is_empty() => match items.as_slice() {
             [Ast::Atom(Atom::Sym(s)), rest @ ..] => {
@@ -178,11 +207,13 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "merkle-verify" => lower_merkle_verify(cx, tail),
                     "select" => lower_select(cx, tail),
                     "assert" => lower_assert(cx, tail),
+                    "bit?" => lower_bit_pred(cx, tail),
+                    "assert-bit" => lower_assert_bit(cx, tail),
                     "in-set" => lower_in_set(cx, tail),
                     "kv-step" => lower_kv_step(cx, tail)
-                        .map(|_| RVal::Borrowed(cx.get_var("_kv_last").unwrap_or(0))),
+                        .map(|_| RVal::Borrowed(cx.get_reg_opt("_kv_last").unwrap_or(0))),
                     "kv-final" => lower_kv_final(cx, tail)
-                        .map(|_| RVal::Borrowed(cx.get_var("_kv_last").unwrap_or(0))),
+                        .map(|_| RVal::Borrowed(cx.get_reg_opt("_kv_last").unwrap_or(0))),
                     "hex-to-bytes32" => lower_hex_to_bytes32(cx, tail),
                     _ => lower_call(cx, s, tail),
                 }
@@ -249,7 +280,8 @@ fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         _ => return Err(Error::InvalidForm("let: binds".into())),
     };
 
-    let mut saved: Vec<(String, Option<u8>)> = Vec::new();
+    let mut saved: Vec<(String, Option<Binding>, Option<u8>, bool)> = Vec::new();
+
     for b in binds {
         match b {
             Ast::List(kv) if kv.len() == 2 => {
@@ -258,11 +290,27 @@ fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
                     _ => return Err(Error::InvalidForm("let: name".into())),
                 };
 
-                let r = lower_expr(cx, kv[1].clone())?.into_owned(cx)?;
-                let rr = r.reg();
+                let v = lower_expr(cx, kv[1].clone())?;
 
-                saved.push((name.clone(), cx.env.vars.get(&name).copied()));
-                cx.map_var(&name, rr);
+                // Determine binding without
+                // unnecessary materialization.
+                match v {
+                    RVal::Imm(k) => {
+                        let prior = cx.env.vars.get(&name).cloned();
+                        saved.push((name.clone(), prior, None, false));
+                        cx.map_var(&name, Binding::Imm(k));
+                    }
+                    RVal::Borrowed(r) => {
+                        let prior = cx.env.vars.get(&name).cloned();
+                        saved.push((name.clone(), prior, Some(r), false));
+                        cx.map_var(&name, Binding::Reg(r));
+                    }
+                    RVal::Owned(r) => {
+                        let prior = cx.env.vars.get(&name).cloned();
+                        saved.push((name.clone(), prior, Some(r), true));
+                        cx.map_var(&name, Binding::Reg(r));
+                    }
+                }
             }
             _ => return Err(Error::InvalidForm("let: pair".into())),
         }
@@ -275,16 +323,23 @@ fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         .ok_or_else(|| Error::InvalidForm("let: body".into()))?;
 
     let res_v = lower_expr(cx, body_ast)?;
-    let res_reg = res_v.reg();
+    let res_reg_opt: Option<u8> = match res_v {
+        RVal::Owned(r) | RVal::Borrowed(r) => Some(r),
+        RVal::Imm(_) => None,
+    };
 
     // cleanup: free all let-bound regs
     // except result (if referenced by name).
-    for (name, prior) in saved.into_iter().rev() {
-        let r = cx.env.vars.remove(&name).unwrap();
+    for (name, prior, reg_opt, owned) in saved.into_iter().rev() {
+        let _ = cx.env.vars.remove(&name);
         if let Some(p) = prior {
             cx.env.vars.insert(name, p);
-        } else if r != res_reg {
-            cx.free_reg(r);
+        } else if owned {
+            if let Some(r) = reg_opt {
+                if res_reg_opt != Some(r) {
+                    cx.free_reg(r);
+                }
+            }
         }
     }
 
@@ -299,6 +354,26 @@ fn lower_select(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let c = lower_expr(cx, rest[0].clone())?;
     let a = lower_expr(cx, rest[1].clone())?;
     let b = lower_expr(cx, rest[2].clone())?;
+
+    // Constant fold when
+    // condition is immediate 0/1
+    if let Some(cv) = c.as_imm() {
+        if cv == 0 {
+            free_if_owned(cx, a);
+            return Ok(b);
+        } else if cv == 1 {
+            free_if_owned(cx, b);
+            return Ok(a);
+        } else {
+            return Err(Error::InvalidForm(
+                "select: cond must be boolean (0/1)".into(),
+            ));
+        }
+    }
+
+    let c = c.into_owned(cx)?;
+    let a = a.into_owned(cx)?;
+    let b = b.into_owned(cx)?;
 
     let dst = cx.alloc()?;
 
@@ -324,6 +399,27 @@ fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<RVal, Error> 
 
     let a = lower_expr(cx, rest[0].clone())?;
     let b = lower_expr(cx, rest[1].clone())?;
+
+    // Constant folding for Imm+Imm
+    // when representable as u64
+    if let (Some(ai), Some(bi)) = (a.as_imm(), b.as_imm()) {
+        let ra = BE::from(ai);
+        let rb = BE::from(bi);
+
+        let r = match op {
+            BinOp::Add => ra + rb,
+            BinOp::Sub => ra - rb,
+            BinOp::Mul => ra * rb,
+        };
+
+        let r128: u128 = r.as_int();
+        if r128 <= u64::MAX as u128 {
+            return Ok(RVal::Imm(r128 as u64));
+        }
+    }
+
+    let a = a.into_owned(cx)?;
+    let b = b.into_owned(cx)?;
 
     let dst = cx.alloc()?;
 
@@ -357,6 +453,17 @@ fn lower_neg(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     }
 
     let a = lower_expr(cx, rest[0].clone())?;
+
+    if let Some(ai) = a.as_imm() {
+        let r = BE::ZERO - BE::from(ai);
+        let r128: u128 = r.as_int();
+
+        if r128 <= u64::MAX as u128 {
+            return Ok(RVal::Imm(r128 as u64));
+        }
+    }
+
+    let a = a.into_owned(cx)?;
     let dst = cx.alloc()?;
 
     cx.b.push(Op::Neg { dst, a: a.reg() });
@@ -371,6 +478,16 @@ fn lower_assert(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     }
 
     let c = lower_expr(cx, rest[0].clone())?;
+
+    if let Some(cv) = c.as_imm() {
+        if cv == 1 {
+            return Ok(RVal::Imm(1));
+        } else {
+            return Err(Error::InvalidForm("assert: constant false".into()));
+        }
+    }
+
+    let c = c.into_owned(cx)?;
     let dst = cx.alloc()?;
 
     cx.b.push(Op::Assert { dst, c: c.reg() });
@@ -387,6 +504,22 @@ fn lower_if(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let c = lower_expr(cx, rest[0].clone())?;
     let t = lower_expr(cx, rest[1].clone())?;
     let e = lower_expr(cx, rest[2].clone())?;
+
+    if let Some(cv) = c.as_imm() {
+        if cv == 0 {
+            free_if_owned(cx, t);
+            return Ok(e);
+        } else if cv == 1 {
+            free_if_owned(cx, e);
+            return Ok(t);
+        } else {
+            return Err(Error::InvalidForm("if: cond must be boolean (0/1)".into()));
+        }
+    }
+
+    let c = c.into_owned(cx)?;
+    let t = t.into_owned(cx)?;
+    let e = e.into_owned(cx)?;
 
     let dst = cx.alloc()?;
 
@@ -412,6 +545,13 @@ fn lower_eq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let a = lower_expr(cx, rest[0].clone())?;
     let b = lower_expr(cx, rest[1].clone())?;
 
+    if let (Some(ai), Some(bi)) = (a.as_imm(), b.as_imm()) {
+        return Ok(RVal::Imm(if ai == bi { 1 } else { 0 }));
+    }
+
+    let a = a.into_owned(cx)?;
+    let b = b.into_owned(cx)?;
+
     let dst = cx.alloc()?;
 
     cx.b.push(Op::Eq {
@@ -434,12 +574,26 @@ fn lower_hash2(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let a = lower_expr(cx, rest[0].clone())?;
     let b = lower_expr(cx, rest[1].clone())?;
 
+    // Only materialize immediates;
+    // borrowed regs can be used directly
+    let a = if a.as_imm().is_some() {
+        a.into_owned(cx)?
+    } else {
+        a
+    };
+    let b = if b.as_imm().is_some() {
+        b.into_owned(cx)?
+    } else {
+        b
+    };
+
     // Lower to SAbsorbN(2) + SSqueeze
     cx.b.push(Op::SAbsorbN {
         regs: vec![a.reg(), b.reg()],
     });
 
     let dst = cx.alloc()?;
+
     cx.b.push(Op::SSqueeze { dst });
 
     free_if_owned(cx, a);
@@ -477,27 +631,47 @@ fn lower_call(cx: &mut LowerCtx, name: &str, args: &[Ast]) -> Result<RVal, Error
 
     // Create new bindings for params
     // Track ownership of argument registers
-    let mut saved: Vec<(String, Option<u8>, u8, bool)> = Vec::new();
-    for (p, v) in params.iter().zip(argv.iter().copied()) {
-        let reg = v.reg();
-        let owned = matches!(v, RVal::Owned(_));
+    let mut saved: Vec<(String, Option<Binding>, Option<u8>, bool)> = Vec::new();
 
-        saved.push((p.clone(), cx.env.vars.get(p).copied(), reg, owned));
-        cx.map_var(p, reg);
+    for (p, v) in params.iter().cloned().zip(argv.into_iter()) {
+        match v {
+            RVal::Imm(k) => {
+                let prev = cx.env.vars.get(&p).cloned();
+                saved.push((p.clone(), prev, None, false));
+                cx.map_var(&p, Binding::Imm(k));
+            }
+            RVal::Borrowed(r) => {
+                let prev = cx.env.vars.get(&p).cloned();
+                saved.push((p.clone(), prev, Some(r), false));
+                cx.map_var(&p, Binding::Reg(r));
+            }
+            RVal::Owned(r) => {
+                let prev = cx.env.vars.get(&p).cloned();
+                saved.push((p.clone(), prev, Some(r), true));
+                cx.map_var(&p, Binding::Reg(r));
+            }
+        }
     }
 
     let res_v = lower_expr(cx, body.clone())?;
-    let res_reg = res_v.reg();
+    let res_reg_opt: Option<u8> = match res_v {
+        RVal::Owned(r) | RVal::Borrowed(r) => Some(r),
+        RVal::Imm(_) => None,
+    };
 
     // cleanup param bindings: do not free res reg;
     // free only Owned args without prior mapping
-    for (p, prior, reg, owned) in saved.into_iter().rev() {
-        let _ = cx.env.vars.remove(&p).unwrap();
+    for (p, prior, reg_opt, owned) in saved.into_iter().rev() {
+        let _ = cx.env.vars.remove(&p);
 
         if let Some(pr) = prior {
             cx.env.vars.insert(p, pr);
-        } else if owned && reg != res_reg {
-            cx.free_reg(reg);
+        } else if owned {
+            if let Some(reg) = reg_opt {
+                if res_reg_opt != Some(reg) {
+                    cx.free_reg(reg);
+                }
+            }
         }
     }
 
@@ -645,6 +819,7 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         });
 
         let r_c = cx.alloc()?;
+
         cx.b.push(Op::SSqueeze { dst: r_c });
 
         cx.free_reg(r_lo);
@@ -790,6 +965,7 @@ fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> 
         });
 
         let r_c = cx.alloc()?;
+
         cx.b.push(Op::SSqueeze { dst: r_c });
 
         cx.free_reg(r_lo);
@@ -870,6 +1046,8 @@ fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     }
 
     let x = lower_expr(cx, rest[0].clone())?;
+    let x = x.into_owned(cx)?;
+
     let set_list = match &rest[1] {
         Ast::List(items) => items.clone(),
         _ => return Err(Error::InvalidForm("in-set: expects list".into())),
@@ -884,6 +1062,8 @@ fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     for it in set_list.into_iter() {
         let si = lower_expr(cx, it)?;
+        let si = si.into_owned(cx)?;
+
         let r_diff = cx.alloc()?;
 
         cx.b.push(Op::Sub {
@@ -956,9 +1136,11 @@ fn lower_kv_step(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
     }
 
     let dir_v = lower_expr(cx, rest[0].clone())?;
+    let dir_v = dir_v.into_owned(cx)?;
     let dir_r = dir_v.reg();
 
     let sib_v = lower_expr(cx, rest[1].clone())?;
+    let sib_v = sib_v.into_owned(cx)?;
     let sib_r = sib_v.reg();
 
     cx.b.push(Op::KvMap {
@@ -968,7 +1150,7 @@ fn lower_kv_step(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
 
     // remember last sib reg
     // for potential chaining
-    cx.map_var("_kv_last", sib_r);
+    cx.map_var("_kv_last", Binding::Reg(sib_r));
 
     free_if_owned(cx, dir_v);
     // do not free sib_v here
@@ -985,7 +1167,7 @@ fn lower_kv_final(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
 
     // returns dummy reg 0 if not present;
     // the op itself writes KV columns
-    Ok(*cx.env.vars.get("_kv_last").unwrap_or(&0))
+    Ok(cx.get_reg_opt("_kv_last").unwrap_or(0))
 }
 
 fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
@@ -994,6 +1176,11 @@ fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     }
 
     let leaf_v = lower_expr(cx, rest[0].clone())?;
+    let leaf_v = if leaf_v.as_imm().is_some() {
+        leaf_v.into_owned(cx)?
+    } else {
+        leaf_v
+    };
     let leaf_r = leaf_v.reg();
 
     let pairs_ast = match &rest[1] {
@@ -1013,7 +1200,10 @@ fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         };
 
         let d = lower_expr(cx, d_ast.clone())?;
+        let d = d.into_owned(cx)?;
+
         let s = lower_expr(cx, s_ast.clone())?;
+        let s = s.into_owned(cx)?;
 
         (d, s)
     };
@@ -1041,7 +1231,18 @@ fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         };
 
         let d = lower_expr(cx, d_ast.clone())?;
+        let d = if d.as_imm().is_some() {
+            d.into_owned(cx)?
+        } else {
+            d
+        };
+
         let s = lower_expr(cx, s_ast.clone())?;
+        let s = if s.as_imm().is_some() {
+            s.into_owned(cx)?
+        } else {
+            s
+        };
 
         cx.b.push(Op::MerkleStep {
             dir_reg: d.reg(),
@@ -1061,7 +1262,18 @@ fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         };
 
         let d = lower_expr(cx, d_ast.clone())?;
+        let d = if d.as_imm().is_some() {
+            d.into_owned(cx)?
+        } else {
+            d
+        };
+
         let s = lower_expr(cx, s_ast.clone())?;
+        let s = if s.as_imm().is_some() {
+            s.into_owned(cx)?
+        } else {
+            s
+        };
 
         cx.b.push(Op::MerkleStepLast {
             dir_reg: d.reg(),
@@ -1072,9 +1284,101 @@ fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         free_if_owned(cx, s);
     }
 
-    // Return 0; verification encoded in AIR
+    // Return 0 immediate;
+    // verification is enforced by AIR.
+    Ok(RVal::Imm(0))
+}
+
+// (bit? x) -> 1 if x in {0,1}, else 0
+fn lower_bit_pred(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 1 {
+        return Err(Error::InvalidForm("bit?".into()));
+    }
+
+    let x = lower_expr(cx, rest[0].clone())?;
+
+    // If immediate, compute directly
+    if let Some(xi) = x.as_imm() {
+        return Ok(RVal::Imm(if xi == 0 || xi == 1 { 1 } else { 0 }));
+    }
+
+    // t = x * (x - 1)
+    let x = x.into_owned(cx)?;
+    let one = {
+        let r = cx.alloc()?;
+        cx.b.push(Op::Const { dst: r, imm: 1 });
+
+        r
+    };
+    let xm1 = {
+        let r = cx.alloc()?;
+        cx.b.push(Op::Sub {
+            dst: r,
+            a: x.reg(),
+            b: one,
+        });
+
+        r
+    };
+    let t = {
+        let r = cx.alloc()?;
+        cx.b.push(Op::Mul {
+            dst: r,
+            a: x.reg(),
+            b: xm1,
+        });
+
+        r
+    };
+
+    // eq = (t == 0)
+    let z = {
+        let r = cx.alloc()?;
+        cx.b.push(Op::Const { dst: r, imm: 0 });
+
+        r
+    };
+    let eq = {
+        let r = cx.alloc()?;
+        cx.b.push(Op::Eq { dst: r, a: t, b: z });
+
+        r
+    };
+
+    // free temps
+    cx.free_reg(one);
+    cx.free_reg(xm1);
+    cx.free_reg(t);
+    cx.free_reg(z);
+
+    Ok(RVal::Owned(eq))
+}
+
+// (assert-bit x) -> assert(x in {0,1}) and return 1
+fn lower_assert_bit(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 1 {
+        return Err(Error::InvalidForm("assert-bit".into()));
+    }
+
+    let pred = lower_bit_pred(cx, rest)?;
+    if let Some(v) = pred.as_imm() {
+        if v == 1 {
+            return Ok(RVal::Imm(1));
+        } else {
+            return Err(Error::InvalidForm("assert-bit: constant false".into()));
+        }
+    }
+
+    let pred = pred.into_owned(cx)?;
     let dst = cx.alloc()?;
-    cx.b.push(Op::Const { dst, imm: 0 });
+
+    tracing::debug!(
+        target = "compiler.lower",
+        "alloc dst for assert-bit -> r{dst}"
+    );
+
+    cx.b.push(Op::Assert { dst, c: pred.reg() });
+    cx.free_reg(pred.reg());
 
     Ok(RVal::Owned(dst))
 }
