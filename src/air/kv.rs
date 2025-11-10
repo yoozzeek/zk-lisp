@@ -6,6 +6,7 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{Assertion, EvaluationFrame, TransitionConstraintDegree};
 
+use crate::air::mixers;
 use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::pi;
 
@@ -77,11 +78,10 @@ where
 
         // mixers: s1 ~ deg1, s2 ~ deg2,
         // s3 ~ deg3 (after dividing by z)
-        let p_last = periodic[1 + POSEIDON_ROUNDS + 3];
-        let s1 = p_last * p_map;
         let pi = cur[ctx.cols.pi_prog];
-        let s2 = s1 * pi;
-        let s3 = s2 * pi;
+        let s1 = mixers::low(periodic);
+        let s2 = mixers::pi1(periodic, pi);
+        let s3 = mixers::pi2(periodic, pi);
 
         let kv_map = cur[ctx.cols.kv_g_map];
         let kv_fin = cur[ctx.cols.kv_g_final];
@@ -190,7 +190,7 @@ mod tests {
         let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
-        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
         let mds_box = Box::new({
             let mut m = [[BE::ZERO; 12]; 12];
             for (i, row) in m.iter_mut().enumerate() {
@@ -200,7 +200,7 @@ mod tests {
             m
         });
         let dom_box = Box::new([BE::ONE, BE::from(2u64)]);
-        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_vec, &mds_box, &dom_box);
+        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_box, &mds_box, &dom_box);
 
         // map row: p_map=1
         periodic[0] = BE::ONE;
@@ -234,7 +234,7 @@ mod tests {
         let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
-        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
         let mds_box = Box::new({
             let mut m = [[BE::ZERO; 12]; 12];
             for (i, row) in m.iter_mut().enumerate() {
@@ -244,7 +244,7 @@ mod tests {
             m
         });
         let dom_box = Box::new([BE::ONE, BE::from(2u64)]);
-        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_vec, &mds_box, &dom_box);
+        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_box, &mds_box, &dom_box);
 
         // map row
         periodic[0] = BE::ONE;
@@ -284,7 +284,7 @@ mod tests {
         let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
-        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
         let mds_box = Box::new({
             let mut m = [[BE::ZERO; 12]; 12];
             for (i, row) in m.iter_mut().enumerate() {
@@ -294,7 +294,7 @@ mod tests {
             m
         });
         let dom_box = Box::new([BE::ONE, BE::from(2u64)]);
-        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_vec, &mds_box, &dom_box);
+        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_box, &mds_box, &dom_box);
 
         // final row
         periodic[0] = BE::ZERO;
@@ -322,7 +322,7 @@ mod tests {
         let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
 
         let pi = pi::PublicInputs::default();
-        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
         let mds_box = Box::new({
             let mut m = [[BE::ZERO; 12]; 12];
             for (i, row) in m.iter_mut().enumerate() {
@@ -332,7 +332,7 @@ mod tests {
             m
         });
         let dom_box = Box::new([BE::ONE, BE::from(2u64)]);
-        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_vec, &mds_box, &dom_box);
+        let ctx = BlockCtx::<BE>::new(&cols, &pi, &rc_box, &mds_box, &dom_box);
 
         // final row
         periodic[0] = BE::ONE; // kv_map may also be 1

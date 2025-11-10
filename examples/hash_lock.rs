@@ -13,7 +13,7 @@ use zk_lisp::prove::{self, ZkProver, verify_proof};
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
-        1,
+        20,
         8,
         0,
         winterfell::FieldExtension::None,

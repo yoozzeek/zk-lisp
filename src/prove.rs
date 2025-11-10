@@ -101,18 +101,23 @@ impl ZkProver {
         };
 
         let t0 = std::time::Instant::now();
-        let proof = prover
-            .prove(trace)
-            .map_err(|e| Error::BackendSource(Box::new(e)))?;
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prover.prove(trace)))
+            .map_err(|_| Error::Backend("winterfell panic during proving".into()))
+            .and_then(|r| r.map_err(|e| Error::BackendSource(Box::new(e))));
 
-        let dt = t0.elapsed();
-        tracing::info!(
-            target = "proof.prove",
-            elapsed_ms = %dt.as_millis(),
-            "prove created",
-        );
+        match res {
+            Ok(proof) => {
+                let dt = t0.elapsed();
+                tracing::info!(
+                    target = "proof.prove",
+                    elapsed_ms = %dt.as_millis(),
+                    "prove created",
+                );
 
-        Ok(proof)
+                Ok(proof)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -279,10 +284,11 @@ pub fn compute_vm_output(trace: &TraceTable<BE>) -> (u8, u32) {
     )
 )]
 pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Result<(), Error> {
-    let acceptable = winterfell::AcceptableOptions::OptionSet(vec![opts.clone()]);
-
-    // Validate PI
     pi.validate_flags()?;
+
+    // Enforce a minimum conjectured security
+    let min_bits = if cfg!(debug_assertions) { 64 } else { 128 };
+    let acceptable = winterfell::AcceptableOptions::MinConjecturedSecurity(min_bits);
 
     tracing::info!(
         target = "proof.verify",
@@ -293,22 +299,29 @@ pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Resu
     );
 
     let t0 = std::time::Instant::now();
-    winterfell::verify::<
-        ZkLispAir,
-        Blake3_256<BE>,
-        DefaultRandomCoin<Blake3_256<BE>>,
-        MerkleTree<Blake3_256<BE>>,
-    >(proof, pi, &acceptable)
-    .map_err(|e| Error::BackendSource(Box::new(e)))?;
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        winterfell::verify::<
+            ZkLispAir,
+            Blake3_256<BE>,
+            DefaultRandomCoin<Blake3_256<BE>>,
+            MerkleTree<Blake3_256<BE>>,
+        >(proof, pi, &acceptable)
+    }));
 
-    let dt = t0.elapsed();
-    tracing::info!(
-        target = "proof.verify",
-        elapsed_ms = %dt.as_millis(),
-        "proof verified",
-    );
+    match res {
+        Ok(Ok(())) => {
+            let dt = t0.elapsed();
+            tracing::info!(
+                target = "proof.verify",
+                elapsed_ms = %dt.as_millis(),
+                "proof verified",
+            );
 
-    Ok(())
+            Ok(())
+        }
+        Ok(Err(e)) => Err(Error::BackendSource(Box::new(e))),
+        Err(_) => Err(Error::Backend("winterfell panic during verify".into())),
+    }
 }
 
 pub fn build_trace(program: &ir::Program) -> error::Result<TraceTable<BE>> {

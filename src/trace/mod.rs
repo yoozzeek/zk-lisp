@@ -32,11 +32,16 @@ impl TraceBuilder {
     }
 
     pub fn zero_all(trace: &mut TraceTable<BE>, width: usize, n_rows: usize) {
-        for r in 0..n_rows {
-            for c in 0..width {
-                trace.set(c, r, BE::ZERO);
-            }
-        }
+        trace.fill(
+            |state| {
+                state.fill(BE::ZERO);
+            },
+            |_, state| {
+                state.fill(BE::ZERO);
+            },
+        );
+
+        let _ = (width, n_rows);
     }
 
     pub fn tie_schedule_gates_for_rows(trace: &mut TraceTable<BE>, n_rows: usize) {

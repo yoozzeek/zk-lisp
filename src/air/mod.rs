@@ -3,6 +3,7 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 mod kv;
+mod mixers;
 mod poseidon;
 mod schedule;
 mod vm_alu;
@@ -29,7 +30,7 @@ use winterfell::{
 pub struct BlockCtx<'a, E: FieldElement> {
     pub cols: &'a Columns,
     pub pub_inputs: &'a PublicInputs,
-    pub poseidon_rc: &'a Vec<[BE; 12]>,
+    pub poseidon_rc: &'a [[BE; 12]; POSEIDON_ROUNDS],
     pub poseidon_mds: &'a [[BE; 12]; 12],
     pub poseidon_dom: &'a [BE; 2],
     _pd: PhantomData<E>,
@@ -39,7 +40,7 @@ impl<'a, E: FieldElement> BlockCtx<'a, E> {
     pub fn new(
         cols: &'a Columns,
         pub_inputs: &'a PublicInputs,
-        poseidon_rc: &'a Vec<[BE; 12]>,
+        poseidon_rc: &'a [[BE; 12]; POSEIDON_ROUNDS],
         poseidon_mds: &'a [[BE; 12]; 12],
         poseidon_dom: &'a [BE; 2],
     ) -> Self {
@@ -79,7 +80,7 @@ pub struct ZkLispAir {
     cols: Columns,
     features: FeaturesMap,
 
-    poseidon_rc: Vec<[BaseElement; 12]>,
+    poseidon_rc: [[BaseElement; 12]; POSEIDON_ROUNDS],
     poseidon_mds: [[BaseElement; 12]; 12],
     poseidon_dom: [BaseElement; 2],
 }
@@ -160,7 +161,12 @@ impl Air for ZkLispAir {
 
         let suite_id = &pub_inputs.program_commitment;
         let ps = poseidon_core::get_poseidon_suite(suite_id);
-        let rc = ps.rc;
+
+        let mut rc_arr = [[BaseElement::ZERO; 12]; POSEIDON_ROUNDS];
+        for (i, row) in ps.rc.iter().enumerate().take(POSEIDON_ROUNDS) {
+            rc_arr[i] = *row;
+        }
+
         let mds = ps.mds;
         let dom = ps.dom;
 
@@ -169,7 +175,7 @@ impl Air for ZkLispAir {
             pub_inputs,
             cols,
             features,
-            poseidon_rc: rc,
+            poseidon_rc: rc_arr,
             poseidon_mds: mds,
             poseidon_dom: dom,
         }
@@ -207,6 +213,24 @@ impl Air for ZkLispAir {
         }
 
         debug_assert_eq!(ix, result.len());
+
+        // Fail-closed in release builds if
+        // transition constraint count mismatches
+        if ix != result.len() {
+            #[cfg(not(debug_assertions))]
+            {
+                tracing::error!(
+                    target = "proof.air",
+                    "constraint count mismatch at runtime: wrote {} of {}",
+                    ix,
+                    result.len()
+                );
+
+                if !result.is_empty() {
+                    result[0] = E::ONE;
+                }
+            }
+        }
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {

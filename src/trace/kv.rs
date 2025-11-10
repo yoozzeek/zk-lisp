@@ -9,7 +9,7 @@ use winterfell::TraceTable;
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 
-use super::poseidon;
+use super::{TraceBuilder, poseidon};
 use crate::layout::{Columns, STEPS_PER_LEVEL_P2};
 use crate::schedule;
 
@@ -127,11 +127,7 @@ pub fn build_kv_multi_levels(levels: &[(u32, u32, u32)], cfg: KvOverlayConfig) -
     let mut trace = TraceTable::new(width, depth * STEPS_PER_LEVEL_P2);
 
     // zero + schedule
-    for r in 0..trace.length() {
-        for c in 0..width {
-            trace.set(c, r, BE::ZERO);
-        }
-    }
+    TraceBuilder::zero_all(&mut trace, width, depth * STEPS_PER_LEVEL_P2);
 
     // tie gates for rows
     for lvl in 0..depth {

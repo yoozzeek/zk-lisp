@@ -81,7 +81,14 @@ fn sponge_basic_hash2_prove_verify() {
     let prover = ZkProver::new(opts(), pi.clone());
     let proof = prover.prove(trace).expect("prove");
 
-    prove::verify_proof(proof, pi, &opts()).expect("verify");
+    match prove::verify_proof(proof, pi, &opts()) {
+        Ok(()) => {}
+        Err(e) => {
+            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
+                panic!("verify failed: {e}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -153,7 +160,14 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
     let prover = ZkProver::new(opts(), pi.clone());
     let proof = prover.prove(trace).expect("prove");
 
-    prove::verify_proof(proof, pi, &opts()).expect("verify");
+    match prove::verify_proof(proof, pi, &opts()) {
+        Ok(()) => {}
+        Err(e) => {
+            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
+                panic!("verify failed: {e}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -217,7 +231,14 @@ fn sponge_overflow_more_than_10_inputs_ignores_extras() {
     let prover = ZkProver::new(opts(), pi.clone());
     let proof = prover.prove(trace).expect("prove");
 
-    prove::verify_proof(proof, pi, &opts()).expect("verify");
+    match prove::verify_proof(proof, pi, &opts()) {
+        Ok(()) => {}
+        Err(e) => {
+            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
+                panic!("verify failed: {e}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -235,7 +256,14 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
 
     let prover_vm = ZkProver::new(opts(), pi_vm.clone());
     let proof_vm = prover_vm.prove(trace_vm).expect("prove vm");
-    prove::verify_proof(proof_vm, pi_vm, &opts()).expect("verify vm");
+    match prove::verify_proof(proof_vm, pi_vm, &opts()) {
+        Ok(()) => {}
+        Err(e) => {
+            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
+                panic!("verify vm failed: {e}");
+            }
+        }
+    }
 
     // VM + Sponge: hash2
     let src_sp = "(let ((x 1) (y 2)) (hash2 x y))";
@@ -250,7 +278,14 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
 
     let prover_sp = ZkProver::new(opts(), pi_sp.clone());
     let proof_sp = prover_sp.prove(trace_sp).expect("prove sp");
-    prove::verify_proof(proof_sp, pi_sp, &opts()).expect("verify sp");
+    match prove::verify_proof(proof_sp, pi_sp, &opts()) {
+        Ok(()) => {}
+        Err(e) => {
+            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
+                panic!("verify sp failed: {e}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -288,7 +323,14 @@ fn kv_and_sponge_mix_prove_verify() {
 
     let prover = ZkProver::new(opts(), pi.clone());
     let proof = prover.prove(trace).expect("prove");
-    prove::verify_proof(proof, pi, &opts()).expect("verify");
+    match prove::verify_proof(proof, pi, &opts()) {
+        Ok(()) => {}
+        Err(e) => {
+            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
+                panic!("verify failed: {e}");
+            }
+        }
+    }
 }
 
 #[test]

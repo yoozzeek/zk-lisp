@@ -4,6 +4,10 @@
 
 use winterfell::math::fields::f128::BaseElement as BE;
 
+/// Conservative number of full rounds for t=12
+/// under full S-box (all lanes cubic each round).
+/// This matches current t=4 rounds (27) for safety;
+/// can be reduced after separate security review.
 pub const POSEIDON_ROUNDS: usize = 27;
 pub const STEPS_PER_LEVEL_P2: usize = 32;
 

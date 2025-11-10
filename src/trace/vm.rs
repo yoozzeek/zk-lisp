@@ -301,19 +301,20 @@ impl TraceBuilder {
                     // No permutation at absorb rows
                     pose_active = BE::ZERO;
                 }
-                Op::KvMap { dir, sib_reg } => {
+                Op::KvMap { dir_reg, sib_reg } => {
                     // KV map+final in one level
                     pose_active = BE::ONE;
 
                     trace.set(cols.kv_g_map, row_map, BE::ONE);
-                    trace.set(cols.kv_dir, row_map, BE::from(dir as u64));
+
+                    let d = regs[dir_reg as usize];
+                    trace.set(cols.kv_dir, row_map, d);
 
                     let sib = regs[sib_reg as usize];
                     trace.set(cols.kv_sib, row_map, sib);
 
                     // Select lanes and apply poseidon
                     let acc_cur = trace.get(cols.kv_acc, row_map);
-                    let d = BE::from(dir as u64);
                     let left = (BE::ONE - d) * acc_cur + d * sib;
                     let right = (BE::ONE - d) * sib + d * acc_cur;
 

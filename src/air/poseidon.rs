@@ -144,6 +144,11 @@ mod tests {
         let sid = [5u8; 32];
         let ps = crate::poseidon::get_poseidon_suite(&sid);
 
+        let mut rc_arr = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        for (i, row) in ps.rc.iter().enumerate().take(POSEIDON_ROUNDS) {
+            rc_arr[i] = *row;
+        }
+
         // current state s
         for (i, idx) in (0..12).map(|k| cols.lane_index(k)).enumerate() {
             frame.current_mut()[idx] = BE::from((i as u64) + 1);
@@ -172,7 +177,7 @@ mod tests {
         let mut ix = 0usize;
 
         PoseidonBlock::eval_block(
-            &BlockCtx::new(&cols, &Default::default(), &ps.rc, &ps.mds, &ps.dom),
+            &BlockCtx::new(&cols, &Default::default(), &rc_arr, &ps.mds, &ps.dom),
             &frame,
             &periodic,
             &mut res,
@@ -203,11 +208,13 @@ mod tests {
         let mut res = vec![BE::ZERO; 12 * POSEIDON_ROUNDS + 12];
         let mut ix = 0usize;
 
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
+
         PoseidonBlock::eval_block(
             &BlockCtx::new(
                 &cols,
                 &Default::default(),
-                &vec![[BE::ZERO; 12]; POSEIDON_ROUNDS],
+                &rc_box,
                 &[[BE::ZERO; 12]; 12],
                 &[BE::ZERO; 2],
             ),
@@ -247,11 +254,13 @@ mod tests {
         let mut res = vec![BE::ZERO; 12 * POSEIDON_ROUNDS + 12];
         let mut ix = 0usize;
 
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
+
         PoseidonBlock::eval_block(
             &BlockCtx::new(
                 &cols,
                 &Default::default(),
-                &vec![[BE::ZERO; 12]; POSEIDON_ROUNDS],
+                &rc_box,
                 &[[BE::ZERO; 12]; 12],
                 &[BE::ZERO; 2],
             ),

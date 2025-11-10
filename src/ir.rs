@@ -26,7 +26,7 @@ pub enum Op {
     SAbsorb2 { a: u8, b: u8 },
 
     // KV
-    KvMap { dir: u32, sib_reg: u8 }, // one level of path
+    KvMap { dir_reg: u8, sib_reg: u8 }, // one level of path
     KvFinal,
 
     // CTRL
@@ -123,7 +123,8 @@ impl ProgramBuilder {
             SSqueeze { dst } => {
                 self.touch_reg(dst);
             }
-            KvMap { dir: _, sib_reg } => {
+            KvMap { dir_reg, sib_reg } => {
+                self.touch_reg(dir_reg);
                 self.touch_reg(sib_reg);
             }
             KvFinal => {}
@@ -206,9 +207,9 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(a);
                 out.push(b);
             }
-            KvMap { dir, sib_reg } => {
+            KvMap { dir_reg, sib_reg } => {
                 out.push(0x0A);
-                out.extend_from_slice(&dir.to_le_bytes());
+                out.push(dir_reg);
                 out.push(sib_reg);
             }
             KvFinal => {

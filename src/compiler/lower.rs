@@ -951,26 +951,23 @@ fn lower_kv_step(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
         return Err(Error::InvalidForm("kv-step".into()));
     }
 
-    let dir = match &rest[0] {
-        Ast::Atom(Atom::Int(v)) => *v,
-        _ => return Err(Error::InvalidForm("kv-step: dir".into())),
-    };
-
-    if dir > 1 {
-        return Err(Error::InvalidDir(dir));
-    }
+    let dir_v = lower_expr(cx, rest[0].clone())?;
+    let dir_r = dir_v.reg();
 
     let sib_v = lower_expr(cx, rest[1].clone())?;
     let sib_r = sib_v.reg();
 
     cx.b.push(Op::KvMap {
-        dir: dir as u32,
+        dir_reg: dir_r,
         sib_reg: sib_r,
     });
 
     // remember last sib reg
     // for potential chaining
     cx.map_var("_kv_last", sib_r);
+
+    free_if_owned(cx, dir_v);
+    // do not free sib_v here
 
     Ok(sib_r)
 }

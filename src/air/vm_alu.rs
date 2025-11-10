@@ -7,6 +7,7 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use super::{AirBlock, BlockCtx};
+use crate::air::mixers;
 use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
 pub struct VmAluBlock;
@@ -65,16 +66,13 @@ where
         let p_final = periodic[1 + POSEIDON_ROUNDS];
         let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
         let p_pad_last = periodic[1 + POSEIDON_ROUNDS + 2];
-        let p_last = periodic[1 + POSEIDON_ROUNDS + 3];
 
         // mixers
-        let s_low = p_last * p_map;
         let pi = cur[ctx.cols.pi_prog];
-        let pi2 = pi * pi;
-        let pi4 = pi2 * pi2;
-        let s_write = s_low * pi4 * pi; // pi^5
+        let s_low = mixers::low(periodic);
+        let s_write = mixers::pi5(periodic, pi); // pi^5
         // keep eq mixer degree lower than writes
-        let s_eq = s_low * pi4;
+        let s_eq = mixers::pi4(periodic, pi);
 
         // carry when next row is not final within the level
         let mut g_carry = p_map + (p_pad - p_pad_last);
@@ -188,7 +186,7 @@ mod tests {
         let mut res = vec![BE::ZERO; 19];
         let mut ix = 0usize;
 
-        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
         let mds_box = Box::new({
             let mut m = [[BE::ZERO; 12]; 12];
             for (i, row) in m.iter_mut().enumerate() {
@@ -202,7 +200,7 @@ mod tests {
             &BlockCtx::new(
                 &cols,
                 &Default::default(),
-                &rc_vec,
+                &rc_box,
                 &mds_box,
                 &Box::new([BE::ZERO; 2]),
             ),

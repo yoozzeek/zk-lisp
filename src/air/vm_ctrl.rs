@@ -7,6 +7,7 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use super::{AirBlock, BlockCtx};
+use crate::air::mixers;
 use crate::layout::{NR, STEPS_PER_LEVEL_P2};
 
 pub struct VmCtrlBlock;
@@ -97,10 +98,9 @@ where
         //   deg(p_map)=~120,
         //   deg(pi_prog)=~127,
         //   minus z-degree 127.
-        let p_last = periodic[1 + crate::layout::POSEIDON_ROUNDS + 3];
-        let s_low = p_last * p_map;
         let pi_prog = cur[ctx.cols.pi_prog];
-        let s_high = s_low * pi_prog;
+        let s_low = mixers::low(periodic);
+        let s_high = mixers::pi1(periodic, pi_prog);
 
         let b_const = cur[ctx.cols.op_const];
         let b_mov = cur[ctx.cols.op_mov];
@@ -238,9 +238,9 @@ mod tests {
 
         // Build ctx without SPONGE feature
         let pi_no_sponge = crate::pi::PublicInputs::default();
-        let rc_binding = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
-        let mds_binding = [[BE::ZERO; 12]; 12];
-        let dom_binding = [BE::ZERO; 2];
+        let rc_binding = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
+        let mds_binding = Box::new([[BE::ZERO; 12]; 12]);
+        let dom_binding = Box::new([BE::ZERO; 2]);
 
         let ctx = BlockCtx::new(
             &cols,
@@ -286,9 +286,9 @@ mod tests {
         let mut pi = crate::pi::PublicInputs::default();
         pi.feature_mask |= crate::pi::FM_SPONGE | crate::pi::FM_VM;
 
-        let rc_binding = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
-        let mds_binding = [[BE::ZERO; 12]; 12];
-        let dom_binding = [BE::ZERO; 2];
+        let rc_binding = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
+        let mds_binding = Box::new([[BE::ZERO; 12]; 12]);
+        let dom_binding = Box::new([BE::ZERO; 2]);
 
         let ctx = BlockCtx::new(&cols, &pi, &rc_binding, &mds_binding, &dom_binding);
 
@@ -321,7 +321,7 @@ mod tests {
         let mut res = vec![BE::ZERO; 256];
         let mut ix = 0usize;
 
-        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
         let mds_box = Box::new({
             let mut m = [[BE::ZERO; 12]; 12];
             for (i, row) in m.iter_mut().enumerate() {
@@ -335,7 +335,7 @@ mod tests {
             &BlockCtx::new(
                 &cols,
                 &Default::default(),
-                &rc_vec,
+                &rc_box,
                 &mds_box,
                 &Box::new([BE::ZERO; 2]),
             ),

@@ -12,19 +12,13 @@ use std::sync::{OnceLock, RwLock};
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 
-use crate::utils;
+use crate::{layout::POSEIDON_ROUNDS, utils};
 
 const DOM_POSEIDON_RC: &str = "zkl/poseidon2/rc";
 const DOM_POSEIDON_DOM0: &str = "zkl/poseidon2/dom/c0";
 const DOM_POSEIDON_DOM1: &str = "zkl/poseidon2/dom/c1";
 const DOM_POSEIDON_MDS_X: &str = "zkl/poseidon2/mds/x";
 const DOM_POSEIDON_MDS_Y: &str = "zkl/poseidon2/mds/y";
-
-/// Conservative number of full rounds for t=12
-/// under full S-box (all lanes cubic each round).
-/// This matches current t=4 rounds (27) for safety;
-/// can be reduced after separate security review.
-pub const POSEIDON_ROUNDS: usize = 27;
 
 #[derive(Clone)]
 pub struct PoseidonSuite {
