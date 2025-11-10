@@ -78,8 +78,8 @@ where
 
         // carry when next row is not final within the level
         let mut g_carry = p_map + (p_pad - p_pad_last);
-        for j in 0..(POSEIDON_ROUNDS - 1) {
-            g_carry += periodic[1 + j];
+        for gr in (0..(POSEIDON_ROUNDS - 1)).map(|j| periodic[1 + j]) {
+            g_carry += gr;
         }
 
         // reconstruct a/b/c from
@@ -112,7 +112,7 @@ where
         let b_neg = cur[ctx.cols.op_neg];
         let b_eq = cur[ctx.cols.op_eq];
         let b_sel = cur[ctx.cols.op_select];
-        let b_hash = cur[ctx.cols.op_hash2];
+        let b_sponge = cur[ctx.cols.op_sponge];
         let b_assert = cur[ctx.cols.op_assert];
 
         // include Eq via dst_next so
@@ -129,7 +129,7 @@ where
             + b_mul * (a_val * b_val)
             + b_neg * (E::ZERO - a_val)
             + b_sel * (c_val * a_val + (E::ONE - c_val) * b_val)
-            + b_hash * cur[ctx.cols.lane_l]
+            + b_sponge * cur[ctx.cols.lane_l]
             + b_eq * dst_next
             + b_assert * E::ONE;
 
@@ -188,12 +188,22 @@ mod tests {
         let mut res = vec![BE::ZERO; 19];
         let mut ix = 0usize;
 
+        let rc_vec = vec![[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_box = Box::new({
+            let mut m = [[BE::ZERO; 12]; 12];
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] = BE::ONE;
+            }
+
+            m
+        });
+
         VmAluBlock::eval_block(
             &BlockCtx::new(
                 &cols,
                 &Default::default(),
-                &Box::new([[BE::ZERO; 4]; POSEIDON_ROUNDS]),
-                &Box::new([[BE::ZERO; 4]; 4]),
+                &rc_vec,
+                &mds_box,
                 &Box::new([BE::ZERO; 2]),
             ),
             &frame,

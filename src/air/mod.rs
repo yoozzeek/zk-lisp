@@ -12,7 +12,7 @@ use crate::air::{
     kv::KvBlock, poseidon::PoseidonBlock, schedule::ScheduleBlock, vm_alu::VmAluBlock,
     vm_ctrl::VmCtrlBlock,
 };
-use crate::layout::{Columns, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::pi::{FeaturesMap, PublicInputs};
 use crate::poseidon as poseidon_core;
 use crate::schedule as schedule_core;
@@ -29,8 +29,8 @@ use winterfell::{
 pub struct BlockCtx<'a, E: FieldElement> {
     pub cols: &'a Columns,
     pub pub_inputs: &'a PublicInputs,
-    pub poseidon_rc: &'a [[BE; 4]; POSEIDON_ROUNDS],
-    pub poseidon_mds: &'a [[BE; 4]; 4],
+    pub poseidon_rc: &'a Vec<[BE; 12]>,
+    pub poseidon_mds: &'a [[BE; 12]; 12],
     pub poseidon_dom: &'a [BE; 2],
     _pd: PhantomData<E>,
 }
@@ -39,8 +39,8 @@ impl<'a, E: FieldElement> BlockCtx<'a, E> {
     pub fn new(
         cols: &'a Columns,
         pub_inputs: &'a PublicInputs,
-        poseidon_rc: &'a [[BE; 4]; POSEIDON_ROUNDS],
-        poseidon_mds: &'a [[BE; 4]; 4],
+        poseidon_rc: &'a Vec<[BE; 12]>,
+        poseidon_mds: &'a [[BE; 12]; 12],
         poseidon_dom: &'a [BE; 2],
     ) -> Self {
         Self {
@@ -79,8 +79,8 @@ pub struct ZkLispAir {
     cols: Columns,
     features: FeaturesMap,
 
-    poseidon_rc: [[BaseElement; 4]; POSEIDON_ROUNDS],
-    poseidon_mds: [[BaseElement; 4]; 4],
+    poseidon_rc: Vec<[BaseElement; 12]>,
+    poseidon_mds: [[BaseElement; 12]; 12],
     poseidon_dom: [BaseElement; 2],
 }
 
@@ -94,9 +94,16 @@ impl Air for ZkLispAir {
         let features = pub_inputs.get_features();
         if features.poseidon {
             PoseidonBlock::push_degrees(&mut degrees);
+
+            // When VM is enabled AND sponge ops
+            // are present enforce VM->lane bindings
+            // on map rows of absorb operations.
+            if features.vm && features.sponge {
+                PoseidonBlock::push_degrees_vm_bind(&mut degrees);
+            }
         }
         if features.vm {
-            VmCtrlBlock::push_degrees(&mut degrees);
+            VmCtrlBlock::push_degrees(&mut degrees, features.sponge);
             VmAluBlock::push_degrees(&mut degrees);
         }
         if features.kv {
@@ -106,7 +113,8 @@ impl Air for ZkLispAir {
         // Boundary assertions count per level:
         let levels = (info.length() / STEPS_PER_LEVEL_P2).max(1);
 
-        // Strict schedule/domain boundary assertions per level:
+        // Strict schedule/domain boundary
+        // assertions per level:
         // ones at positions: (2 + R)
         // zeros at non-positions: (4R + 2)
         // domain tags at map: 2
@@ -120,11 +128,13 @@ impl Air for ZkLispAir {
             num_assertions += pub_inputs.vm_args.len();
         }
         if features.vm && features.vm_expect {
-            // one assertion for expected output at computed row
+            // one assertion for expected
+            // output at computed row.
             num_assertions += 1;
         }
         if features.kv && features.kv_expect {
-            num_assertions += 2 * (pub_inputs.kv_levels_mask.count_ones() as usize) + 1; // offset for EXPECT ties alignment
+            // offset for EXPECT ties alignment
+            num_assertions += 2 * (pub_inputs.kv_levels_mask.count_ones() as usize) + 1;
         }
         if features.kv {
             num_assertions += 4 * (pub_inputs.kv_levels_mask.count_ones() as usize);
@@ -230,7 +240,7 @@ impl Air for ZkLispAir {
             // Bind inputs at level 0 map row
             let row_map0 = schedule_core::pos_map();
             for (i, &a) in self.pub_inputs.vm_args.iter().enumerate() {
-                if i < crate::layout::NR {
+                if i < NR {
                     out.push(Assertion::single(
                         self.cols.r_index(i),
                         row_map0,
@@ -242,7 +252,7 @@ impl Air for ZkLispAir {
             // Expected output at selected row
             if self.features.vm_expect {
                 let row = (self.pub_inputs.vm_out_row as usize).min(last);
-                let reg = (self.pub_inputs.vm_out_reg as usize).min(crate::layout::NR - 1);
+                let reg = (self.pub_inputs.vm_out_reg as usize).min(NR - 1);
                 let exp = crate::pi::be_from_le8(&self.pub_inputs.vm_expected_bytes);
 
                 tracing::debug!(
@@ -402,13 +412,16 @@ impl ZkLispAir {
         let mut dbg: Vec<(&str, Vec<usize>)> = Vec::new();
 
         if features.poseidon {
-            let len = 4 * POSEIDON_ROUNDS;
+            let len = 12 * POSEIDON_ROUNDS + 12; // rounds + holds
             dbg.push(("poseidon", evals[ofs..ofs + len].to_vec()));
             ofs += len;
         }
         if features.vm {
-            // vm_ctrl (48)
-            let len = 48;
+            // vm_ctrl dynamic length:
+            // 4*NR bit bools + 4 sums + 1 (sel cond)
+            // + 10 op bools + 1 one-hot
+            // + optional sponge: 10*NR bit bools + 10 sums
+            let len = 4 * NR + 4 + 1 + 10 + 1 + if features.sponge { 10 * NR + 10 } else { 0 };
             dbg.push(("vm_ctrl", evals[ofs..ofs + len].to_vec()));
             ofs += len;
 
@@ -450,12 +463,12 @@ impl ZkLispAir {
         let mut ranges = Vec::new();
 
         if features.poseidon {
-            let len = 4 * POSEIDON_ROUNDS;
+            let len = 12 * POSEIDON_ROUNDS + 12; // rounds + holds
             ranges.push(("poseidon", ofs, ofs + len));
             ofs += len;
         }
         if features.vm {
-            let len = 48;
+            let len = 4 * NR + 4 + 1 + 10 + 1 + if features.sponge { 10 * NR + 10 } else { 0 };
             ranges.push(("vm_ctrl", ofs, ofs + len));
             ofs += len;
 

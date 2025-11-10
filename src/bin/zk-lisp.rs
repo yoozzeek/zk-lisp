@@ -14,7 +14,12 @@ use zk_lisp::{PreflightMode, compiler, error, prove};
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "zk-lisp",
-    about = "zk-lisp CLI: run, prove, verify, repl",
+    about = r"# zk-lisp CLI
+# Copyright (c) Andrei Kochergin. All rights reserved.
+
+Lisp dialect and compiler for running zero-knowledge (ZK)
+programs, executable on an experimental virtual machine built
+on top of the Winterfell STARK prover and verifier.",
     version
 )]
 struct Cli {
@@ -195,7 +200,7 @@ fn build_pi_for_program(program: &zk_lisp::ir::Program, args: &[u64]) -> zk_lisp
     use zk_lisp::ir::Op;
     let mut mask: u64 = 0;
 
-    // VM is used by any ALU/select/eq/hash2 op
+    // VM is used by any ALU/select/eq/sponge op
     if program.ops.iter().any(|op| {
         matches!(
             op,
@@ -208,15 +213,37 @@ fn build_pi_for_program(program: &zk_lisp::ir::Program, args: &[u64]) -> zk_lisp
                 | Op::Eq { .. }
                 | Op::Select { .. }
                 | Op::Assert { .. }
-                | Op::Hash2 { .. }
+                | Op::SAbsorb2 { .. }
+                | Op::SAbsorbN { .. }
+                | Op::SSqueeze { .. }
         )
     }) {
         mask |= zk_lisp::pi::FM_VM;
     }
 
-    // Poseidon when hash2 appears
-    if program.ops.iter().any(|op| matches!(op, Op::Hash2 { .. })) {
+    // Poseidon when sponge ops or KV appear
+    if program.ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::SAbsorb2 { .. }
+                | Op::SAbsorbN { .. }
+                | Op::SSqueeze { .. }
+                | Op::KvMap { .. }
+                | Op::KvFinal
+        )
+    }) {
         mask |= zk_lisp::pi::FM_POSEIDON;
+    }
+
+    // Sponge feature when
+    // SAbsorb2/SSqueeze appear.
+    if program.ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::SAbsorb2 { .. } | Op::SAbsorbN { .. } | Op::SSqueeze { .. }
+        )
+    }) {
+        mask |= zk_lisp::pi::FM_SPONGE;
     }
 
     // KV when kv ops appear

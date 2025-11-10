@@ -2,12 +2,16 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
+//! Poseidon2 parameters (t=12: r=10, c=2)
+//! for BaseElement (f128)
+//! Conservative, self-derived
+//! from suite_id via domain-separated RO.
+
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 
-use crate::layout::POSEIDON_ROUNDS;
 use crate::utils;
 
 const DOM_POSEIDON_RC: &str = "zkl/poseidon2/rc";
@@ -16,23 +20,35 @@ const DOM_POSEIDON_DOM1: &str = "zkl/poseidon2/dom/c1";
 const DOM_POSEIDON_MDS_X: &str = "zkl/poseidon2/mds/x";
 const DOM_POSEIDON_MDS_Y: &str = "zkl/poseidon2/mds/y";
 
+/// Conservative number of full rounds for t=12
+/// under full S-box (all lanes cubic each round).
+/// This matches current t=4 rounds (27) for safety;
+/// can be reduced after separate security review.
+pub const POSEIDON_ROUNDS: usize = 27;
+
 #[derive(Clone)]
 pub struct PoseidonSuite {
     pub dom: [BE; 2],
-    pub mds: [[BE; 4]; 4],
-    pub rc: [[BE; 4]; POSEIDON_ROUNDS],
+    pub mds: [[BE; 12]; 12],
+    pub rc: Vec<[BE; 12]>, // length == rounds
 }
 
 static POSEIDON_CACHE: OnceLock<RwLock<HashMap<[u8; 32], PoseidonSuite>>> = OnceLock::new();
 
+/// Build Poseidon t=12 suite (r=10, c=2)
+/// using conservative rounds by default.
 pub fn get_poseidon_suite(suite_id: &[u8; 32]) -> PoseidonSuite {
+    get_poseidon_suite_with_rounds(suite_id, POSEIDON_ROUNDS)
+}
+
+pub fn get_poseidon_suite_with_rounds(suite_id: &[u8; 32], rounds: usize) -> PoseidonSuite {
     if let Some(found) = cache().read().ok().and_then(|m| m.get(suite_id).cloned()) {
         return found;
     }
 
     let dom = derive_poseidon_domain_tags(suite_id);
-    let rc = derive_poseidon_round_constants(suite_id);
-    let mds = derive_poseidon_mds_cauchy_4x4(suite_id);
+    let mds = derive_poseidon_mds_cauchy_12x12(suite_id);
+    let rc = derive_poseidon_round_constants_12(suite_id, rounds);
     let suite = PoseidonSuite { dom, mds, rc };
 
     if let Ok(mut w) = cache().write() {
@@ -42,11 +58,12 @@ pub fn get_poseidon_suite(suite_id: &[u8; 32]) -> PoseidonSuite {
     suite
 }
 
-pub fn derive_poseidon_round_constants(suite_id: &[u8; 32]) -> [[BE; 4]; POSEIDON_ROUNDS] {
-    let mut rc = [[BE::ZERO; 4]; POSEIDON_ROUNDS];
-    for (r, lanes) in rc.iter_mut().enumerate() {
-        for (lane, cell) in lanes.iter_mut().enumerate() {
-            let r_b = [r as u8];
+pub fn derive_poseidon_round_constants_12(suite_id: &[u8; 32], rounds: usize) -> Vec<[BE; 12]> {
+    let mut rc = vec![[BE::ZERO; 12]; rounds];
+
+    for (r, row) in rc.iter_mut().enumerate() {
+        let r_b = [r as u8];
+        for (lane, cell) in row.iter_mut().enumerate() {
             let lane_b = [lane as u8];
             *cell = ro_from_slices(DOM_POSEIDON_RC, &[&suite_id[..], &r_b[..], &lane_b[..]]);
         }
@@ -62,7 +79,7 @@ pub fn derive_poseidon_domain_tags(suite_id: &[u8; 32]) -> [BE; 2] {
     ]
 }
 
-pub fn derive_poseidon_mds_cauchy_4x4(suite_id: &[u8; 32]) -> [[BE; 4]; 4] {
+pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
     fn derive_points(domain: &str, suite_id: &[u8; 32], n: usize) -> Vec<BE> {
         let mut pts = Vec::with_capacity(n);
         let mut ctr: u32 = 0;
@@ -82,10 +99,13 @@ pub fn derive_poseidon_mds_cauchy_4x4(suite_id: &[u8; 32]) -> [[BE; 4]; 4] {
         pts
     }
 
-    let x = derive_points(DOM_POSEIDON_MDS_X, suite_id, 4);
-    let mut y = derive_points(DOM_POSEIDON_MDS_Y, suite_id, 4);
+    // Choose X and Y points
+    // and ensure x_i + y_j != 0
+    let x = derive_points(DOM_POSEIDON_MDS_X, suite_id, 12);
+    let mut y = derive_points(DOM_POSEIDON_MDS_Y, suite_id, 12);
 
     let mut adj_ctr: u32 = 0;
+
     loop {
         let mut ok = true;
 
@@ -102,6 +122,8 @@ pub fn derive_poseidon_mds_cauchy_4x4(suite_id: &[u8; 32]) -> [[BE; 4]; 4] {
             break;
         }
 
+        // Adjust Y set deterministically
+        // until all sums are non-zero
         for (j, yj) in y.iter_mut().enumerate() {
             let j_b = [j as u8];
             let adj_b = adj_ctr.to_le_bytes();
@@ -117,56 +139,60 @@ pub fn derive_poseidon_mds_cauchy_4x4(suite_id: &[u8; 32]) -> [[BE; 4]; 4] {
         adj_ctr = adj_ctr.wrapping_add(1);
     }
 
-    let mut m = [[BE::ZERO; 4]; 4];
-    for i in 0..4 {
-        for (j, yj) in y.iter().enumerate().take(4) {
-            let denom = x[i] + *yj;
-            m[i][j] = denom.inv();
+    // Build Cauchy matrix M[i][j] = 1 / (x_i + y_j)
+    let mut m = [[BE::ZERO; 12]; 12];
+
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            let denom = x[i] + y[j];
+            *cell = denom.inv();
         }
     }
 
     m
 }
 
+// Legacy function for compatibility: compute hash via sponge
 pub fn poseidon_hash_two_lanes(suite_id: &[u8; 32], left: BE, right: BE) -> BE {
     let suite = get_poseidon_suite(suite_id);
-    let mut state = [left, right, suite.dom[0], suite.dom[1]];
+    let mut state = [
+        left,
+        right,
+        BE::ZERO,
+        BE::ZERO,
+        BE::ZERO,
+        BE::ZERO,
+        BE::ZERO,
+        BE::ZERO,
+        BE::ZERO,
+        BE::ZERO,
+        suite.dom[0],
+        suite.dom[1],
+    ];
 
     for rc_r in suite.rc.iter() {
-        let sl = state[0] * state[0] * state[0];
-        let sr = state[1] * state[1] * state[1];
-        let sc0 = state[2] * state[2] * state[2];
-        let sc1 = state[3] * state[3] * state[3];
+        // Apply S-box (cube all lanes)
+        for lane in state.iter_mut() {
+            *lane = *lane * *lane * *lane;
+        }
 
-        let yl = suite.mds[0][0] * sl
-            + suite.mds[0][1] * sr
-            + suite.mds[0][2] * sc0
-            + suite.mds[0][3] * sc1
-            + rc_r[0];
-        let yr = suite.mds[1][0] * sl
-            + suite.mds[1][1] * sr
-            + suite.mds[1][2] * sc0
-            + suite.mds[1][3] * sc1
-            + rc_r[1];
-        let yc0 = suite.mds[2][0] * sl
-            + suite.mds[2][1] * sr
-            + suite.mds[2][2] * sc0
-            + suite.mds[2][3] * sc1
-            + rc_r[2];
-        let yc1 = suite.mds[3][0] * sl
-            + suite.mds[3][1] * sr
-            + suite.mds[3][2] * sc0
-            + suite.mds[3][3] * sc1
-            + rc_r[3];
+        // Apply MDS + round constants
+        let mut new_state = [BE::ZERO; 12];
+        for (i, row) in suite.mds.iter().enumerate() {
+            let acc = row
+                .iter()
+                .zip(state.iter())
+                .fold(BE::ZERO, |acc, (m, s)| acc + (*m) * (*s));
+            new_state[i] = acc + rc_r[i];
+        }
 
-        state = [yl, yr, yc0, yc1];
+        state = new_state;
     }
 
     state[0]
 }
 
-// Random-oracle-to-field:
-// blake3(domain || parts...) folded into FE
+// Local RO-to-field helper
 fn ro_from_slices(domain: &str, parts: &[&[u8]]) -> BE {
     let mut h = blake3::Hasher::new();
     h.update(domain.as_bytes());
@@ -178,8 +204,6 @@ fn ro_from_slices(domain: &str, parts: &[&[u8]]) -> BE {
     let digest = h.finalize();
     let bytes = digest.as_bytes();
 
-    // fold low 16 bytes as LE u128
-    // into field: lo + hi * 2^64.
     let mut le16 = [0u8; 16];
     le16.copy_from_slice(&bytes[0..16]);
 
@@ -192,4 +216,39 @@ fn ro_from_slices(domain: &str, parts: &[&[u8]]) -> BE {
 
 fn cache() -> &'static RwLock<HashMap<[u8; 32], PoseidonSuite>> {
     POSEIDON_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mds_12x12_basic() {
+        let sid = [42u8; 32];
+        let m = derive_poseidon_mds_cauchy_12x12(&sid);
+        assert_eq!(m.len(), 12);
+        assert_eq!(m[0].len(), 12);
+        assert!(m.iter().flatten().any(|v| *v != BE::ZERO));
+    }
+
+    #[test]
+    fn rc_12_len_matches_rounds() {
+        let sid = [7u8; 32];
+        let rc = derive_poseidon_round_constants_12(&sid, POSEIDON_ROUNDS);
+        assert_eq!(rc.len(), POSEIDON_ROUNDS);
+        assert_ne!(rc[0][0], BE::ZERO);
+        assert_ne!(rc[POSEIDON_ROUNDS - 1][11], BE::ZERO);
+    }
+
+    #[test]
+    fn suite_determinism_and_cache() {
+        let sid = [1u8; 32];
+        let a = get_poseidon_suite(&sid);
+        let b = get_poseidon_suite(&sid);
+        assert_eq!(a.dom, b.dom);
+        assert_eq!(a.mds, b.mds);
+        assert_eq!(a.rc.len(), b.rc.len());
+        // spot check
+        assert_eq!(a.rc[0][0], b.rc[0][0]);
+    }
 }

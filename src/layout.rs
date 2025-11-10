@@ -11,16 +11,18 @@ pub const NR: usize = 8;
 
 #[derive(Clone, Debug)]
 pub struct Columns {
-    // Poseidon lanes
-    pub lane_l: usize,
-    pub lane_r: usize,
-    pub lane_c0: usize,
-    pub lane_c1: usize,
+    // Poseidon lanes (t=12: r=10, c=2)
+    pub lane_l: usize,      // lane 0
+    pub lane_r: usize,      // lane 1
+    pub lane_c0: usize,     // lane 10
+    pub lane_c1: usize,     // lane 11
+    pub lanes_start: usize, // start index of lane[0..12)
 
     // Schedule gates
     pub g_map: usize,
     pub g_final: usize,
-    pub g_r_start: usize, // start index for g_r[0..POSEIDON_ROUNDS)
+    // start index for g_r[0..POSEIDON_ROUNDS)
+    pub g_r_start: usize,
 
     // Generic activity mask for padding rows
     pub mask: usize,
@@ -37,14 +39,20 @@ pub struct Columns {
     pub op_neg: usize,
     pub op_eq: usize,
     pub op_select: usize,
-    pub op_hash2: usize,
+    pub op_sponge: usize,
     pub op_assert: usize,
 
-    // Operand selectors one-hot per role (8 each)
+    // Operand selectors
+    // one-hot per role (8 each).
     pub sel_dst_start: usize,
     pub sel_a_start: usize,
     pub sel_b_start: usize,
     pub sel_c_start: usize,
+
+    // Sponge lane selectors:
+    // for each rate lane i in 0..10.
+    // layout: [ lane0[NR], lane1[NR], ..., lane9[NR] ] (10*NR)
+    pub sel_s_start: usize,
 
     // Immediate for Const
     pub imm: usize,
@@ -64,19 +72,24 @@ pub struct Columns {
     // PI columns
     pub pi_prog: usize,
 
+    // Poseidon per-level activity gate
+    pub pose_active: usize,
+
     width: usize,
 }
 
 impl Columns {
     pub fn baseline() -> Self {
-        let lane_l = 0;
-        let lane_r = 1;
-        let lane_c0 = 2;
-        let lane_c1 = 3;
+        let lanes_start = 0;
+        let lane_l = lanes_start;
+        let lane_r = lanes_start + 1;
+        let lane_c0 = lanes_start + 10;
+        let lane_c1 = lanes_start + 11;
 
-        let g_map = 4;
-        let g_final = 5;
-        let g_r_start = 6;
+        // 12 lanes occupy [0..12)
+        let g_map = lanes_start + 12;
+        let g_final = g_map + 1;
+        let g_r_start = g_final + 1;
         let mask = g_r_start + POSEIDON_ROUNDS;
 
         let r_start = mask + 1; // [r0..r7]
@@ -88,15 +101,20 @@ impl Columns {
         let op_neg = op_mul + 1;
         let op_eq = op_neg + 1;
         let op_select = op_eq + 1;
-        let op_hash2 = op_select + 1;
-        let op_assert = op_hash2 + 1;
+        let op_sponge = op_select + 1;
+        let op_assert = op_sponge + 1;
 
         let sel_dst_start = op_assert + 1; // 8 cols
         let sel_a_start = sel_dst_start + NR; // 8 cols
         let sel_b_start = sel_a_start + NR; // 8 cols
         let sel_c_start = sel_b_start + NR; // 8 cols
 
-        let imm = sel_c_start + NR; // 1 col
+        // Sponge lane selectors
+        // block (10 * NR)
+        let sel_s_start = sel_c_start + NR;
+
+        // Immediate and aux
+        let imm = sel_s_start + (10 * NR); // 1 col after sponge selectors
         let eq_inv = imm + 1; // 1 col
 
         // KV columns
@@ -107,19 +125,23 @@ impl Columns {
         let kv_acc = kv_sib + 1;
         let kv_version = kv_acc + 1;
 
-        // PI columns (keep original index)
+        // PI columns
         let pi_prog = kv_version + 1;
 
-        // Extra KV column placed after PI to avoid shifting existing indices
+        // Extra KV column placed after PI
         let kv_prev_acc = pi_prog + 1;
 
-        let width = kv_prev_acc + 1;
+        // Append pose_active at the very end
+        let pose_active = kv_prev_acc + 1;
+
+        let width = pose_active + 1;
 
         Self {
             lane_l,
             lane_r,
             lane_c0,
             lane_c1,
+            lanes_start,
             g_map,
             g_final,
             g_r_start,
@@ -133,12 +155,13 @@ impl Columns {
             op_neg,
             op_eq,
             op_select,
-            op_hash2,
+            op_sponge,
             op_assert,
             sel_dst_start,
             sel_a_start,
             sel_b_start,
             sel_c_start,
+            sel_s_start,
             imm,
             eq_inv,
             kv_g_map,
@@ -149,38 +172,58 @@ impl Columns {
             kv_version,
             kv_prev_acc,
             pi_prog,
+            pose_active,
             width,
         }
     }
 
     pub fn g_r_index(&self, j: usize) -> usize {
         debug_assert!(j < POSEIDON_ROUNDS);
+
         self.g_r_start + j
     }
 
     pub fn r_index(&self, i: usize) -> usize {
         debug_assert!(i < NR);
+
         self.r_start + i
     }
 
     pub fn sel_dst_index(&self, i: usize) -> usize {
         debug_assert!(i < NR);
+
         self.sel_dst_start + i
     }
 
     pub fn sel_a_index(&self, i: usize) -> usize {
         debug_assert!(i < NR);
+
         self.sel_a_start + i
     }
 
     pub fn sel_b_index(&self, i: usize) -> usize {
         debug_assert!(i < NR);
+
         self.sel_b_start + i
     }
 
     pub fn sel_c_index(&self, i: usize) -> usize {
         debug_assert!(i < NR);
+
         self.sel_c_start + i
+    }
+
+    pub fn sel_s_index(&self, lane: usize, reg: usize) -> usize {
+        debug_assert!(lane < 10);
+        debug_assert!(reg < NR);
+
+        self.sel_s_start + lane * NR + reg
+    }
+
+    pub fn lane_index(&self, i: usize) -> usize {
+        debug_assert!(i < 12);
+
+        self.lanes_start + i
     }
 
     pub fn width(&self, _feature_mask: u64) -> usize {

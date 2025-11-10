@@ -1,7 +1,7 @@
 # zk-lisp
 # Copyright (c) Andrei Kochergin. All rights reserved.
 
-A Lisp dialect and compiler for running zero-knowledge (ZK)
+Lisp dialect and compiler for running zero-knowledge (ZK)
 programs, executable on an experimental virtual machine built
 on top of the Winterfell STARK prover and verifier.
 

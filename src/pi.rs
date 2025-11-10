@@ -15,6 +15,7 @@ pub const FM_VM: u64 = 1 << 1;
 pub const FM_KV: u64 = 1 << 2;
 pub const FM_KV_EXPECT: u64 = 1 << 3;
 pub const FM_VM_EXPECT: u64 = 1 << 4;
+pub const FM_SPONGE: u64 = 1 << 5;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FeaturesMap {
@@ -23,6 +24,7 @@ pub struct FeaturesMap {
     pub kv: bool,
     pub kv_expect: bool,
     pub vm_expect: bool,
+    pub sponge: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -77,9 +79,15 @@ impl PublicInputsBuilder {
                 | Eq { .. }
                 | Select { .. }
                 | Assert { .. } => vm = true,
-                Hash2 { .. } => {
+                SAbsorb2 { .. } | SAbsorbN { .. } => {
                     vm = true;
                     pose = true;
+                    self.pi.feature_mask |= FM_SPONGE;
+                }
+                SSqueeze { .. } => {
+                    vm = true;
+                    pose = true;
+                    self.pi.feature_mask |= FM_SPONGE;
                 }
                 KvMap { .. } | KvFinal => {
                     kv = true;
@@ -107,11 +115,7 @@ impl PublicInputsBuilder {
         self
     }
 
-    pub fn vm_expect_from_meta(
-        mut self,
-        program: &crate::ir::Program,
-        expected: &[u8; 32],
-    ) -> Self {
+    pub fn vm_expect_from_meta(mut self, program: &ir::Program, expected: &[u8; 32]) -> Self {
         self.pi.vm_out_reg = program.meta.out_reg;
         self.pi.vm_out_row = program.meta.out_row;
         self.pi.vm_expected_bytes = *expected;
@@ -125,6 +129,16 @@ impl PublicInputsBuilder {
         self.pi.vm_out_row = row;
         self.pi.vm_expected_bytes = *expected;
         self.pi.feature_mask |= FM_VM | FM_VM_EXPECT;
+
+        self
+    }
+
+    pub fn sponge(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.pi.feature_mask |= FM_SPONGE;
+        } else {
+            self.pi.feature_mask &= !FM_SPONGE;
+        }
 
         self
     }
@@ -157,6 +171,7 @@ impl PublicInputs {
             kv: (m & FM_KV) != 0,
             kv_expect: (m & FM_KV_EXPECT) != 0,
             vm_expect: (m & FM_VM_EXPECT) != 0,
+            sponge: (m & FM_SPONGE) != 0,
         }
     }
 
@@ -313,6 +328,11 @@ mod tests {
 
         let sched_asserts = 5 * layout::POSEIDON_ROUNDS + 6;
 
+        // derive dynamic block lengths
+        let pose_len = 12 * layout::POSEIDON_ROUNDS + 12; // rounds + holds
+        let vm_ctrl_len_no_sponge = 4 * layout::NR + 4 + 1 + 10 + 1; // 48
+        let vm_alu_len = 19;
+
         // Case A: Poseidon only
         let pi_pose = PublicInputs {
             feature_mask: FM_POSEIDON,
@@ -322,7 +342,7 @@ mod tests {
         let air_pose = air::ZkLispAir::new(info.clone(), pi_pose, opts.clone());
         assert_eq!(
             air_pose.context().num_main_transition_constraints(),
-            4 * layout::POSEIDON_ROUNDS
+            pose_len
         );
         assert_eq!(air_pose.get_assertions().len(), sched_asserts);
 
@@ -333,8 +353,10 @@ mod tests {
         };
 
         let air_vm = air::ZkLispAir::new(info.clone(), pi_vm, opts.clone());
-        // vm_ctrl (48) + vm_alu (19) = 67
-        assert_eq!(air_vm.context().num_main_transition_constraints(), 67);
+        assert_eq!(
+            air_vm.context().num_main_transition_constraints(),
+            vm_ctrl_len_no_sponge + vm_alu_len
+        );
         assert_eq!(air_vm.get_assertions().len(), sched_asserts + 1);
 
         // Case C: all features
@@ -344,10 +366,9 @@ mod tests {
         };
 
         let air_all = air::ZkLispAir::new(info, pi_all, opts);
-        // poseidon (4*R) + vm(67) + kv(6)
         assert_eq!(
             air_all.context().num_main_transition_constraints(),
-            4 * layout::POSEIDON_ROUNDS + 67 + 6
+            pose_len + (vm_ctrl_len_no_sponge + vm_alu_len) + 6
         );
         assert_eq!(air_all.get_assertions().len(), sched_asserts + 1);
     }

@@ -231,7 +231,7 @@ impl ZkWinterfellProver {
             cols.op_neg,
             cols.op_eq,
             cols.op_select,
-            cols.op_hash2,
+            cols.op_sponge,
             cols.op_assert,
         ];
 

@@ -86,8 +86,8 @@ pub fn overlay_kv(trace: &mut TraceTable<BE>, events: &[KvEvent], cfg: KvOverlay
                 let left = (BE::ONE - d) * acc + d * sib;
                 let right = (BE::ONE - d) * sib + d * acc;
 
-                // Poseidon with provided suite_id
-                poseidon::apply_level(trace, &cfg.suite_id, level, left, right);
+                // Poseidon with provided suite_id (t=12)
+                poseidon::apply_level_absorb(trace, &cfg.suite_id, level, &[left, right]);
 
                 let out = trace.get(cols.lane_l, row_fin);
                 for r in row_fin..(base + steps) {
