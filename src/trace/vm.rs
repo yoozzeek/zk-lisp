@@ -57,6 +57,14 @@ impl TraceBuilder {
             trace.set(cols.lane_c0, row_map, suite.dom[0]);
             trace.set(cols.lane_c1, row_map, suite.dom[1]);
 
+            // PC and ROM one-hot mirror at map row
+            trace.set(cols.pc, row_map, BE::from(lvl as u64));
+
+            let rom = op_to_one_hot(op);
+            for (k, &bit) in rom.iter().enumerate() {
+                trace.set(cols.rom_op_index(k), row_map, bit);
+            }
+
             // carry register file into
             // the new level at map row.
             for (i, val) in regs.iter().enumerate().take(NR) {
@@ -274,7 +282,7 @@ impl TraceBuilder {
                         let v = BE::from(bit_val);
                         trace.set(cols.gadget_b_index(i), row_map, v);
                         trace.set(cols.gadget_b_index(i), row_final, v);
-                        
+
                         if i < k {
                             n >>= 1;
                         }
@@ -301,20 +309,22 @@ impl TraceBuilder {
                     // Witness: lower 32 bits
                     let x = regs[r as usize];
                     let mut n: u128 = x.as_int();
-                    
+
                     for i in 0..32 {
                         let bit_val = (n & 1) as u64;
                         let v = BE::from(bit_val);
                         trace.set(cols.gadget_b_index(i), row_map, v);
                         trace.set(cols.gadget_b_index(i), row_final, v);
-                        
+
                         n >>= 1;
                     }
 
-                    // res will write sum_lo into
-                    // dst at final (handled by vm_alu);
-                    // next_regs updated by generic
-                    // write rule; leave here
+                    // Ensure next row after final
+                    // reflects sum_lo so ALU write
+                    // constraint holds and stage1 can
+                    // reconstruct r via eq64 using dst_cur.
+                    let sum_lo = BE::from((x.as_int() & 0xFFFF_FFFFu128) as u64);
+                    next_regs[dst as usize] = sum_lo;
                 }
                 Op::AssertRangeHi { dst, r } => {
                     // Stage 1 of 64-bit:
@@ -335,13 +345,13 @@ impl TraceBuilder {
                     // Witness: upper 32 bits
                     let x = regs[r as usize];
                     let mut n: u128 = x.as_int() >> 32;
-                    
+
                     for i in 0..32 {
                         let bit_val = (n & 1) as u64;
                         let v = BE::from(bit_val);
                         trace.set(cols.gadget_b_index(i), row_map, v);
                         trace.set(cols.gadget_b_index(i), row_final, v);
-                        
+
                         n >>= 1;
                     }
 
@@ -352,6 +362,7 @@ impl TraceBuilder {
                 Op::SSqueeze { dst } => {
                     // Execute one permutation
                     // absorbing all pending regs (<=10)
+                    trace.set(cols.op_sponge, row_map, BE::ONE);
                     trace.set(cols.op_sponge, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
 
@@ -587,6 +598,9 @@ impl TraceBuilder {
                 for (i, val) in regs.iter().enumerate().take(NR) {
                     trace.set(cols.r_index(i), r, *val);
                 }
+
+                // carry PC across map..final rows
+                trace.set(cols.pc, r, BE::from(lvl as u64));
             }
 
             // after final within level: keep next_regs
@@ -594,6 +608,8 @@ impl TraceBuilder {
                 for (i, val) in next_regs.iter().enumerate().take(NR) {
                     trace.set(cols.r_index(i), r, *val);
                 }
+
+                trace.set(cols.pc, r, BE::from(lvl as u64));
             }
 
             // commit next_regs to regs for next level.
@@ -603,6 +619,14 @@ impl TraceBuilder {
             }
 
             regs = next_regs;
+        }
+
+        // PC is set consistently across levels
+        for lvl in 0..total_levels {
+            let base = lvl * steps;
+            for r in base..(base + steps) {
+                trace.set(cols.pc, r, BE::from(lvl as u64));
+            }
         }
 
         // Ensure Poseidon domain tags are
@@ -618,6 +642,37 @@ impl TraceBuilder {
 
         Ok(trace)
     }
+}
+
+fn op_to_one_hot(op: &Op) -> [BE; 12] {
+    // Order matches Columns.op_* sequence
+    // [const, mov, add, sub, mul, neg, eq, select, sponge, assert, assert_bit, assert_range]
+    let mut v = [BE::ZERO; 12];
+    use ir::Op::*;
+    match op {
+        Const { .. } => v[0] = BE::ONE,
+        Mov { .. } => v[1] = BE::ONE,
+        Add { .. } => v[2] = BE::ONE,
+        Sub { .. } => v[3] = BE::ONE,
+        Mul { .. } => v[4] = BE::ONE,
+        Neg { .. } => v[5] = BE::ONE,
+        Eq { .. } => v[6] = BE::ONE,
+        Select { .. } => v[7] = BE::ONE,
+        SAbsorbN { .. } | SSqueeze { .. } => v[8] = BE::ONE,
+        Assert { .. } => v[9] = BE::ONE,
+        AssertBit { .. } => v[10] = BE::ONE,
+        AssertRange { .. } | AssertRangeLo { .. } | AssertRangeHi { .. } => v[11] = BE::ONE,
+        KvMap { .. }
+        | KvFinal
+        | MerkleStepFirst { .. }
+        | MerkleStep { .. }
+        | MerkleStepLast { .. }
+        | End => {
+            // Non-ALU ops: leave all zeros
+        }
+    }
+
+    v
 }
 
 #[inline]
@@ -778,5 +833,148 @@ mod tests {
         let pc = pi::be_from_le8(&p.commitment);
 
         assert_eq!(trace.get(cols.pi_prog, row0_map), pc);
+    }
+
+    #[test]
+    fn rom_matches_op_bits_at_map_rows() {
+        let mut b = ir::ProgramBuilder::new();
+        b.push(Op::Const { dst: 0, imm: 7 });
+        b.push(Op::Const { dst: 1, imm: 9 });
+        b.push(Op::Add { dst: 2, a: 0, b: 1 });
+        b.push(Op::End);
+
+        let p = b.finalize();
+
+        let trace = TraceBuilder::build_from_program(&p).unwrap();
+        let cols = Columns::baseline();
+        let steps = STEPS_PER_LEVEL_P2;
+
+        for lvl in 0..p.ops.len() {
+            let row_map = lvl * steps + crate::schedule::pos_map();
+            let ops = [
+                cols.op_const,
+                cols.op_mov,
+                cols.op_add,
+                cols.op_sub,
+                cols.op_mul,
+                cols.op_neg,
+                cols.op_eq,
+                cols.op_select,
+                cols.op_sponge,
+                cols.op_assert,
+                cols.op_assert_bit,
+                cols.op_assert_range,
+            ];
+
+            for (k, c) in ops.iter().enumerate() {
+                assert_eq!(
+                    trace.get(*c, row_map),
+                    trace.get(cols.rom_op_index(k), row_map),
+                    "lvl {lvl} k {k}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pose_active_zero_on_alu_levels() {
+        let mut b = ir::ProgramBuilder::new();
+        b.push(Op::Const { dst: 0, imm: 7 });
+        b.push(Op::Const { dst: 1, imm: 9 });
+        b.push(Op::Add { dst: 2, a: 0, b: 1 });
+        b.push(Op::End);
+
+        let p = b.finalize();
+
+        let trace = TraceBuilder::build_from_program(&p).unwrap();
+        let cols = Columns::baseline();
+        let steps = STEPS_PER_LEVEL_P2;
+
+        for lvl in 0..p.ops.len() {
+            let base = lvl * steps;
+            for r in base..(base + steps) {
+                assert_eq!(
+                    trace.get(cols.pose_active, r),
+                    BE::ZERO,
+                    "lvl {lvl} row {r}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rom_matches_op_bits_for_arith_select_program() {
+        let src = r"
+(def (main)
+  (let ((a 7) (b 9))
+    (select (= a b) (+ a b) 0)))
+ ";
+
+        let p = crate::compiler::compile_entry(src, &[]).unwrap();
+        let trace = TraceBuilder::build_from_program(&p).unwrap();
+        let cols = Columns::baseline();
+        let steps = STEPS_PER_LEVEL_P2;
+
+        // check first few levels
+        for lvl in 0..p.ops.len() {
+            let row_map = lvl * steps + schedule::pos_map();
+            let ops = [
+                cols.op_const,
+                cols.op_mov,
+                cols.op_add,
+                cols.op_sub,
+                cols.op_mul,
+                cols.op_neg,
+                cols.op_eq,
+                cols.op_select,
+                cols.op_sponge,
+                cols.op_assert,
+                cols.op_assert_bit,
+                cols.op_assert_range,
+            ];
+
+            for (k, c) in ops.iter().enumerate() {
+                assert_eq!(
+                    trace.get(*c, row_map),
+                    trace.get(cols.rom_op_index(k), row_map),
+                    "lvl {lvl} k {k}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pc_carries_and_increments_per_level() {
+        let src = r"
+(def (main)
+  (let ((a 7) (b 9))
+    (select (= a b) (+ a b) 0)))
+";
+
+        let p = crate::compiler::compile_entry(src, &[]).unwrap();
+        let trace = TraceBuilder::build_from_program(&p).unwrap();
+        let cols = Columns::baseline();
+        let steps = STEPS_PER_LEVEL_P2;
+        let total_levels = trace.length() / steps;
+
+        for lvl in 0..total_levels {
+            let base = lvl * steps;
+            // map row pc == lvl
+            assert_eq!(
+                trace.get(cols.pc, base + schedule::pos_map()),
+                BE::from(lvl as u64)
+            );
+
+            // carry across level
+            for r in base..(base + steps) {
+                assert_eq!(trace.get(cols.pc, r), BE::from(lvl as u64));
+            }
+
+            // increment: next map row should be lvl+1 if exists
+            if lvl + 1 < total_levels {
+                let next_map = (lvl + 1) * steps + schedule::pos_map();
+                assert_eq!(trace.get(cols.pc, next_map), BE::from((lvl + 1) as u64));
+            }
+        }
     }
 }

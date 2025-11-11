@@ -54,7 +54,7 @@ where
             vec![STEPS_PER_LEVEL_P2],
         ));
 
-        // AssertRange (32-bit): 
+        // AssertRange (32-bit):
         // 32 bit booleanities + equality r - sum(2^i b_i) = 0
         for _ in 0..32 {
             out.push(TransitionConstraintDegree::with_cycles(
@@ -139,7 +139,7 @@ where
         for i in 0..NR {
             dst_next += cur[ctx.cols.sel_dst_index(i)] * next[ctx.cols.r_index(i)];
         }
-        
+
         let mut dst_cur = E::ZERO; // sum dst_i * r_i_cur
         for i in 0..NR {
             dst_cur += cur[ctx.cols.sel_dst_index(i)] * cur[ctx.cols.r_index(i)];
@@ -216,8 +216,10 @@ where
         // If mode64==0: c == sum (32-bit)
         // If mode64==1: c == dst_cur + (sum << 32)
         let mut p2_32 = E::ONE;
-        for _ in 0..32 { p2_32 = p2_32 + p2_32; }
-        
+        for _ in 0..32 {
+            p2_32 = p2_32 + p2_32;
+        }
+
         let eq32 = c_val - sum;
         let eq64 = c_val - (dst_cur + sum * p2_32);
         let eq_term = imm * (mode64 * eq64 + (E::ONE - mode64) * eq32);

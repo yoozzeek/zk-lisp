@@ -219,6 +219,9 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "bit?" => lower_bit_pred(cx, tail),
                     "assert-bit" => lower_assert_bit(cx, tail),
                     "assert-range" => lower_assert_range(cx, tail),
+                    "safe-add" => lower_safe_add(cx, tail),
+                    "safe-sub" => lower_safe_sub(cx, tail),
+                    "safe-mul" => lower_safe_mul(cx, tail),
                     "in-set" => lower_in_set(cx, tail),
                     "kv-step" => lower_kv_step(cx, tail)
                         .map(|_| RVal::Borrowed(cx.get_reg_opt("_kv_last").unwrap_or(0))),
@@ -1453,6 +1456,128 @@ fn lower_assert_range(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     }
 }
 
+fn lower_safe_add(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("safe-add".into()));
+    }
+
+    let av = lower_expr(cx, rest[0].clone())?;
+    let bv = lower_expr(cx, rest[1].clone())?;
+
+    if let (Some(ai), Some(bi)) = (av.as_imm(), bv.as_imm()) {
+        // constant fold in field, require u64
+        let r = BE::from(ai) + BE::from(bi);
+        let r128: u128 = r.as_int();
+
+        if r128 <= u64::MAX as u128 {
+            return Ok(RVal::Imm(r128 as u64));
+        }
+    }
+
+    let a = av.into_owned(cx)?;
+    let b = bv.into_owned(cx)?;
+
+    // inputs in u64
+    assert_range_bits_for_reg(cx, a.reg(), 64)?;
+    assert_range_bits_for_reg(cx, b.reg(), 64)?;
+
+    let dst = cx.alloc()?;
+    cx.b.push(Op::Add {
+        dst,
+        a: a.reg(),
+        b: b.reg(),
+    });
+
+    // result in u64
+    assert_range_bits_for_reg(cx, dst, 64)?;
+
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+
+    Ok(RVal::Owned(dst))
+}
+
+fn lower_safe_sub(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("safe-sub".into()));
+    }
+
+    let av = lower_expr(cx, rest[0].clone())?;
+    let bv = lower_expr(cx, rest[1].clone())?;
+
+    if let (Some(ai), Some(bi)) = (av.as_imm(), bv.as_imm()) {
+        let r = BE::from(ai) - BE::from(bi);
+        let r128: u128 = r.as_int();
+
+        if r128 <= u64::MAX as u128 {
+            return Ok(RVal::Imm(r128 as u64));
+        }
+    }
+
+    let a = av.into_owned(cx)?;
+    let b = bv.into_owned(cx)?;
+
+    // inputs in u64
+    assert_range_bits_for_reg(cx, a.reg(), 64)?;
+    assert_range_bits_for_reg(cx, b.reg(), 64)?;
+
+    let dst = cx.alloc()?;
+    cx.b.push(Op::Sub {
+        dst,
+        a: a.reg(),
+        b: b.reg(),
+    });
+
+    // no wrap-around:
+    // enforce result in u64
+    assert_range_bits_for_reg(cx, dst, 64)?;
+
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+
+    Ok(RVal::Owned(dst))
+}
+
+fn lower_safe_mul(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("safe-mul".into()));
+    }
+
+    let av = lower_expr(cx, rest[0].clone())?;
+    let bv = lower_expr(cx, rest[1].clone())?;
+
+    if let (Some(ai), Some(bi)) = (av.as_imm(), bv.as_imm()) {
+        // constant fold: 32x32->64 policy still holds
+        let r = BE::from(ai) * BE::from(bi);
+        let r128: u128 = r.as_int();
+
+        if r128 <= u64::MAX as u128 {
+            return Ok(RVal::Imm(r128 as u64));
+        }
+    }
+
+    let a = av.into_owned(cx)?;
+    let b = bv.into_owned(cx)?;
+
+    // Use 32x32->64 safe policy
+    assert_range_bits_for_reg(cx, a.reg(), 32)?;
+    assert_range_bits_for_reg(cx, b.reg(), 32)?;
+
+    let dst = cx.alloc()?;
+    cx.b.push(Op::Mul {
+        dst,
+        a: a.reg(),
+        b: b.reg(),
+    });
+
+    assert_range_bits_for_reg(cx, dst, 64)?;
+
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+
+    Ok(RVal::Owned(dst))
+}
+
 // find the quoted (member ...)
 // list at rest[1] or rest[2]
 fn extract_member_from_quote(ast: &Ast) -> Option<&Ast> {
@@ -1493,4 +1618,29 @@ fn free_if_owned(cx: &mut LowerCtx, v: RVal) {
     if let RVal::Owned(r) = v {
         cx.free_reg(r);
     }
+}
+
+fn assert_range_bits_for_reg(cx: &mut LowerCtx, r: u8, bits: u8) -> Result<(), Error> {
+    match bits {
+        32 => {
+            let dst = cx.alloc()?;
+            cx.b.push(Op::AssertRange { dst, r, bits: 32 });
+
+            cx.free_reg(dst);
+        }
+        64 => {
+            let dst = cx.alloc()?;
+            cx.b.push(Op::AssertRangeLo { dst, r });
+            cx.b.push(Op::AssertRangeHi { dst, r });
+
+            cx.free_reg(dst);
+        }
+        _ => {
+            return Err(Error::InvalidForm(
+                "assert-range: bits must be 32 or 64".into(),
+            ));
+        }
+    }
+
+    Ok(())
 }

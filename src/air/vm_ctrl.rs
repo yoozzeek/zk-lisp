@@ -8,7 +8,7 @@ use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use super::{AirBlock, BlockCtx};
 use crate::air::mixers;
-use crate::layout::{NR, STEPS_PER_LEVEL_P2};
+use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
 pub struct VmCtrlBlock;
 
@@ -23,8 +23,8 @@ impl VmCtrlBlock {
             ));
         }
 
-        // selector sums for
-        // ALU roles (4).
+        // selector sums for ALU
+        // roles (dst,a,b,c) -> linear
         for _ in 0..4 {
             out.push(TransitionConstraintDegree::with_cycles(
                 1,
@@ -72,6 +72,24 @@ impl VmCtrlBlock {
             2,
             vec![STEPS_PER_LEVEL_P2],
         ));
+
+        // ROM ↔ op one-hot equality (12)
+        for _ in 0..12 {
+            out.push(TransitionConstraintDegree::with_cycles(
+                2,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+
+        // PC carry (1) and increment at last pad (1)
+        out.push(TransitionConstraintDegree::with_cycles(
+            1,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+        out.push(TransitionConstraintDegree::with_cycles(
+            1,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
     }
 }
 
@@ -89,6 +107,7 @@ where
         ix: &mut usize,
     ) {
         let cur = frame.current();
+        let next = frame.next();
         let p_map = periodic[0];
 
         // Mixer:
@@ -160,8 +179,9 @@ where
             + b_assert_range;
 
         // dst required only for ops that
-        // write a destination at final.
+        // write a destination at final
         let uses_dst = op_any - b_sponge;
+
         result[*ix] = p_map * (sum_dst - uses_dst) + s_low;
         *ix += 1;
         result[*ix] = p_map * (sum_a - uses_a) + s_low;
@@ -240,6 +260,58 @@ where
             + b_assert_range;
         result[*ix] = p_map * op_sum * (op_sum - E::ONE) + s_low;
         *ix += 1;
+
+        // ROM ↔ op equality;
+        // gated when program_commitment != 0
+        let rom_enabled = if ctx.pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            E::ONE
+        } else {
+            E::ZERO
+        };
+
+        for (k, b) in [
+            b_const,
+            b_mov,
+            b_add,
+            b_sub,
+            b_mul,
+            b_neg,
+            b_eq,
+            b_sel,
+            b_sponge,
+            b_assert,
+            b_assert_bit,
+            b_assert_range,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let rom_b = cur[ctx.cols.rom_op_index(k)];
+            result[*ix] = rom_enabled * p_map * (*b - rom_b) + s_high;
+            *ix += 1;
+        }
+
+        // PC carry within level
+        // and increment at last pad
+        let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
+        let p_pad_last = periodic[1 + POSEIDON_ROUNDS + 2];
+
+        let mut g_carry = p_map + (p_pad - p_pad_last);
+        for gr in (0..(POSEIDON_ROUNDS - 1)).map(|j| periodic[1 + j]) {
+            g_carry += gr;
+        }
+
+        let pc_cur = cur[ctx.cols.pc];
+        let pc_next = next[ctx.cols.pc];
+
+        // carry PC on non-final-next rows
+        result[*ix] = rom_enabled * (g_carry * (pc_next - pc_cur)) + s_low;
+        *ix += 1;
+
+        // increment at last pad
+        // row: next_pc = pc + 1
+        result[*ix] = rom_enabled * (p_pad_last * (pc_next - (pc_cur + E::ONE))) + s_low;
+        *ix += 1;
     }
 }
 
@@ -291,7 +363,8 @@ mod tests {
         VmCtrlBlock::eval_block(&ctx, &frame_a, &periodic, &mut ra, &mut ia);
         VmCtrlBlock::eval_block(&ctx, &frame_b, &periodic, &mut rb, &mut ib);
 
-        // With sponge disabled, changing sel_s must not change evaluation
+        // With sponge disabled, changing sel_s
+        // must not change evaluation.
         assert_eq!(ia, ib);
         assert_eq!(ra, rb);
     }

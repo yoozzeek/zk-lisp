@@ -128,7 +128,14 @@ impl Air for ZkLispAir {
 
         if features.vm {
             // bind program commitment at lvl0 map row
+            // + PC=0 at lvl0 map when program
+            // commitment is set (added in schedule block).
             num_assertions += 1;
+
+            if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+                num_assertions += 1;
+            }
+
             // bind VM args at lvl0 map row
             num_assertions += pub_inputs.vm_args.len();
         }

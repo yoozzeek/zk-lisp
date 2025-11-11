@@ -87,6 +87,11 @@ pub struct Columns {
     // PI columns
     pub pi_prog: usize,
 
+    // PC/ROM tie-in
+    pub pc: usize,
+    // 12 rom-op one-hot columns
+    pub rom_op_start: usize,
+
     // Poseidon per-level activity gate
     pub pose_active: usize,
 
@@ -159,8 +164,13 @@ impl Columns {
         // PI columns
         let pi_prog = merkle_leaf + 1;
 
-        // Extra KV column placed after PI
-        let kv_prev_acc = pi_prog + 1;
+        // PC column
+        let pc = pi_prog + 1;
+        // ROM op mirror
+        let rom_op_start = pc + 1;
+
+        // Extra KV column placed after PC/ROM
+        let kv_prev_acc = rom_op_start + 12;
 
         // Append pose_active followed
         // by gadget witness columns
@@ -215,6 +225,8 @@ impl Columns {
             merkle_last,
             merkle_leaf,
             pi_prog,
+            pc,
+            rom_op_start,
             pose_active,
             gadget_b_start,
             width,
@@ -266,6 +278,7 @@ impl Columns {
 
     pub fn gadget_b_index(&self, i: usize) -> usize {
         debug_assert!(i < 32);
+
         self.gadget_b_start + i
     }
 
@@ -273,6 +286,12 @@ impl Columns {
         debug_assert!(i < 12);
 
         self.lanes_start + i
+    }
+
+    pub fn rom_op_index(&self, i: usize) -> usize {
+        debug_assert!(i < 12);
+
+        self.rom_op_start + i
     }
 
     pub fn width(&self, _feature_mask: u64) -> usize {
