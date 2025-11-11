@@ -91,8 +91,9 @@ pub struct Columns {
     pub pose_active: usize,
 
     // Gadget witnesses:
-    // 64 columns for bit decomposition
-    pub rng_b_start: usize,
+    // reusable 32-bit pool
+    // for bit-based gadgets.
+    pub gadget_b_start: usize,
 
     width: usize,
 }
@@ -165,9 +166,9 @@ impl Columns {
         // by gadget witness columns
         let pose_active = kv_prev_acc + 1;
 
-        // Gadget: range bits (max 64)
-        let rng_b_start = pose_active + 1;
-        let width = rng_b_start + 32;
+        // Gadget: 32 reusable bit witnesses
+        let gadget_b_start = pose_active + 1;
+        let width = gadget_b_start + 32;
 
         Self {
             lane_l,
@@ -215,7 +216,7 @@ impl Columns {
             merkle_leaf,
             pi_prog,
             pose_active,
-            rng_b_start,
+            gadget_b_start,
             width,
         }
     }
@@ -263,9 +264,9 @@ impl Columns {
         self.sel_s_start + lane * NR + reg
     }
 
-    pub fn rng_b_index(&self, i: usize) -> usize {
+    pub fn gadget_b_index(&self, i: usize) -> usize {
         debug_assert!(i < 32);
-        self.rng_b_start + i
+        self.gadget_b_start + i
     }
 
     pub fn lane_index(&self, i: usize) -> usize {

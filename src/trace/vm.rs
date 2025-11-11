@@ -249,31 +249,104 @@ impl TraceBuilder {
                     next_regs[dst as usize] = BE::ONE;
                 }
                 Op::AssertRange { dst, r, bits } => {
+                    // 32-bit mode:
+                    // stage=1 (imm=1),
+                    // mode64=0 (eq_inv=0)
                     trace.set(cols.op_assert_range, row_map, BE::ONE);
                     set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, r);
+                    trace.set(cols.imm, row_map, BE::ONE);
+                    trace.set(cols.eq_inv, row_map, BE::ZERO);
 
                     trace.set(cols.op_assert_range, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, r);
+                    trace.set(cols.imm, row_final, BE::ONE);
+                    trace.set(cols.eq_inv, row_final, BE::ZERO);
 
-                    // Set witness bits for
-                    // range decomposition.
+                    // Witness: lower 32 bits
                     let x = regs[r as usize];
                     let mut n: u128 = x.as_int();
                     let k = (bits as usize).min(32);
-                    
+
                     for i in 0..32 {
                         let bit_val = if i < k { (n & 1) as u64 } else { 0u64 };
                         let v = BE::from(bit_val);
-                        trace.set(cols.rng_b_index(i), row_map, v);
-                        trace.set(cols.rng_b_index(i), row_final, v);
-
+                        trace.set(cols.gadget_b_index(i), row_map, v);
+                        trace.set(cols.gadget_b_index(i), row_final, v);
+                        
                         if i < k {
                             n >>= 1;
                         }
                     }
 
+                    next_regs[dst as usize] = BE::ONE;
+                }
+                Op::AssertRangeLo { dst, r } => {
+                    // Stage 0 of 64-bit:
+                    // stage=0 (imm=0),
+                    // mode64=1 (eq_inv=1)
+                    trace.set(cols.op_assert_range, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_c_start, r);
+                    trace.set(cols.imm, row_map, BE::ZERO);
+                    trace.set(cols.eq_inv, row_map, BE::ONE);
+
+                    trace.set(cols.op_assert_range, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_c_start, r);
+                    trace.set(cols.imm, row_final, BE::ZERO);
+                    trace.set(cols.eq_inv, row_final, BE::ONE);
+
+                    // Witness: lower 32 bits
+                    let x = regs[r as usize];
+                    let mut n: u128 = x.as_int();
+                    
+                    for i in 0..32 {
+                        let bit_val = (n & 1) as u64;
+                        let v = BE::from(bit_val);
+                        trace.set(cols.gadget_b_index(i), row_map, v);
+                        trace.set(cols.gadget_b_index(i), row_final, v);
+                        
+                        n >>= 1;
+                    }
+
+                    // res will write sum_lo into
+                    // dst at final (handled by vm_alu);
+                    // next_regs updated by generic
+                    // write rule; leave here
+                }
+                Op::AssertRangeHi { dst, r } => {
+                    // Stage 1 of 64-bit:
+                    // stage=1 (imm=1),
+                    // mode64=1 (eq_inv=1)
+                    trace.set(cols.op_assert_range, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_c_start, r);
+                    trace.set(cols.imm, row_map, BE::ONE);
+                    trace.set(cols.eq_inv, row_map, BE::ONE);
+
+                    trace.set(cols.op_assert_range, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_c_start, r);
+                    trace.set(cols.imm, row_final, BE::ONE);
+                    trace.set(cols.eq_inv, row_final, BE::ONE);
+
+                    // Witness: upper 32 bits
+                    let x = regs[r as usize];
+                    let mut n: u128 = x.as_int() >> 32;
+                    
+                    for i in 0..32 {
+                        let bit_val = (n & 1) as u64;
+                        let v = BE::from(bit_val);
+                        trace.set(cols.gadget_b_index(i), row_map, v);
+                        trace.set(cols.gadget_b_index(i), row_final, v);
+                        
+                        n >>= 1;
+                    }
+
+                    // dst will be set to
+                    // 1 by vm_alu write rule
                     next_regs[dst as usize] = BE::ONE;
                 }
                 Op::SSqueeze { dst } => {

@@ -52,16 +52,29 @@ pub enum Op {
         dst: u8,
         c: u8,
     },
-    // enforces r in {0,1}; writes 1 to dst
+    // 32-bit: enforce r in [0,2^32];
+    // writes 1 to dst
     AssertBit {
         dst: u8,
         r: u8,
     },
-    // enforces r in [0, 2^bits); writes 1 to dst
     AssertRange {
         dst: u8,
         r: u8,
         bits: u8,
+    },
+    // stage 0 for 64-bit:
+    // write sum_lo to dst
+    AssertRangeLo {
+        dst: u8,
+        r: u8,
+    },
+    // stage 1 for 64-bit:
+    // enforce r == dst(prev) + 2^32*sum_hi
+    // writes 1 to dst
+    AssertRangeHi {
+        dst: u8,
+        r: u8,
     },
 
     // CRYPTO
@@ -184,6 +197,10 @@ impl ProgramBuilder {
                 self.touch_reg(r);
             }
             AssertRange { dst, r, .. } => {
+                self.touch_reg(dst);
+                self.touch_reg(r);
+            }
+            AssertRangeLo { dst, r } | AssertRangeHi { dst, r } => {
                 self.touch_reg(dst);
                 self.touch_reg(r);
             }
@@ -349,6 +366,16 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(dst);
                 out.push(r);
                 out.push(bits);
+            }
+            AssertRangeLo { dst, r } => {
+                out.push(0x16);
+                out.push(dst);
+                out.push(r);
+            }
+            AssertRangeHi { dst, r } => {
+                out.push(0x17);
+                out.push(dst);
+                out.push(r);
             }
         }
     }

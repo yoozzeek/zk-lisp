@@ -70,8 +70,8 @@ fn assert_range_const_oob_errors() {
 
 #[test]
 fn assert_range_bits_invalid_errors() {
-    let src = "(def (main) (assert-range 5 64))";
+    let src = "(def (main) (assert-range 5 12))";
     let err = compile_entry(src, &[]).expect_err("must error");
     let msg = format!("{err}");
-    assert!(msg.contains("assert-range: bits must be 32"));
+    assert!(msg.contains("assert-range: bits must be 32 or 64"));
 }

@@ -129,6 +129,7 @@ where
         let b_sel = cur[ctx.cols.op_select];
         let b_sponge = cur[ctx.cols.op_sponge];
         let b_assert = cur[ctx.cols.op_assert];
+        let mode64 = cur[ctx.cols.eq_inv]; // reused as flag on range rows
         let b_assert_bit = cur[ctx.cols.op_assert_bit];
         let b_assert_range = cur[ctx.cols.op_assert_range];
 
@@ -138,8 +139,17 @@ where
         for i in 0..NR {
             dst_next += cur[ctx.cols.sel_dst_index(i)] * next[ctx.cols.r_index(i)];
         }
+        
+        let mut dst_cur = E::ZERO; // sum dst_i * r_i_cur
+        for i in 0..NR {
+            dst_cur += cur[ctx.cols.sel_dst_index(i)] * cur[ctx.cols.r_index(i)];
+        }
 
-        let res = b_const * imm
+        // For range: stage=imm (0/1).
+        // On stage 0, write sum_lo;
+        // on stage 1, write 1.
+        // range_sum computed below.
+        let mut res = b_const * imm
             + b_mov * a_val
             + b_add * (a_val + b_val)
             + b_sub * (a_val - b_val)
@@ -149,8 +159,7 @@ where
             + b_sponge * cur[ctx.cols.lane_l]
             + b_eq * dst_next
             + b_assert * E::ONE
-            + b_assert_bit * E::ONE
-            + b_assert_range * E::ONE;
+            + b_assert_bit * E::ONE;
 
         // write at final: r' = (1-dst)*r + dst*res (uniform for all ops)
         for i in 0..NR {
@@ -184,25 +193,35 @@ where
         result[*ix] = p_final * b_assert_bit * (c_val * (c_val - E::ONE)) + s_eq;
         *ix += 1;
 
-        // AssertRange: booleanity for witness
-        // bits and reconstruction equality
+        // AssertRange: booleanity for
+        // witness bits and reconstruction
         let mut sum = E::ZERO;
         let mut pow2 = E::ONE;
         for i in 0..32 {
-            let bi = cur[ctx.cols.rng_b_index(i)];
+            let bi = cur[ctx.cols.gadget_b_index(i)];
             // booleanity for each bi
             result[*ix] = p_final * b_assert_range * (bi * (bi - E::ONE)) + s_eq;
             *ix += 1;
 
             sum += pow2 * bi;
-            // multiply by 2 via addition
-            // to avoid constants table.
-            pow2 = pow2 + pow2;
+            pow2 = pow2 + pow2; // *2
         }
 
-        // reconstruction:
-        // c_val == sum(2^i * b_i)
-        result[*ix] = p_final * b_assert_range * (c_val - sum) + s_eq;
+        // range write behavior:
+        // stage=0 -> write sum (lo);
+        // stage=1 -> write 1
+        res += b_assert_range * ((E::ONE - imm) * sum + imm * E::ONE);
+
+        // Equality on stage==1
+        // If mode64==0: c == sum (32-bit)
+        // If mode64==1: c == dst_cur + (sum << 32)
+        let mut p2_32 = E::ONE;
+        for _ in 0..32 { p2_32 = p2_32 + p2_32; }
+        
+        let eq32 = c_val - sum;
+        let eq64 = c_val - (dst_cur + sum * p2_32);
+        let eq_term = imm * (mode64 * eq64 + (E::ONE - mode64) * eq32);
+        result[*ix] = p_final * b_assert_range * eq_term + s_eq;
         *ix += 1;
     }
 }

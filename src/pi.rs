@@ -83,7 +83,9 @@ impl PublicInputsBuilder {
                 | Select { .. }
                 | Assert { .. }
                 | AssertBit { .. }
-                | AssertRange { .. } => vm = true,
+                | AssertRange { .. }
+                | AssertRangeLo { .. }
+                | AssertRangeHi { .. } => vm = true,
                 SAbsorbN { .. } => {
                     vm = true;
                     pose = true;

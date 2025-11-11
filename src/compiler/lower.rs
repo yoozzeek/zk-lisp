@@ -1404,37 +1404,53 @@ fn lower_assert_range(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         }
     };
 
-    if bits != 32 {
-        return Err(Error::InvalidForm("assert-range: bits must be 32".into()));
-    }
-
     let x = lower_expr(cx, rest[0].clone())?;
 
-    if let Some(v) = x.as_imm() {
-        // compile-time check
-        let limit = 1u128 << 32;
-        // field canon to integer within limit
-        if (v as u128) < limit {
-            return Ok(RVal::Imm(1));
-        } else {
-            return Err(Error::InvalidForm(
-                "assert-range: constant out of range".into(),
-            ));
+    if bits == 32 {
+        if let Some(v) = x.as_imm() {
+            let limit = 1u128 << 32;
+            return if (v as u128) < limit {
+                Ok(RVal::Imm(1))
+            } else {
+                Err(Error::InvalidForm(
+                    "assert-range: constant out of range".into(),
+                ))
+            };
         }
+
+        let x = x.into_owned(cx)?;
+        let dst = cx.alloc()?;
+
+        cx.b.push(Op::AssertRange {
+            dst,
+            r: x.reg(),
+            bits: 32,
+        });
+
+        free_if_owned(cx, x);
+
+        Ok(RVal::Owned(dst))
+    } else if bits == 64 {
+        // Lo then Hi
+        if let Some(_v) = x.as_imm() {
+            // compile-time: 0 <= v < 2^64 for u64
+            return Ok(RVal::Imm(1));
+        }
+
+        let x = x.into_owned(cx)?;
+        let dst = cx.alloc()?;
+
+        cx.b.push(Op::AssertRangeLo { dst, r: x.reg() });
+        cx.b.push(Op::AssertRangeHi { dst, r: x.reg() });
+
+        free_if_owned(cx, x);
+
+        return Ok(RVal::Owned(dst));
+    } else {
+        return Err(Error::InvalidForm(
+            "assert-range: bits must be 32 or 64".into(),
+        ));
     }
-
-    let x = x.into_owned(cx)?;
-    let dst = cx.alloc()?;
-
-    cx.b.push(Op::AssertRange {
-        dst,
-        r: x.reg(),
-        bits: bits as u8,
-    });
-
-    free_if_owned(cx, x);
-
-    Ok(RVal::Owned(dst))
 }
 
 // find the quoted (member ...)
