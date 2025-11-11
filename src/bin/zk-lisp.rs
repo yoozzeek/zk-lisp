@@ -2,9 +2,12 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
+use base64::Engine;
 use clap::{Parser, Subcommand};
+use rustyline::{DefaultEditor, error::ReadlineError};
+use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self};
 use std::path::PathBuf;
 use thiserror::Error;
 use winterfell::math::StarkField;
@@ -17,9 +20,8 @@ use zk_lisp::{PreflightMode, compiler, error, prove};
     about = r"# zk-lisp CLI
 # Copyright (c) Andrei Kochergin. All rights reserved.
 
-Lisp dialect and compiler for running zero-knowledge (ZK)
-programs, executable on an experimental virtual machine built
-on top of the Winterfell STARK prover and verifier.",
+Lisp-like DSL and compiler for proving
+program execution in zero-knowledge.",
     version
 )]
 struct Cli {
@@ -439,6 +441,56 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliE
     Ok(())
 }
 
+// Live session state
+#[derive(Default, Clone)]
+struct Session {
+    base_src: String,   // from :load
+    forms: Vec<String>, // live appended forms
+    last_expr: Option<String>,
+}
+
+impl Session {
+    fn reset(&mut self) {
+        self.base_src.clear();
+        self.forms.clear();
+        self.last_expr = None;
+    }
+
+    fn add_form(&mut self, s: String) {
+        self.forms.push(s);
+    }
+
+    fn combined_with_expr(&self, expr: &str) -> String {
+        let mut out = String::new();
+        if !self.base_src.trim().is_empty() {
+            out.push_str(&self.base_src);
+            out.push('\n');
+        }
+
+        if !self.forms.is_empty() {
+            for f in &self.forms {
+                out.push_str(f);
+                if !f.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+        }
+
+        // Allow bare symbol convenience:
+        // turn "foo" into "(foo)"
+        let trimmed = expr.trim();
+        let expr_norm = if is_bare_symbol(trimmed) {
+            format!("({trimmed})")
+        } else {
+            trimmed.to_string()
+        };
+
+        out.push_str(&format!("(def (main) {expr_norm})\n"));
+
+        out
+    }
+}
+
 fn cmd_repl() -> Result<(), CliError> {
     zk_lisp::logging::init_with_level(None);
 
@@ -452,36 +504,71 @@ fn cmd_repl() -> Result<(), CliError> {
   redistribute it under certain conditions;"
     );
 
-    let mut _buf = String::new();
-    let mut line = String::new();
+    let mut session = Session::default();
+    let mut rl =
+        DefaultEditor::new().map_err(|e| CliError::InvalidInput(format!("repl init: {e}")))?;
+
+    // History path: $HOME/.zk-lisp_history (fallback: ./.zk-lisp_history)
+    let hist_path = std::env::var("HOME")
+        .map(|h| format!("{h}/.zk-lisp_history"))
+        .unwrap_or_else(|_| ".zk-lisp_history".into());
+    let _ = rl.load_history(&hist_path);
+
+    let mut acc = String::new();
+    let mut need_more = false;
 
     loop {
-        print!("> ");
+        let prompt = if need_more { ".. " } else { "> " };
+        let line = match rl.readline(prompt) {
+            Ok(s) => s,
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl-C: clear current buffer and continue
+                acc.clear();
+                need_more = false;
+                continue;
+            }
+            Err(ReadlineError::Eof) => break,
+            Err(e) => {
+                println!("error: io: {e}");
+                continue;
+            }
+        };
 
-        io::stdout().flush().ok();
-        line.clear();
-
-        let n = io::stdin().read_line(&mut line)?;
-        if n == 0 {
-            // EOF
-            break;
+        // accumulate for multiline
+        acc.push_str(&line);
+        acc.push('\n');
+        let bal = paren_balance(&acc);
+        need_more = bal > 0;
+        if need_more {
+            continue;
         }
 
-        let s = line.trim();
+        // We have a full command or expr in acc
+        let input_owned = acc.trim().to_string();
+        acc.clear();
+
+        let s = input_owned.as_str();
         if s.is_empty() {
             continue;
         }
+
         if s == ":quit" || s == ":q" {
             break;
         }
+
         if s == ":help" {
             println!(
                 r"Commands:
-  :help       - this help
-  :quit, :q   - exit
-  :load PATH  - load file and set as current program
-  :args a,b   - set args (comma-separated) for main
-  expr        - evaluate expr in a (def (main) expr) context"
+  :help              - this help
+  :quit, :q          - exit
+  :load PATH         - load file into session (base)
+  :reset             - clear session
+  :fns               - list defined functions (best-effort)
+  :prove [EXPR]      - build proof for EXPR (or last expr)
+  :verify B64|@PATH  - verify proof against last expr and current session
+  EXPR               - evaluate EXPR with current session defs
+  (def ...)          - define function or constant form into session
+  (deftype ...)      - define type helpers into session"
             );
             continue;
         }
@@ -489,7 +576,7 @@ fn cmd_repl() -> Result<(), CliError> {
         if let Some(rest) = s.strip_prefix(":load ") {
             match fs::read_to_string(rest) {
                 Ok(src) => {
-                    _buf = src;
+                    session.base_src = src;
                     println!("OK loaded {rest}");
                 }
                 Err(e) => println!("error: load failed: {e}"),
@@ -498,34 +585,236 @@ fn cmd_repl() -> Result<(), CliError> {
             continue;
         }
 
-        if let Some(rest) = s.strip_prefix(":args ") {
-            let mut args = Vec::new();
+        if s == ":reset" {
+            session.reset();
+            println!("OK reset");
 
-            for part in rest.split(',') {
-                if part.trim().is_empty() {
-                    continue;
+            let _ = rl.save_history(&hist_path);
+
+            continue;
+        }
+
+        if s == ":fns" {
+            let mut all = extract_def_names(&session.base_src);
+            for f in &session.forms {
+                for n in extract_def_names(f) {
+                    all.insert(n);
                 }
+            }
 
-                match part.trim().parse::<u64>() {
-                    Ok(v) => args.push(v),
-                    Err(e) => {
-                        println!("error: bad arg '{part}': {e}");
-                        args.clear();
-                        break;
+            if all.is_empty() {
+                println!("(none)");
+            } else {
+                for n in all {
+                    println!("{n}");
+                }
+            }
+
+            let _ = rl.add_history_entry(s);
+            let _ = rl.save_history(&hist_path);
+
+            continue;
+        }
+
+        // Build proof for expression
+        if let Some(rest) = s.strip_prefix(":prove") {
+            if let Some(msg) = diagnose_non_ascii(rest) {
+                println!("error: {msg}");
+                continue;
+            }
+
+            let expr = {
+                let r = rest.trim();
+                if r.is_empty() {
+                    match &session.last_expr {
+                        Some(e) => e.as_str(),
+                        None => {
+                            println!(
+                                "error: no expression to prove; evaluate EXPR or use :prove EXPR"
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    r
+                }
+            };
+
+            let wrapped = session.combined_with_expr(expr);
+            match compiler::compile_entry(&wrapped, &[]) {
+                Err(e) => println!("error: compile: {e}"),
+                Ok(program) => {
+                    // Build PI and trace
+                    let mut pi = build_pi_for_program(&program, &[]);
+                    match prove::build_trace_with_pi(&program, &pi) {
+                        Err(e) => println!("error: build trace: {e}"),
+                        Ok(trace) => {
+                            // dynamic PI: kv mask
+                            if (pi.feature_mask & zk_lisp::pi::FM_KV) != 0 {
+                                pi.kv_levels_mask = prove::compute_kv_levels_mask(&trace);
+                            }
+
+                            // cost metrics
+                            let rows = trace.length();
+                            let cost = compute_cost(&program);
+                            println!(
+                                "
+cost: 
+rows={rows},
+ops={},
+sponge_absorb_calls={},
+sponge_absorb_elems={},
+squeeze_calls={},
+kv_steps={},
+merkle_steps={}",
+                                cost.ops,
+                                cost.sponge_absorb_calls,
+                                cost.sponge_absorb_elems,
+                                cost.squeeze_calls,
+                                cost.kv_steps,
+                                cost.merkle_steps
+                            );
+
+                            let opts = proof_opts(1, 8, 0);
+                            let prover = prove::ZkProver::new(opts.clone(), pi.clone())
+                                .with_preflight_mode(PreflightMode::Off);
+
+                            match prover.prove(trace) {
+                                Err(e) => println!("error: prove: {e}"),
+                                Ok(proof) => match proof_to_bytes(&proof) {
+                                    Err(e) => println!("error: serialize proof: {e}"),
+                                    Ok(bytes) => {
+                                        let proof_b64 = base64::engine::general_purpose::STANDARD
+                                            .encode(&bytes);
+                                        let preview =
+                                            format!("{proof_b64} (len={} bytes)", bytes.len());
+                                        println!("proof: {preview}");
+                                    }
+                                },
+                            }
+                        }
                     }
                 }
             }
 
-            if !args.is_empty() {
-                println!("args set: {args:?}");
-            }
+            let _ = rl.add_history_entry(s);
+            let _ = rl.save_history(&hist_path);
 
-            // store in env? keep simple: ephemeral per eval
             continue;
         }
 
-        // Evaluate one-line expression by wrapping into (def (main) <expr>)
-        let wrapped = format!("(def (main) {s})");
+        // Verify proof for last expression
+        if let Some(rest) = s.strip_prefix(":verify ") {
+            let arg = rest.trim();
+            if arg.is_empty() {
+                println!("error: usage: :verify B64|@PATH");
+                continue;
+            }
+
+            let bytes = if let Some(path) = arg.strip_prefix('@') {
+                match fs::read(path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        println!("error: read proof: {e}");
+                        continue;
+                    }
+                }
+            } else {
+                match base64::engine::general_purpose::STANDARD.decode(arg) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        println!("error: invalid base64: {e}");
+                        continue;
+                    }
+                }
+            };
+
+            let proof = match proof_from_bytes(&bytes) {
+                Ok(p) => p,
+                Err(e) => {
+                    println!("error: parse proof: {e}");
+                    continue;
+                }
+            };
+
+            let expr = match &session.last_expr {
+                Some(e) => e.clone(),
+                None => {
+                    println!("error: no prior expression; use :prove EXPR first or evaluate EXPR");
+                    continue;
+                }
+            };
+            let wrapped = session.combined_with_expr(&expr);
+            let program = match compiler::compile_entry(&wrapped, &[]) {
+                Ok(p) => p,
+                Err(e) => {
+                    println!("error: compile: {e}");
+                    continue;
+                }
+            };
+
+            let mut pi = build_pi_for_program(&program, &[]);
+            let trace = match prove::build_trace_with_pi(&program, &pi) {
+                Ok(t) => t,
+                Err(e) => {
+                    println!("error: build trace: {e}");
+                    continue;
+                }
+            };
+
+            if (pi.feature_mask & zk_lisp::pi::FM_KV) != 0 {
+                pi.kv_levels_mask = prove::compute_kv_levels_mask(&trace);
+            }
+
+            let (out_reg, out_row) = prove::compute_vm_output(&trace);
+            pi.vm_out_reg = out_reg;
+            pi.vm_out_row = out_row;
+
+            let opts = proof_opts(1, 8, 0);
+            match prove::verify_proof(proof, pi, &opts) {
+                Ok(()) => println!("OK"),
+                Err(e) => println!("verify error: {e}"),
+            }
+
+            let _ = rl.add_history_entry(s);
+            let _ = rl.save_history(&hist_path);
+
+            continue;
+        }
+
+        // Top-level def/deftype
+        // are stored into session
+        let st = s.trim_start();
+        if st.starts_with("(def ") || st.starts_with("(deftype ") {
+            if let Some(msg) = diagnose_non_ascii(s) {
+                println!("error: {msg}");
+                continue;
+            }
+
+            session.add_form(s.to_string());
+
+            // try to print name for UX
+            let names = extract_def_names(s);
+            if names.is_empty() {
+                println!("OK");
+            } else {
+                // show only first name
+                // from this form.
+                let first = names.into_iter().next().unwrap();
+                println!("OK def {first}");
+            }
+
+            continue;
+        }
+
+        // Evaluate expression
+        // using current session
+        if let Some(msg) = diagnose_non_ascii(s) {
+            println!("error: {msg}");
+            continue;
+        }
+
+        let wrapped = session.combined_with_expr(s);
         match compiler::compile_entry(&wrapped, &[]) {
             Err(e) => println!("error: compile: {e}"),
             Ok(program) => {
@@ -539,11 +828,24 @@ fn cmd_repl() -> Result<(), CliError> {
                         let v: u128 = val.as_int();
 
                         println!("= {v} (0x{v:032x})");
+
+                        // remember last expr for :prove/:verify
+                        session.last_expr = Some(s.to_string());
                     }
                 }
             }
         }
+
+        // add to history after successful
+        // processing of a full command/expression
+        if !s.is_empty() {
+            let _ = rl.add_history_entry(s);
+            let _ = rl.save_history(&hist_path);
+        }
     }
+
+    // Save history on exit
+    let _ = rl.save_history(&hist_path);
 
     Ok(())
 }
@@ -574,6 +876,207 @@ fn parse_preflight_mode(s: &str) -> PreflightMode {
             }
         }
     }
+}
+
+// Helpers for UX
+fn is_sym_start(c: char) -> bool {
+    matches!(c, 'a'..='z' | 'A'..='Z' | '_' | '+' | '-' | '*' | '=' | '<' | '>')
+}
+
+fn is_sym_continue(c: char) -> bool {
+    is_sym_start(c) || matches!(c, '0'..='9' | '/' | ':' | '?')
+}
+
+fn is_bare_symbol(s: &str) -> bool {
+    let mut it = s.chars();
+    match it.next() {
+        Some(c0) if is_sym_start(c0) => {}
+        _ => return false,
+    }
+
+    for c in it {
+        if !is_sym_continue(c) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn paren_balance(s: &str) -> i32 {
+    let mut bal = 0i32;
+    let mut in_str = false;
+    let mut prev_bslash = false;
+
+    for ch in s.chars() {
+        if in_str {
+            if ch == '"' && !prev_bslash {
+                in_str = false;
+            }
+
+            prev_bslash = ch == '\\' && !prev_bslash;
+
+            continue;
+        }
+
+        match ch {
+            '"' => in_str = true,
+            '(' => bal += 1,
+            ')' => bal -= 1,
+            _ => {}
+        }
+
+        prev_bslash = false;
+    }
+
+    bal
+}
+
+fn diagnose_non_ascii(s: &str) -> Option<String> {
+    // scan outside of string literals only
+    let mut in_str = false;
+    let mut prev_bslash = false;
+
+    for (i, ch) in s.char_indices() {
+        if in_str {
+            if ch == '"' && !prev_bslash {
+                in_str = false;
+                prev_bslash = false;
+                continue;
+            }
+
+            prev_bslash = ch == '\\' && !prev_bslash;
+
+            continue;
+        }
+
+        if ch == '"' {
+            in_str = true;
+            prev_bslash = false;
+            continue;
+        }
+
+        if ch.is_ascii() {
+            continue;
+        }
+
+        // Suggestion for common problematic chars
+        let suggestion = match ch {
+            '\u{00A0}' => "Use regular space ' ' (U+0020) instead of non‑breaking space.",
+            '\u{2018}' | '\u{2019}' => {
+                "Use ASCII apostrophe ' (U+0027) for quote, or \" (U+0022) for strings."
+            }
+            '\u{201C}' | '\u{201D}' => "Use ASCII double quote \" (U+0022).",
+            '\u{00D7}' => "Use * (U+002A) for multiplication.",
+            '\u{2013}' | '\u{2014}' => "Use - (U+002D).",
+            _ => "Switch keyboard layout to English (ASCII) and replace this character.",
+        };
+
+        return Some(format!(
+            "non-ASCII character at position {}: ‘{}’ (U+{:04X}). {}",
+            i + 1,
+            ch,
+            ch as u32,
+            suggestion
+        ));
+    }
+
+    None
+}
+
+fn extract_def_names(src: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let s = src;
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+
+    while i + 4 <= bytes.len() {
+        if &bytes[i..i + 4] == b"(def" {
+            i += 4;
+
+            // skip whitespace
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+
+            if i >= bytes.len() {
+                break;
+            }
+
+            if bytes[i] == b'(' {
+                // (def (name ...)
+                i += 1;
+
+                // skip whitespace
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+
+                let start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b')' {
+                    i += 1;
+                }
+
+                if i > start {
+                    if let Ok(n) = std::str::from_utf8(&bytes[start..i]) {
+                        names.insert(n.to_string());
+                    }
+                }
+            } else {
+                // (def name ...)
+                let start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b')' {
+                    i += 1;
+                }
+
+                if i > start {
+                    if let Ok(n) = std::str::from_utf8(&bytes[start..i]) {
+                        names.insert(n.to_string());
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    names
+}
+
+#[derive(Default, Debug)]
+struct Cost {
+    ops: usize,
+    sponge_absorb_calls: usize,
+    sponge_absorb_elems: usize,
+    squeeze_calls: usize,
+    kv_steps: usize,
+    merkle_steps: usize,
+}
+
+fn compute_cost(program: &compiler::ir::Program) -> Cost {
+    use zk_lisp::compiler::ir::Op::*;
+
+    let mut c = Cost {
+        ops: program.ops.len(),
+        ..Default::default()
+    };
+
+    for op in &program.ops {
+        match op {
+            SAbsorbN { regs } => {
+                c.sponge_absorb_calls += 1;
+                c.sponge_absorb_elems += regs.len();
+            }
+            SSqueeze { .. } => c.squeeze_calls += 1,
+            KvMap { .. } | KvFinal => c.kv_steps += 1,
+            MerkleStepFirst { .. } | MerkleStep { .. } | MerkleStepLast { .. } => {
+                c.merkle_steps += 1
+            }
+            _ => {}
+        }
+    }
+
+    c
 }
 
 fn main() {
