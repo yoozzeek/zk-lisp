@@ -64,7 +64,8 @@ where
         ));
 
         // AssertRange (32-bit):
-        // 32 bit booleanities + equality r - sum(2^i b_i) = 0
+        // 32 bit booleanities
+        //   + equality r - sum(2^i b_i) = 0
         for _ in 0..32 {
             out.push(TransitionConstraintDegree::with_cycles(
                 5,
@@ -77,6 +78,22 @@ where
             5,
             vec![STEPS_PER_LEVEL_P2],
         ));
+
+        // MulWide equality (1):
+        // a*b == lo + hi*2^64
+        out.push(TransitionConstraintDegree::with_cycles(
+            5,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
+        // Div128 constraints (2):
+        // a*2^64 + imm - b*q - r, and b*inv - 1
+        for _ in 0..2 {
+            out.push(TransitionConstraintDegree::with_cycles(
+                5,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
     }
 
     fn eval_block(
@@ -143,6 +160,8 @@ where
         let b_assert_bit = cur[ctx.cols.op_assert_bit];
         let b_assert_range = cur[ctx.cols.op_assert_range];
         let b_divmod = cur[ctx.cols.op_divmod];
+        let b_mulwide = cur[ctx.cols.op_mulwide];
+        let b_div128 = cur[ctx.cols.op_div128];
 
         // include Eq via dst0_next so
         // generic write can be uniform for Eq
@@ -198,15 +217,20 @@ where
         // For most ops:
         //   next = (1-sd0-sd1)*cur + sd0*res
         // For DivMod native:
-        //   q = dst0_next, r = dst1_next already set by trace
+        //   q = dst0_next,
+        //   r = dst1_next already set by trace
         for i in 0..NR {
             let sd0 = cur[ctx.cols.sel_dst0_index(i)];
             let sd1 = cur[ctx.cols.sel_dst1_index(i)];
             let keep = E::ONE - sd0 - sd1;
-            // For non-divmod ops sd1==0 and sd0 gates res
-            // For divmod, sd0/sd1 gate q/r via dst0_next/dst1_next
-            let w0 = (E::ONE - b_divmod) * res + b_divmod * dst0_next;
-            let w1 = b_divmod * dst1_next;
+
+            // For non two-dest ops sd1==0
+            // and sd0 gates res; For two-dest
+            // ops (divmod, mulwide, div128), sd0/sd1
+            // gate lo/hi via dst0_next/dst1_next.
+            let b_two = b_divmod + b_mulwide + b_div128;
+            let w0 = (E::ONE - b_two) * res + b_two * dst0_next;
+            let w1 = b_two * dst1_next;
 
             result[*ix] = p_final
                 * (next[ctx.cols.r_index(i)]
@@ -234,6 +258,22 @@ where
         result[*ix] = p_final * b_divmod * (a_val - b_val * dst0_next - dst1_next) + s_eq;
         *ix += 1;
         result[*ix] = p_final * b_divmod * (b_val * inv_b - E::ONE) + s_eq;
+        *ix += 1;
+
+        // MulWide: a*b == lo + hi*2^64,
+        // where lo=dst0_next, hi=dst1_next
+        let p2_64 = E::from(crate::utils::pow2_64());
+        result[*ix] =
+            p_final * b_mulwide * (a_val * b_val - (dst0_next + dst1_next * p2_64)) + s_eq;
+        *ix += 1;
+
+        // Div128: num = a*2^64 + imm;
+        // enforce num == b*q + r and inv witness
+        let num128 = a_val * p2_64 + imm;
+        result[*ix] = p_final * b_div128 * (num128 - (b_val * dst0_next + dst1_next)) + s_eq;
+        *ix += 1;
+        let inv_b = cur[ctx.cols.eq_inv];
+        result[*ix] = p_final * b_div128 * (b_val * inv_b - E::ONE) + s_eq;
         *ix += 1;
 
         // assert: require c_val == 1 at final

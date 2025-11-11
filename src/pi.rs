@@ -86,7 +86,9 @@ impl PublicInputsBuilder {
                 | AssertRange { .. }
                 | AssertRangeLo { .. }
                 | AssertRangeHi { .. }
-                | DivMod { .. } => vm = true,
+                | DivMod { .. }
+                | MulWide { .. }
+                | DivMod128 { .. } => vm = true,
                 SAbsorbN { .. } => {
                     vm = true;
                     pose = true;
@@ -347,19 +349,19 @@ mod tests {
         // 5*NR role booleans (dst0,a,b,c,dst1)
         //   + 5 role sums
         //   + 1 select-cond
-        //   + 13 op booleans
+        //   + 15 op booleans
         //   + 1 one-hot
-        //   + 13 rom-op equality
+        //   + 15 rom-op equality
         //   + 2 PC constraints
         //   + NR no-overlap(dst0,dst1)
-        let vm_ctrl_len_no_sponge = 5 * layout::NR + 5 + 1 + 13 + 1 + 13 + 2 + layout::NR; // 83
+        let vm_ctrl_len_no_sponge = 5 * layout::NR + 5 + 1 + 15 + 1 + 15 + 2 + layout::NR; // 87
 
         // 8 carry + 8 writes
-        //   + 2 eq ties + 2 divmod ties
+        //   + 2 eq ties + 2 divmod ties + 2 div128
         //   + 1 assert(c==1)
         //   + 1 assert-bit + 32 range bits
-        //   + 1 range sum
-        let vm_alu_len = 8 + 8 + 2 + 2 + 1 + 1 + 32 + 1; // 55
+        //   + 1 range sum + 1 mulwide
+        let vm_alu_len = 8 + 8 + 2 + 2 + 2 + 1 + 1 + 32 + 1 + 1; // 56 + 2 = 58
 
         // Case A: Poseidon only
         let pi_pose = PublicInputs {

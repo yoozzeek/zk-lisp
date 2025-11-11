@@ -97,6 +97,9 @@ impl TraceBuilder {
                 cols.op_assert,
                 cols.op_assert_bit,
                 cols.op_assert_range,
+                cols.op_divmod,
+                cols.op_div128,
+                cols.op_mulwide,
             ];
 
             for &c in &ops {
@@ -393,6 +396,89 @@ impl TraceBuilder {
                     trace.set(cols.eq_inv, row_map, inv);
                     trace.set(cols.eq_inv, row_final, inv);
                 }
+                Op::MulWide {
+                    dst_hi,
+                    dst_lo,
+                    a,
+                    b,
+                } => {
+                    // 64x64 -> 128-bit product,
+                    // lo to dst0, hi to dst1.
+                    trace.set(cols.op_mulwide, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst_lo);
+                    set_sel(&mut trace, row_map, cols.sel_dst1_start, dst_hi);
+                    set_sel(&mut trace, row_map, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_map, cols.sel_b_start, b);
+
+                    trace.set(cols.op_mulwide, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst_lo);
+                    set_sel(&mut trace, row_final, cols.sel_dst1_start, dst_hi);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
+
+                    let av = regs[a as usize].as_int();
+                    let bv = regs[b as usize].as_int();
+                    let al = av & 0xFFFF_FFFF_FFFF_FFFFu128;
+                    let bl = bv & 0xFFFF_FFFF_FFFF_FFFFu128;
+
+                    let prod = al.wrapping_mul(bl);
+
+                    let lo = (prod & 0xFFFF_FFFF_FFFF_FFFFu128) as u64;
+                    let hi = (prod >> 64) as u64;
+
+                    next_regs[dst_lo as usize] = BE::from(lo);
+                    next_regs[dst_hi as usize] = BE::from(hi);
+                }
+                Op::DivMod128 {
+                    a_hi,
+                    a_lo,
+                    b,
+                    dst_q,
+                    dst_r,
+                } => {
+                    // 128/64 -> q,r
+                    // encode lo in imm
+                    trace.set(cols.op_div128, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst_q);
+                    set_sel(&mut trace, row_map, cols.sel_dst1_start, dst_r);
+                    set_sel(&mut trace, row_map, cols.sel_a_start, a_hi);
+                    set_sel(&mut trace, row_map, cols.sel_b_start, b);
+
+                    let lo = regs[a_lo as usize];
+                    trace.set(cols.imm, row_map, lo);
+
+                    trace.set(cols.op_div128, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst_q);
+                    set_sel(&mut trace, row_final, cols.sel_dst1_start, dst_r);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a_hi);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
+                    trace.set(cols.imm, row_final, lo);
+
+                    let hi_u = regs[a_hi as usize].as_int();
+                    let lo_u = regs[a_lo as usize].as_int();
+                    let c_u = regs[b as usize].as_int();
+
+                    let num = (hi_u << 64) | (lo_u & 0xFFFF_FFFF_FFFF_FFFFu128);
+
+                    let (q, r) = if c_u == 0 {
+                        (0u128, num)
+                    } else {
+                        (num / c_u, num % c_u)
+                    };
+
+                    next_regs[dst_q as usize] = BE::from((q & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
+                    next_regs[dst_r as usize] = BE::from((r & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
+
+                    // Provide inv_b witness
+                    let inv = if c_u != 0 {
+                        BE::from(c_u as u64).inv()
+                    } else {
+                        BE::ZERO
+                    };
+
+                    trace.set(cols.eq_inv, row_map, inv);
+                    trace.set(cols.eq_inv, row_final, inv);
+                }
                 Op::SSqueeze { dst } => {
                     // Execute one permutation
                     // absorbing all pending regs (<=10)
@@ -678,12 +764,12 @@ impl TraceBuilder {
     }
 }
 
-fn op_to_one_hot(op: &Op) -> [BE; 13] {
+fn op_to_one_hot(op: &Op) -> [BE; 15] {
     // Order matches Columns.op_* sequence
     // [const, mov, add, sub, mul, neg, eq,
     //  select, sponge, assert, assert_bit,
-    //  assert_range, divmod]
-    let mut v = [BE::ZERO; 13];
+    //  assert_range, divmod, div128, mulwide]
+    let mut v = [BE::ZERO; 15];
     use ir::Op::*;
     match op {
         Const { .. } => v[0] = BE::ONE,
@@ -699,6 +785,8 @@ fn op_to_one_hot(op: &Op) -> [BE; 13] {
         AssertBit { .. } => v[10] = BE::ONE,
         AssertRange { .. } | AssertRangeLo { .. } | AssertRangeHi { .. } => v[11] = BE::ONE,
         DivMod { .. } => v[12] = BE::ONE,
+        DivMod128 { .. } => v[13] = BE::ONE,
+        MulWide { .. } => v[14] = BE::ONE,
         KvMap { .. }
         | KvFinal
         | MerkleStepFirst { .. }
@@ -902,6 +990,7 @@ mod tests {
                 cols.op_assert_bit,
                 cols.op_assert_range,
                 cols.op_divmod,
+                cols.op_mulwide,
             ];
 
             for (k, c) in ops.iter().enumerate() {
@@ -970,6 +1059,7 @@ mod tests {
                 cols.op_assert_bit,
                 cols.op_assert_range,
                 cols.op_divmod,
+                cols.op_mulwide,
             ];
 
             for (k, c) in ops.iter().enumerate() {

@@ -224,6 +224,9 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "safe-mul" => lower_safe_mul(cx, tail),
                     "divmod-q" => lower_divmod_q(cx, tail),
                     "divmod-r" => lower_divmod_r(cx, tail),
+                    "mulwide-hi" => lower_mulwide_hi(cx, tail),
+                    "mulwide-lo" => lower_mulwide_lo(cx, tail),
+                    "muldiv" => lower_muldiv_floor(cx, tail),
                     "in-set" => lower_in_set(cx, tail),
                     "kv-step" => lower_kv_step(cx, tail)
                         .map(|_| RVal::Borrowed(cx.get_reg_opt("_kv_last").unwrap_or(0))),
@@ -1891,6 +1894,139 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     free_if_owned(cx, b);
 
     Ok(RVal::Owned(rr))
+}
+
+// (mulwide-hi a b) -> upper 64 bits of a*b
+fn lower_mulwide_hi(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("mulwide-hi".into()));
+    }
+
+    let av = lower_expr(cx, rest[0].clone())?;
+    let bv = lower_expr(cx, rest[1].clone())?;
+
+    let a = av.into_owned(cx)?;
+    let b = bv.into_owned(cx)?;
+
+    // inputs in u64
+    assert_range_bits_for_reg(cx, a.reg(), 64)?;
+    assert_range_bits_for_reg(cx, b.reg(), 64)?;
+
+    // produce hi/lo in two regs
+    let rhi = cx.alloc()?;
+    let rlo = cx.alloc()?;
+
+    cx.b.push(Op::MulWide {
+        dst_hi: rhi,
+        dst_lo: rlo,
+        a: a.reg(),
+        b: b.reg(),
+    });
+
+    // outputs in u64
+    assert_range_bits_for_reg(cx, rhi, 64)?;
+    assert_range_bits_for_reg(cx, rlo, 64)?;
+
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+
+    cx.free_reg(rlo);
+
+    Ok(RVal::Owned(rhi))
+}
+
+// (mulwide-lo a b) -> lower 64 bits of a*b
+fn lower_mulwide_lo(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("mulwide-lo".into()));
+    }
+
+    let av = lower_expr(cx, rest[0].clone())?;
+    let bv = lower_expr(cx, rest[1].clone())?;
+
+    let a = av.into_owned(cx)?;
+    let b = bv.into_owned(cx)?;
+
+    // inputs in u64
+    assert_range_bits_for_reg(cx, a.reg(), 64)?;
+    assert_range_bits_for_reg(cx, b.reg(), 64)?;
+
+    // produce hi/lo in two regs
+    let rhi = cx.alloc()?;
+    let rlo = cx.alloc()?;
+
+    cx.b.push(Op::MulWide {
+        dst_hi: rhi,
+        dst_lo: rlo,
+        a: a.reg(),
+        b: b.reg(),
+    });
+
+    // outputs in u64
+    assert_range_bits_for_reg(cx, rhi, 64)?;
+    assert_range_bits_for_reg(cx, rlo, 64)?;
+
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+
+    cx.free_reg(rhi);
+
+    Ok(RVal::Owned(rlo))
+}
+
+// (muldiv a b c) -> floor((a*b)/c)
+fn lower_muldiv_floor(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 3 {
+        return Err(Error::InvalidForm("muldiv".into()));
+    }
+
+    let av = lower_expr(cx, rest[0].clone())?;
+    let bv = lower_expr(cx, rest[1].clone())?;
+    let cv = lower_expr(cx, rest[2].clone())?;
+
+    let a = av.into_owned(cx)?;
+    let b = bv.into_owned(cx)?;
+    let c = cv.into_owned(cx)?;
+
+    // Enforce inputs in u64
+    assert_range_bits_for_reg(cx, a.reg(), 64)?;
+    assert_range_bits_for_reg(cx, b.reg(), 64)?;
+    assert_range_bits_for_reg(cx, c.reg(), 64)?;
+
+    // Wide multiply
+    let rhi = cx.alloc()?;
+    let rlo = cx.alloc()?;
+    cx.b.push(Op::MulWide {
+        dst_hi: rhi,
+        dst_lo: rlo,
+        a: a.reg(),
+        b: b.reg(),
+    });
+
+    // 128/64 division -> q,r
+    let rq = cx.alloc()?;
+    let rr = cx.alloc()?;
+    cx.b.push(Op::DivMod128 {
+        a_hi: rhi,
+        a_lo: rlo,
+        b: c.reg(),
+        dst_q: rq,
+        dst_r: rr,
+    });
+
+    // Outputs in u64
+    assert_range_bits_for_reg(cx, rq, 64)?;
+    assert_range_bits_for_reg(cx, rr, 64)?;
+
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+    free_if_owned(cx, c);
+
+    cx.free_reg(rhi);
+    cx.free_reg(rlo);
+    cx.free_reg(rr);
+
+    Ok(RVal::Owned(rq))
 }
 
 // find the quoted (member ...)

@@ -216,6 +216,13 @@ fn build_pi_for_program(
                 | Op::Eq { .. }
                 | Op::Select { .. }
                 | Op::Assert { .. }
+                | Op::AssertBit { .. }
+                | Op::AssertRange { .. }
+                | Op::AssertRangeLo { .. }
+                | Op::AssertRangeHi { .. }
+                | Op::DivMod { .. }
+                | Op::DivMod128 { .. }
+                | Op::MulWide { .. }
                 | Op::SAbsorbN { .. }
                 | Op::SSqueeze { .. }
         )

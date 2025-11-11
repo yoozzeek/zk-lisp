@@ -83,6 +83,21 @@ pub enum Op {
         a: u8,
         b: u8,
     },
+    // divides (a_hi<<64)+a_lo by b -> q, r
+    DivMod128 {
+        a_hi: u8,
+        a_lo: u8,
+        b: u8,
+        dst_q: u8,
+        dst_r: u8,
+    },
+    // writes hi and lo of 64x64->128
+    MulWide {
+        dst_hi: u8,
+        dst_lo: u8,
+        a: u8,
+        b: u8,
+    },
 
     // CRYPTO
     // Sponge: absorb up to 10 elements (rate=10)
@@ -219,6 +234,30 @@ impl ProgramBuilder {
             DivMod { dst_q, dst_r, a, b } => {
                 self.touch_reg(dst_q);
                 self.touch_reg(dst_r);
+                self.touch_reg(a);
+                self.touch_reg(b);
+            }
+            DivMod128 {
+                a_hi,
+                a_lo,
+                b,
+                dst_q,
+                dst_r,
+            } => {
+                self.touch_reg(a_hi);
+                self.touch_reg(a_lo);
+                self.touch_reg(b);
+                self.touch_reg(dst_q);
+                self.touch_reg(dst_r);
+            }
+            MulWide {
+                dst_hi,
+                dst_lo,
+                a,
+                b,
+            } => {
+                self.touch_reg(dst_hi);
+                self.touch_reg(dst_lo);
                 self.touch_reg(a);
                 self.touch_reg(b);
             }
@@ -369,13 +408,6 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(dir_reg);
                 out.push(sib_reg);
             }
-            DivMod { dst_q, dst_r, a, b } => {
-                out.push(0x18);
-                out.push(dst_q);
-                out.push(dst_r);
-                out.push(a);
-                out.push(b);
-            }
             AssertBit { dst, r } => {
                 out.push(0x14);
                 out.push(dst);
@@ -396,6 +428,39 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(0x17);
                 out.push(dst);
                 out.push(r);
+            }
+            DivMod { dst_q, dst_r, a, b } => {
+                out.push(0x18);
+                out.push(dst_q);
+                out.push(dst_r);
+                out.push(a);
+                out.push(b);
+            }
+            DivMod128 {
+                a_hi,
+                a_lo,
+                b,
+                dst_q,
+                dst_r,
+            } => {
+                out.push(0x1A);
+                out.push(a_hi);
+                out.push(a_lo);
+                out.push(b);
+                out.push(dst_q);
+                out.push(dst_r);
+            }
+            MulWide {
+                dst_hi,
+                dst_lo,
+                a,
+                b,
+            } => {
+                out.push(0x19);
+                out.push(dst_hi);
+                out.push(dst_lo);
+                out.push(a);
+                out.push(b);
             }
         }
     }
