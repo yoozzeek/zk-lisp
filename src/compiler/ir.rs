@@ -76,9 +76,10 @@ pub enum Op {
         dst: u8,
         r: u8,
     },
-    // writes q to dst
-    DivModQ {
-        dst: u8,
+    // writes q and r
+    DivMod {
+        dst_q: u8,
+        dst_r: u8,
         a: u8,
         b: u8,
     },
@@ -215,8 +216,9 @@ impl ProgramBuilder {
                     self.touch_reg(r);
                 }
             }
-            DivModQ { dst, a, b } => {
-                self.touch_reg(dst);
+            DivMod { dst_q, dst_r, a, b } => {
+                self.touch_reg(dst_q);
+                self.touch_reg(dst_r);
                 self.touch_reg(a);
                 self.touch_reg(b);
             }
@@ -367,9 +369,10 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(dir_reg);
                 out.push(sib_reg);
             }
-            DivModQ { dst, a, b } => {
+            DivMod { dst_q, dst_r, a, b } => {
                 out.push(0x18);
-                out.push(dst);
+                out.push(dst_q);
+                out.push(dst_r);
                 out.push(a);
                 out.push(b);
             }

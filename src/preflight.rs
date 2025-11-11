@@ -105,7 +105,7 @@ pub(crate) fn run(
         air.evaluate_transition(&frame0, &periodic_poly_vals, &mut res0);
 
         let cols_dbg = layout::Columns::baseline();
-        let sd0 = frame0.current()[cols_dbg.sel_dst_index(0)];
+        let sd0 = frame0.current()[cols_dbg.sel_dst0_index(0)];
         let p_map0 = periodic_poly_vals[0];
         let p_fin0 = periodic_poly_vals[1 + layout::POSEIDON_ROUNDS];
         let p_pad0 = periodic_poly_vals[1 + layout::POSEIDON_ROUNDS + 1];
@@ -228,7 +228,7 @@ pub(crate) fn run(
             // VM write snapshot (only if write constraint area)
             let vm_snap = if (45..=52).contains(&i) {
                 let wi = i - 45;
-                let dst = frame.current()[cols.sel_dst_index(wi)];
+                let dst = frame.current()[cols.sel_dst0_index(wi)];
 
                 let a_val = {
                     let mut a = BE::ZERO;
@@ -287,8 +287,8 @@ pub(crate) fn run(
                 })
             } else if (144..=147).contains(&i) {
                 // Sums snapshot
-                let sum_dst = (0..layout::NR)
-                    .map(|k| frame.current()[cols.sel_dst_index(k)])
+                let sum_dst0 = (0..layout::NR)
+                    .map(|k| frame.current()[cols.sel_dst0_index(k)])
                     .fold(BE::ZERO, |acc, v| acc + v);
                 let sum_a = (0..layout::NR)
                     .map(|k| frame.current()[cols.sel_a_index(k)])
@@ -327,8 +327,8 @@ pub(crate) fn run(
 
                 tracing::debug!(
                     target = "proof.preflight",
-                    "[sums] sum_dst={:?} sum_a={:?} sum_b={:?} sum_c={:?} uses_a={:?} uses_b={:?} uses_c={:?} op_any={:?}",
-                    sum_dst,
+                    "[sums] sum_dst0={:?} sum_a={:?} sum_b={:?} sum_c={:?} uses_a={:?} uses_b={:?} uses_c={:?} op_any={:?}",
+                    sum_dst0,
                     sum_a,
                     sum_b,
                     sum_c,

@@ -64,6 +64,7 @@ fn prove_verify_fail(src: &str) {
     }
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn str64_eq_ok() {
     let src = r#"

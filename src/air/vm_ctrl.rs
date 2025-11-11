@@ -15,19 +15,28 @@ pub struct VmCtrlBlock;
 impl VmCtrlBlock {
     pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>, sponge: bool) {
         // selector bits booleanity
-        // for ALU roles (4*NR)
-        for _ in 0..(4 * NR) {
+        // for ALU roles (dst0,a,b,c,dst1) => (5*NR)
+        for _ in 0..(5 * NR) {
             out.push(TransitionConstraintDegree::with_cycles(
                 2,
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
 
-        // selector sums for ALU
-        // roles (dst,a,b,c) -> linear
-        for _ in 0..4 {
+        // selector sums for
+        // ALU roles: dst0,a,b,c,dst1 (5)
+        for _ in 0..5 {
             out.push(TransitionConstraintDegree::with_cycles(
                 1,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+
+        // no-overlap constraint per register
+        // between dst0 and dst1 (NR)
+        for _ in 0..NR {
+            out.push(TransitionConstraintDegree::with_cycles(
+                2,
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
@@ -135,29 +144,34 @@ where
         let b_assert_range = cur[ctx.cols.op_assert_range];
         let b_divmod = cur[ctx.cols.op_divmod];
 
-        let mut sum_dst = E::ZERO;
+        let mut sum_dst0 = E::ZERO;
         let mut sum_a = E::ZERO;
         let mut sum_b = E::ZERO;
         let mut sum_c = E::ZERO;
+        let mut sum_dst1 = E::ZERO;
 
         for i in 0..NR {
-            let sd = cur[ctx.cols.sel_dst_index(i)];
+            let sd0 = cur[ctx.cols.sel_dst0_index(i)];
             let sa = cur[ctx.cols.sel_a_index(i)];
             let sb = cur[ctx.cols.sel_b_index(i)];
             let sc = cur[ctx.cols.sel_c_index(i)];
+            let sd1 = cur[ctx.cols.sel_dst1_index(i)];
 
-            sum_dst += sd;
+            sum_dst0 += sd0;
             sum_a += sa;
             sum_b += sb;
             sum_c += sc;
+            sum_dst1 += sd1;
 
-            result[*ix] = p_map * sd * (sd - E::ONE) + s_high;
+            result[*ix] = p_map * sd0 * (sd0 - E::ONE) + s_high;
             *ix += 1;
             result[*ix] = p_map * sa * (sa - E::ONE) + s_high;
             *ix += 1;
             result[*ix] = p_map * sb * (sb - E::ONE) + s_high;
             *ix += 1;
             result[*ix] = p_map * sc * (sc - E::ONE) + s_high;
+            *ix += 1;
+            result[*ix] = p_map * sd1 * (sd1 - E::ONE) + s_high;
             *ix += 1;
         }
 
@@ -180,11 +194,18 @@ where
             + b_assert_range
             + b_divmod;
 
-        // dst required only for ops that
-        // write a destination at final
-        let uses_dst = op_any - b_sponge;
+        // dst0 required for all
+        // write ops except sponge
+        // (1 for most, 1 for divmod as well)
+        let uses_dst0 = op_any - b_sponge;
 
-        result[*ix] = p_map * (sum_dst - uses_dst) + s_low;
+        // dst1 required only for divmod
+        // (1 when divmod, 0 otherwise)
+        let uses_dst1 = b_divmod;
+
+        // emit sums in declared order:
+        // dst0, a, b, c, dst1
+        result[*ix] = p_map * (sum_dst0 - uses_dst0) + s_low;
         *ix += 1;
         result[*ix] = p_map * (sum_a - uses_a) + s_low;
         *ix += 1;
@@ -192,6 +213,17 @@ where
         *ix += 1;
         result[*ix] = p_map * (sum_c - uses_c) + s_low;
         *ix += 1;
+        result[*ix] = p_map * (sum_dst1 - uses_dst1) + s_low;
+        *ix += 1;
+
+        // no-overlap:
+        // for each reg, sd0_i * sd1_i == 0
+        for i in 0..NR {
+            let sd0 = cur[ctx.cols.sel_dst0_index(i)];
+            let sd1 = cur[ctx.cols.sel_dst1_index(i)];
+            result[*ix] = p_map * b_divmod * sd0 * sd1 + s_high;
+            *ix += 1;
+        }
 
         // Sponge selectors booleanity
         // and per-lane sum constraints

@@ -51,10 +51,11 @@ pub struct Columns {
 
     // Operand selectors
     // one-hot per role (8 each).
-    pub sel_dst_start: usize,
+    pub sel_dst0_start: usize,
     pub sel_a_start: usize,
     pub sel_b_start: usize,
     pub sel_c_start: usize,
+    pub sel_dst1_start: usize,
 
     // Sponge lane selectors:
     // for each rate lane i in 0..10.
@@ -133,14 +134,15 @@ impl Columns {
         let op_assert_range = op_assert_bit + 1;
         let op_divmod = op_assert_range + 1;
 
-        let sel_dst_start = op_divmod + 1; // 8 cols
-        let sel_a_start = sel_dst_start + NR; // 8 cols
+        let sel_dst0_start = op_divmod + 1; // 8 cols
+        let sel_a_start = sel_dst0_start + NR; // 8 cols
         let sel_b_start = sel_a_start + NR; // 8 cols
         let sel_c_start = sel_b_start + NR; // 8 cols
+        let sel_dst1_start = sel_c_start + NR; // 8 cols
 
         // Sponge lane selectors
         // block (10 * NR)
-        let sel_s_start = sel_c_start + NR;
+        let sel_s_start = sel_dst1_start + NR;
 
         // Immediate and aux
         let imm = sel_s_start + (10 * NR); // 1 col after sponge selectors
@@ -207,10 +209,11 @@ impl Columns {
             op_assert_bit,
             op_assert_range,
             op_divmod,
-            sel_dst_start,
+            sel_dst0_start,
             sel_a_start,
             sel_b_start,
             sel_c_start,
+            sel_dst1_start,
             sel_s_start,
             imm,
             eq_inv,
@@ -249,10 +252,16 @@ impl Columns {
         self.r_start + i
     }
 
-    pub fn sel_dst_index(&self, i: usize) -> usize {
+    pub fn sel_dst0_index(&self, i: usize) -> usize {
         debug_assert!(i < NR);
 
-        self.sel_dst_start + i
+        self.sel_dst0_start + i
+    }
+
+    pub fn sel_dst1_index(&self, i: usize) -> usize {
+        debug_assert!(i < NR);
+
+        self.sel_dst1_start + i
     }
 
     pub fn sel_a_index(&self, i: usize) -> usize {

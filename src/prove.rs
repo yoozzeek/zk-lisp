@@ -257,7 +257,7 @@ impl ZkWinterfellProver {
 
         let mut out_reg = 0u8;
         for i in 0..layout::NR {
-            if trace.get(cols.sel_dst_index(i), row_fin) == BE::ONE {
+            if trace.get(cols.sel_dst0_index(i), row_fin) == BE::ONE {
                 out_reg = i as u8;
                 break;
             }
@@ -360,7 +360,7 @@ pub fn build_trace_with_pi(
         let level_end = base0 + layout::STEPS_PER_LEVEL_P2;
 
         for i in 0..layout::NR {
-            let is_dst = trace.get(cols.sel_dst_index(i), row_fin0) == BE::ONE;
+            let is_dst = trace.get(cols.sel_dst0_index(i), row_fin0) == BE::ONE;
             if !is_dst {
                 if let Some(&a) = pi.vm_args.get(i) {
                     let val = BE::from(a);

@@ -1634,10 +1634,12 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(cond_b);
     cx.free_reg(assert_b_nz);
 
-    // Compute q via DivModQ op
+    // produce q,r in two regs
     let rq = cx.alloc()?;
-    cx.b.push(Op::DivModQ {
-        dst: rq,
+    let rr = cx.alloc()?;
+    cx.b.push(Op::DivMod {
+        dst_q: rq,
+        dst_r: rr,
         a: a.reg(),
         b: b.reg(),
     });
@@ -1650,15 +1652,8 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         b: b.reg(),
     });
 
-    let rr = cx.alloc()?;
-    cx.b.push(Op::Sub {
-        dst: rr,
-        a: a.reg(),
-        b: qmulb,
-    });
 
-    // Range constraints
-    // q is derived from a,b,r
+    // Range constraints on remainder
     assert_range_bits_for_reg(cx, rr, 64)?;
 
     // Enforce a = b*q + r first,
@@ -1799,27 +1794,21 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(cond_b);
     cx.free_reg(assert_b_nz);
 
-    // Compute q via DivModQ op
+    // produce q,r in two regs
     let rq = cx.alloc()?;
-    cx.b.push(Op::DivModQ {
-        dst: rq,
+    let rr = cx.alloc()?;
+    cx.b.push(Op::DivMod {
+        dst_q: rq,
+        dst_r: rr,
         a: a.reg(),
         b: b.reg(),
     });
 
-    // r = a - q*b
     let qmulb = cx.alloc()?;
     cx.b.push(Op::Mul {
         dst: qmulb,
         a: rq,
         b: b.reg(),
-    });
-
-    let rr = cx.alloc()?;
-    cx.b.push(Op::Sub {
-        dst: rr,
-        a: a.reg(),
-        b: qmulb,
     });
 
     // Range constraints and r < b

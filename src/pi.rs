@@ -86,7 +86,7 @@ impl PublicInputsBuilder {
                 | AssertRange { .. }
                 | AssertRangeLo { .. }
                 | AssertRangeHi { .. }
-                | DivModQ { .. } => vm = true,
+                | DivMod { .. } => vm = true,
                 SAbsorbN { .. } => {
                     vm = true;
                     pose = true;
@@ -344,20 +344,22 @@ mod tests {
         // derive dynamic block lengths
         let pose_len = 12 * layout::POSEIDON_ROUNDS + 12; // rounds + holds
 
-        // 4*NR role booleans
-        //   + 4 role sums
+        // 5*NR role booleans (dst0,a,b,c,dst1)
+        //   + 5 role sums
         //   + 1 select-cond
         //   + 13 op booleans
         //   + 1 one-hot
         //   + 13 rom-op equality
         //   + 2 PC constraints
-        let vm_ctrl_len_no_sponge = 4 * layout::NR + 4 + 1 + 13 + 1 + 13 + 2; // 66
+        //   + NR no-overlap(dst0,dst1)
+        let vm_ctrl_len_no_sponge = 5 * layout::NR + 5 + 1 + 13 + 1 + 13 + 2 + layout::NR; // 83
 
         // 8 carry + 8 writes
-        //   + 2 eq ties + 1 assert(c==1)
+        //   + 2 eq ties + 2 divmod ties
+        //   + 1 assert(c==1)
         //   + 1 assert-bit + 32 range bits
         //   + 1 range sum
-        let vm_alu_len = 8 + 8 + 2 + 1 + 1 + 32 + 1; // 53
+        let vm_alu_len = 8 + 8 + 2 + 2 + 1 + 1 + 32 + 1; // 55
 
         // Case A: Poseidon only
         let pi_pose = PublicInputs {

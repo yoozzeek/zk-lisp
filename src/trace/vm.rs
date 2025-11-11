@@ -73,7 +73,8 @@ impl TraceBuilder {
 
             // zero decode/selectors for this map row
             for i in 0..NR {
-                trace.set(cols.sel_dst_index(i), row_map, BE::ZERO);
+                trace.set(cols.sel_dst0_index(i), row_map, BE::ZERO);
+                trace.set(cols.sel_dst1_index(i), row_map, BE::ZERO);
                 trace.set(cols.sel_a_index(i), row_map, BE::ZERO);
                 trace.set(cols.sel_b_index(i), row_map, BE::ZERO);
                 trace.set(cols.sel_c_index(i), row_map, BE::ZERO);
@@ -111,12 +112,12 @@ impl TraceBuilder {
                 // and dst selector on map.
                 Op::Const { dst, imm } => {
                     trace.set(cols.op_const, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     trace.set(cols.imm, row_map, BE::from(imm));
 
                     // latch to final
                     trace.set(cols.op_const, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     trace.set(cols.imm, row_final, BE::from(imm));
 
                     next_regs[dst as usize] = BE::from(imm);
@@ -125,10 +126,10 @@ impl TraceBuilder {
                 // selector "a" points to src
                 Op::Mov { dst, src } => {
                     trace.set(cols.op_mov, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, src);
                     trace.set(cols.op_mov, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, src);
 
                     next_regs[dst as usize] = regs[src as usize];
@@ -136,12 +137,12 @@ impl TraceBuilder {
                 // ALU: dst = a + b at final
                 Op::Add { dst, a, b } => {
                     trace.set(cols.op_add, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     trace.set(cols.op_add, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
@@ -150,12 +151,12 @@ impl TraceBuilder {
                 // ALU: dst = a - b at final
                 Op::Sub { dst, a, b } => {
                     trace.set(cols.op_sub, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     trace.set(cols.op_sub, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
@@ -164,12 +165,12 @@ impl TraceBuilder {
                 // ALU: dst = a * b at final
                 Op::Mul { dst, a, b } => {
                     trace.set(cols.op_mul, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     trace.set(cols.op_mul, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
@@ -178,11 +179,11 @@ impl TraceBuilder {
                 // ALU: dst = -a at final
                 Op::Neg { dst, a } => {
                     trace.set(cols.op_neg, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
 
                     trace.set(cols.op_neg, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
 
                     next_regs[dst as usize] = BE::ZERO - regs[a as usize];
@@ -191,13 +192,13 @@ impl TraceBuilder {
                 // set eq_inv witness on map
                 Op::Eq { dst, a, b } => {
                     trace.set(cols.op_eq, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     // latch op bit and selectors to final
                     trace.set(cols.op_eq, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
@@ -218,13 +219,13 @@ impl TraceBuilder {
                 // c must be boolean
                 Op::Select { dst, c, a, b } => {
                     trace.set(cols.op_select, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, c);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     trace.set(cols.op_select, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, c);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
@@ -235,11 +236,11 @@ impl TraceBuilder {
                 }
                 Op::Assert { dst, c } => {
                     trace.set(cols.op_assert, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, c);
 
                     trace.set(cols.op_assert, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, c);
 
                     // write 1 at final
@@ -247,11 +248,11 @@ impl TraceBuilder {
                 }
                 Op::AssertBit { dst, r } => {
                     trace.set(cols.op_assert_bit, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, r);
 
                     trace.set(cols.op_assert_bit, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, r);
 
                     next_regs[dst as usize] = BE::ONE;
@@ -261,13 +262,13 @@ impl TraceBuilder {
                     // stage=1 (imm=1),
                     // mode64=0 (eq_inv=0)
                     trace.set(cols.op_assert_range, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, r);
                     trace.set(cols.imm, row_map, BE::ONE);
                     trace.set(cols.eq_inv, row_map, BE::ZERO);
 
                     trace.set(cols.op_assert_range, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, r);
                     trace.set(cols.imm, row_final, BE::ONE);
                     trace.set(cols.eq_inv, row_final, BE::ZERO);
@@ -295,13 +296,13 @@ impl TraceBuilder {
                     // stage=0 (imm=0),
                     // mode64=1 (eq_inv=1)
                     trace.set(cols.op_assert_range, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, r);
                     trace.set(cols.imm, row_map, BE::ZERO);
                     trace.set(cols.eq_inv, row_map, BE::ONE);
 
                     trace.set(cols.op_assert_range, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, r);
                     trace.set(cols.imm, row_final, BE::ZERO);
                     trace.set(cols.eq_inv, row_final, BE::ONE);
@@ -331,13 +332,13 @@ impl TraceBuilder {
                     // stage=1 (imm=1),
                     // mode64=1 (eq_inv=1)
                     trace.set(cols.op_assert_range, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, r);
                     trace.set(cols.imm, row_map, BE::ONE);
                     trace.set(cols.eq_inv, row_map, BE::ONE);
 
                     trace.set(cols.op_assert_range, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, r);
                     trace.set(cols.imm, row_final, BE::ONE);
                     trace.set(cols.eq_inv, row_final, BE::ONE);
@@ -359,35 +360,41 @@ impl TraceBuilder {
                     // 1 by vm_alu write rule
                     next_regs[dst as usize] = BE::ONE;
                 }
-                Op::DivModQ { dst, a, b } => {
-                    // DivMod quotient stage:
-                    // write q to dst
+                Op::DivMod { dst_q, dst_r, a, b } => {
+                    // DivMod: two destinations
                     trace.set(cols.op_divmod, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst_q);
+                    set_sel(&mut trace, row_map, cols.sel_dst1_start, dst_r);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     trace.set(cols.op_divmod, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst_q);
+                    set_sel(&mut trace, row_final, cols.sel_dst1_start, dst_r);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
-                    // Compute host-side quotient
-                    // using u128 int division.
+                    // Compute host-side q,r using u128 division
                     let av = regs[a as usize].as_int();
                     let bv = regs[b as usize].as_int();
 
                     let q = if bv == 0 { 0u128 } else { av / bv };
-                    let q64 = (q & 0xFFFF_FFFF_FFFF_FFFFu128) as u64;
+                    let r = if bv == 0 { av } else { av % bv };
+                    
+                    next_regs[dst_q as usize] = BE::from((q & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
+                    next_regs[dst_r as usize] = BE::from((r & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
 
-                    next_regs[dst as usize] = BE::from(q64);
+                    // Provide inv_b witness in eq_inv
+                    let inv = if bv != 0 { BE::from(bv as u64).inv() } else { BE::ZERO };
+                    trace.set(cols.eq_inv, row_map, inv);
+                    trace.set(cols.eq_inv, row_final, inv);
                 }
                 Op::SSqueeze { dst } => {
                     // Execute one permutation
                     // absorbing all pending regs (<=10)
                     trace.set(cols.op_sponge, row_map, BE::ONE);
                     trace.set(cols.op_sponge, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
 
                     let mut inputs: Vec<BE> = Vec::with_capacity(pending_regs.len());
                     for &r in &pending_regs {
@@ -687,7 +694,7 @@ fn op_to_one_hot(op: &Op) -> [BE; 13] {
         Assert { .. } => v[9] = BE::ONE,
         AssertBit { .. } => v[10] = BE::ONE,
         AssertRange { .. } | AssertRangeLo { .. } | AssertRangeHi { .. } => v[11] = BE::ONE,
-        DivModQ { .. } => v[12] = BE::ONE,
+        DivMod { .. } => v[12] = BE::ONE,
         KvMap { .. }
         | KvFinal
         | MerkleStepFirst { .. }

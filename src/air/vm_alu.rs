@@ -41,6 +41,15 @@ where
             ));
         }
 
+        // DivMod:
+        // a - b*q - r, and b*inv - 1
+        for _ in 0..2 {
+            out.push(TransitionConstraintDegree::with_cycles(
+                5,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+
         // assert enforcer (c==1 at final)
         out.push(TransitionConstraintDegree::with_cycles(
             5,
@@ -135,16 +144,22 @@ where
         let b_assert_range = cur[ctx.cols.op_assert_range];
         let b_divmod = cur[ctx.cols.op_divmod];
 
-        // include Eq via dst_next so
-        // generic write can be uniform.
-        let mut dst_next = E::ZERO; // sum dst_i * r_i_next
+        // include Eq via dst0_next so
+        // generic write can be uniform for Eq
+        let mut dst0_next = E::ZERO; // sum dst0_i * r_i_next
         for i in 0..NR {
-            dst_next += cur[ctx.cols.sel_dst_index(i)] * next[ctx.cols.r_index(i)];
+            dst0_next += cur[ctx.cols.sel_dst0_index(i)] * next[ctx.cols.r_index(i)];
         }
 
-        let mut dst_cur = E::ZERO; // sum dst_i * r_i_cur
+        let mut dst0_cur = E::ZERO; // sum dst0_i * r_i_cur
         for i in 0..NR {
-            dst_cur += cur[ctx.cols.sel_dst_index(i)] * cur[ctx.cols.r_index(i)];
+            dst0_cur += cur[ctx.cols.sel_dst0_index(i)] * cur[ctx.cols.r_index(i)];
+        }
+
+        // For native DivMod: q = dst0_next, r = dst1_next
+        let mut dst1_next = E::ZERO; // sum dst1_i * r_i_next
+        for i in 0..NR {
+            dst1_next += cur[ctx.cols.sel_dst1_index(i)] * next[ctx.cols.r_index(i)];
         }
 
         // For range: stage=imm (0/1).
@@ -159,12 +174,9 @@ where
             + b_neg * (E::ZERO - a_val)
             + b_sel * (c_val * a_val + (E::ONE - c_val) * b_val)
             + b_sponge * cur[ctx.cols.lane_l]
-            + b_eq * dst_next
+            + b_eq * dst0_next
             + b_assert * E::ONE
-            + b_assert_bit * E::ONE
-            // DivMod writes are modeled as dst_next
-            // to keep write constraint uniform.
-            + b_divmod * dst_next;
+            + b_assert_bit * E::ONE;
 
         // AssertRange: precompute sum
         // of 32 bits for write/equality
@@ -183,13 +195,22 @@ where
         res += b_assert_range * ((E::ONE - imm) * sum + imm * E::ONE);
 
         // write at final:
-        // r' = (1-dst)*r + dst*res
-        // (uniform for all ops)
+        // For most ops:
+        //   next = (1-sd0-sd1)*cur + sd0*res
+        // For DivMod native:
+        //   q = dst0_next, r = dst1_next already set by trace
         for i in 0..NR {
-            let dsti = cur[ctx.cols.sel_dst_index(i)];
+            let sd0 = cur[ctx.cols.sel_dst0_index(i)];
+            let sd1 = cur[ctx.cols.sel_dst1_index(i)];
+            let keep = E::ONE - sd0 - sd1;
+            // For non-divmod ops sd1==0 and sd0 gates res
+            // For divmod, sd0/sd1 gate q/r via dst0_next/dst1_next
+            let w0 = (E::ONE - b_divmod) * res + b_divmod * dst0_next;
+            let w1 = b_divmod * dst1_next;
+
             result[*ix] = p_final
                 * (next[ctx.cols.r_index(i)]
-                    - ((E::ONE - dsti) * cur[ctx.cols.r_index(i)] + dsti * res))
+                    - (keep * cur[ctx.cols.r_index(i)] + sd0 * w0 + sd1 * w1))
                 + s_write;
             *ix += 1;
         }
@@ -197,13 +218,22 @@ where
         let diff = a_val - b_val;
         let inv = cur[ctx.cols.eq_inv];
 
-        // if dst_next==1 => diff==0
-        result[*ix] = p_final * b_eq * (dst_next * diff) + s_eq;
+        // if dst0_next==1 => diff==0
+        result[*ix] = p_final * b_eq * (dst0_next * diff) + s_eq;
         *ix += 1;
 
-        // if diff!=0 => dst_next==0
-        // via (1 - dst_next) - diff*inv == 0
-        result[*ix] = p_final * b_eq * ((E::ONE - dst_next) - diff * inv) + s_eq;
+        // if diff!=0 => dst0_next==0
+        // via (1 - dst0_next) - diff*inv == 0
+        result[*ix] = p_final * b_eq * ((E::ONE - dst0_next) - diff * inv) + s_eq;
+        *ix += 1;
+
+        // DivMod constraints after Eq ties
+        // q = dst0_next, r = dst1_next;
+        // inv_b stored in eq_inv on these rows.
+        let inv_b = cur[ctx.cols.eq_inv];
+        result[*ix] = p_final * b_divmod * (a_val - b_val * dst0_next - dst1_next) + s_eq;
+        *ix += 1;
+        result[*ix] = p_final * b_divmod * (b_val * inv_b - E::ONE) + s_eq;
         *ix += 1;
 
         // assert: require c_val == 1 at final
@@ -226,14 +256,14 @@ where
 
         // Equality on stage==1
         // If mode64==0: c == sum (32-bit)
-        // If mode64==1: c == dst_cur + (sum << 32)
+        // If mode64==1: c == dst0_cur + (sum << 32)
         let mut p2_32 = E::ONE;
         for _ in 0..32 {
             p2_32 = p2_32 + p2_32;
         }
 
         let eq32 = c_val - sum;
-        let eq64 = c_val - (dst_cur + sum * p2_32);
+        let eq64 = c_val - (dst0_cur + sum * p2_32);
         let eq_term = imm * (mode64 * eq64 + (E::ONE - mode64) * eq32);
         result[*ix] = p_final * b_assert_range * eq_term + s_eq;
         *ix += 1;
