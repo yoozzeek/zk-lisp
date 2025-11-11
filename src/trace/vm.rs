@@ -380,12 +380,16 @@ impl TraceBuilder {
 
                     let q = if bv == 0 { 0u128 } else { av / bv };
                     let r = if bv == 0 { av } else { av % bv };
-                    
+
                     next_regs[dst_q as usize] = BE::from((q & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
                     next_regs[dst_r as usize] = BE::from((r & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
 
                     // Provide inv_b witness in eq_inv
-                    let inv = if bv != 0 { BE::from(bv as u64).inv() } else { BE::ZERO };
+                    let inv = if bv != 0 {
+                        BE::from(bv as u64).inv()
+                    } else {
+                        BE::ZERO
+                    };
                     trace.set(cols.eq_inv, row_map, inv);
                     trace.set(cols.eq_inv, row_final, inv);
                 }

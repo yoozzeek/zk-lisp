@@ -114,16 +114,6 @@ fn safe_mul_trace_and_prove() {
     }
 }
 
-// Placeholder divmod tests (ignored until divmod op/DSL is implemented)
-// Expected DSL form: (divmod dst_q dst_r a b)
-// Semantics: q = floor(a / b), r = a - q*b, with 0 <= r < b and b != 0.
-#[ignore]
-#[test]
-fn divmod_basic_trace_and_prove() {
-    // Placeholder for future (divmod a b) that returns (q,r)
-    let _ = ();
-}
-
 #[test]
 fn divmod_q_r_e2e_small_cases() {
     // q: 23/7=3, r: 23%7=2

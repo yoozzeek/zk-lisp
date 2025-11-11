@@ -221,7 +221,10 @@ where
         for i in 0..NR {
             let sd0 = cur[ctx.cols.sel_dst0_index(i)];
             let sd1 = cur[ctx.cols.sel_dst1_index(i)];
-            result[*ix] = p_map * b_divmod * sd0 * sd1 + s_high;
+            // for non-divmod ops,
+            // all sd1 bits are 0,
+            // making this term 0
+            result[*ix] = p_map * sd0 * sd1 + s_high;
             *ix += 1;
         }
 
@@ -242,7 +245,7 @@ where
                 }
 
                 // sum is boolean (0 or 1)
-                result[*ix] = p_map * b_sponge * sum * (sum - E::ONE) + s_low;
+                result[*ix] = p_map * b_sponge * sum * (sum - E::ONE) + s_high;
                 *ix += 1;
             }
         }
@@ -294,7 +297,7 @@ where
             + b_assert_bit
             + b_assert_range
             + b_divmod;
-        result[*ix] = p_map * op_sum * (op_sum - E::ONE) + s_low;
+        result[*ix] = p_map * op_sum * (op_sum - E::ONE) + s_high;
         *ix += 1;
 
         // ROM ↔ op equality;

@@ -1652,7 +1652,6 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         b: b.reg(),
     });
 
-
     // Range constraints on remainder
     assert_range_bits_for_reg(cx, rr, 64)?;
 

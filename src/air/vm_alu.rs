@@ -28,7 +28,7 @@ where
         // write registers at final (op-gated)
         for _ in 0..NR {
             out.push(TransitionConstraintDegree::with_cycles(
-                6,
+                7,
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
@@ -97,7 +97,7 @@ where
         // mixers
         let pi = cur[ctx.cols.pi_prog];
         let s_low = mixers::low(periodic);
-        let s_write = mixers::pi5(periodic, pi); // pi^5
+        let s_write = mixers::pi6(periodic, pi); // pi^6
         // keep eq mixer degree lower than writes
         let s_eq = mixers::pi4(periodic, pi);
 
