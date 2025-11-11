@@ -1,9 +1,12 @@
 # zk-lisp
 # Copyright (c) Andrei Kochergin. All rights reserved.
 
-Lisp dialect and compiler for running zero-knowledge (ZK)
-programs, executable on an experimental virtual machine built
-on top of the Winterfell STARK prover and verifier.
+A small Lisp-like DSL and compiler for proving program
+execution in zero-knowledge. Source code is compiled to
+a register-based VM whose execution trace is proven using
+the Winterfell STARK prover and verified with its verifier.
+
+Experimental and unaudited; not production-ready.
 
 Disclaimer:
 
@@ -13,32 +16,49 @@ Disclaimer:
 
 How it works:
 
-  Any program written in zk-lisp is compiled into:
-    - IR (Intermediate Representation)
-    - A stack of OP codes
+  Parse source /
+              / -> lower to IR /
+                              / -> emit sequence of VM ops.
 
-This gives a higher-level abstraction over manually building
-execution traces and AIR constraints, allowing developers to
-focus on product logic and business use cases
-instead of low-level STARK math.
+  A trace builder executes these ops into a fixed-shape
+  trace (VM/Poseidon/KV/Merkle blocks). AIR is predefined;
+  you don't write constraints. Winterfell proves the
+  trace satisfies the AIR.
 
-Program example:
+  The VM includes arithmetic, Poseidon sponge, range/bit
+  checks, and KV/Merkle gadgets.
 
-  (def (main x y)
-    (+ x y))
+  This gives a higher‑level programming model over manual
+  trace/AIR authoring so you can focus on application logic,
+  while the system handles STARK proving details.
+
+  Program example:
+
+    (def (main x y)
+      (+ x y))
 
 Quickstart:
 
-  Run a program:
-    cargo run --bin zk-lisp -- run examples/zk_example.zlisp --arg 2 --arg 3
+  Check the examples:
+    cargo run --example generate_root \
+        -- verify 1 0:22,1:23
+    cargo run --example merkle_verify \
+        -- 1 0:22,1:23 0x7383de959c89890b122b26ea99cbf333
+
+  Run a program from source file:
+    cargo run --bin zk-lisp -- \
+        run examples/zk_example.zlisp --arg 2 --arg 3
 
   Prove and verify:
     cargo run --bin zk-lisp -- \
-        prove examples/zk_example.zlisp --out ./proof.bin --quiet --arg 2 --arg 3
+        prove examples/zk_example.zlisp \
+            --out ./proof.bin --quiet --arg 2 --arg 3
 
     cargo run --bin zk-lisp -- \
-        verify @./proof.bin examples/zk_example.zlisp --arg 2 --arg 3
+        verify @./proof.bin examples/zk_example.zlisp \
+            --arg 2 --arg 3
 
 License:
 
-  This project is licensed under the GPL v3 License. See LICENSE for details.
+  This project is licensed under the GPL v3 License.
+  See LICENSE for details.
