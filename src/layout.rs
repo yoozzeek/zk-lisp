@@ -47,6 +47,7 @@ pub struct Columns {
     pub op_assert: usize,
     pub op_assert_bit: usize,
     pub op_assert_range: usize,
+    pub op_divmod: usize,
 
     // Operand selectors
     // one-hot per role (8 each).
@@ -130,8 +131,9 @@ impl Columns {
         let op_assert = op_sponge + 1;
         let op_assert_bit = op_assert + 1;
         let op_assert_range = op_assert_bit + 1;
+        let op_divmod = op_assert_range + 1;
 
-        let sel_dst_start = op_assert_range + 1; // 8 cols
+        let sel_dst_start = op_divmod + 1; // 8 cols
         let sel_a_start = sel_dst_start + NR; // 8 cols
         let sel_b_start = sel_a_start + NR; // 8 cols
         let sel_c_start = sel_b_start + NR; // 8 cols
@@ -166,11 +168,12 @@ impl Columns {
 
         // PC column
         let pc = pi_prog + 1;
-        // ROM op mirror
+
+        // ROM op mirror (13 columns)
         let rom_op_start = pc + 1;
 
         // Extra KV column placed after PC/ROM
-        let kv_prev_acc = rom_op_start + 12;
+        let kv_prev_acc = rom_op_start + 13;
 
         // Append pose_active followed
         // by gadget witness columns
@@ -203,6 +206,7 @@ impl Columns {
             op_assert,
             op_assert_bit,
             op_assert_range,
+            op_divmod,
             sel_dst_start,
             sel_a_start,
             sel_b_start,
@@ -289,7 +293,7 @@ impl Columns {
     }
 
     pub fn rom_op_index(&self, i: usize) -> usize {
-        debug_assert!(i < 12);
+        debug_assert!(i < 13);
 
         self.rom_op_start + i
     }

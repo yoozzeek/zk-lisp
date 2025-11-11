@@ -63,6 +63,7 @@ where
             ));
         }
 
+        // equality term (1)
         out.push(TransitionConstraintDegree::with_cycles(
             5,
             vec![STEPS_PER_LEVEL_P2],
@@ -132,6 +133,7 @@ where
         let mode64 = cur[ctx.cols.eq_inv]; // reused as flag on range rows
         let b_assert_bit = cur[ctx.cols.op_assert_bit];
         let b_assert_range = cur[ctx.cols.op_assert_range];
+        let b_divmod = cur[ctx.cols.op_divmod];
 
         // include Eq via dst_next so
         // generic write can be uniform.
@@ -159,9 +161,30 @@ where
             + b_sponge * cur[ctx.cols.lane_l]
             + b_eq * dst_next
             + b_assert * E::ONE
-            + b_assert_bit * E::ONE;
+            + b_assert_bit * E::ONE
+            // DivMod writes are modeled as dst_next
+            // to keep write constraint uniform.
+            + b_divmod * dst_next;
 
-        // write at final: r' = (1-dst)*r + dst*res (uniform for all ops)
+        // AssertRange: precompute sum
+        // of 32 bits for write/equality
+        let mut sum = E::ZERO;
+        let mut pow2 = E::ONE;
+
+        for i in 0..32 {
+            let bi = cur[ctx.cols.gadget_b_index(i)];
+            sum += pow2 * bi;
+            pow2 = pow2 + pow2; // *2
+        }
+
+        // range write behavior:
+        // stage=0 -> write sum (lo);
+        // stage=1 -> write 1
+        res += b_assert_range * ((E::ONE - imm) * sum + imm * E::ONE);
+
+        // write at final:
+        // r' = (1-dst)*r + dst*res
+        // (uniform for all ops)
         for i in 0..NR {
             let dsti = cur[ctx.cols.sel_dst_index(i)];
             result[*ix] = p_final
@@ -193,24 +216,13 @@ where
         result[*ix] = p_final * b_assert_bit * (c_val * (c_val - E::ONE)) + s_eq;
         *ix += 1;
 
-        // AssertRange: booleanity for
-        // witness bits and reconstruction
-        let mut sum = E::ZERO;
-        let mut pow2 = E::ONE;
+        // Now emit booleanity for
+        // each bit (after write)
         for i in 0..32 {
             let bi = cur[ctx.cols.gadget_b_index(i)];
-            // booleanity for each bi
             result[*ix] = p_final * b_assert_range * (bi * (bi - E::ONE)) + s_eq;
             *ix += 1;
-
-            sum += pow2 * bi;
-            pow2 = pow2 + pow2; // *2
         }
-
-        // range write behavior:
-        // stage=0 -> write sum (lo);
-        // stage=1 -> write 1
-        res += b_assert_range * ((E::ONE - imm) * sum + imm * E::ONE);
 
         // Equality on stage==1
         // If mode64==0: c == sum (32-bit)

@@ -359,6 +359,29 @@ impl TraceBuilder {
                     // 1 by vm_alu write rule
                     next_regs[dst as usize] = BE::ONE;
                 }
+                Op::DivModQ { dst, a, b } => {
+                    // DivMod quotient stage:
+                    // write q to dst
+                    trace.set(cols.op_divmod, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_map, cols.sel_b_start, b);
+
+                    trace.set(cols.op_divmod, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
+
+                    // Compute host-side quotient
+                    // using u128 int division.
+                    let av = regs[a as usize].as_int();
+                    let bv = regs[b as usize].as_int();
+
+                    let q = if bv == 0 { 0u128 } else { av / bv };
+                    let q64 = (q & 0xFFFF_FFFF_FFFF_FFFFu128) as u64;
+
+                    next_regs[dst as usize] = BE::from(q64);
+                }
                 Op::SSqueeze { dst } => {
                     // Execute one permutation
                     // absorbing all pending regs (<=10)
@@ -644,10 +667,12 @@ impl TraceBuilder {
     }
 }
 
-fn op_to_one_hot(op: &Op) -> [BE; 12] {
+fn op_to_one_hot(op: &Op) -> [BE; 13] {
     // Order matches Columns.op_* sequence
-    // [const, mov, add, sub, mul, neg, eq, select, sponge, assert, assert_bit, assert_range]
-    let mut v = [BE::ZERO; 12];
+    // [const, mov, add, sub, mul, neg, eq,
+    //  select, sponge, assert, assert_bit,
+    //  assert_range, divmod]
+    let mut v = [BE::ZERO; 13];
     use ir::Op::*;
     match op {
         Const { .. } => v[0] = BE::ONE,
@@ -662,6 +687,7 @@ fn op_to_one_hot(op: &Op) -> [BE; 12] {
         Assert { .. } => v[9] = BE::ONE,
         AssertBit { .. } => v[10] = BE::ONE,
         AssertRange { .. } | AssertRangeLo { .. } | AssertRangeHi { .. } => v[11] = BE::ONE,
+        DivModQ { .. } => v[12] = BE::ONE,
         KvMap { .. }
         | KvFinal
         | MerkleStepFirst { .. }
@@ -864,6 +890,7 @@ mod tests {
                 cols.op_assert,
                 cols.op_assert_bit,
                 cols.op_assert_range,
+                cols.op_divmod,
             ];
 
             for (k, c) in ops.iter().enumerate() {
@@ -931,6 +958,7 @@ mod tests {
                 cols.op_assert,
                 cols.op_assert_bit,
                 cols.op_assert_range,
+                cols.op_divmod,
             ];
 
             for (k, c) in ops.iter().enumerate() {

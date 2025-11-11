@@ -222,6 +222,8 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "safe-add" => lower_safe_add(cx, tail),
                     "safe-sub" => lower_safe_sub(cx, tail),
                     "safe-mul" => lower_safe_mul(cx, tail),
+                    "divmod-q" => lower_divmod_q(cx, tail),
+                    "divmod-r" => lower_divmod_r(cx, tail),
                     "in-set" => lower_in_set(cx, tail),
                     "kv-step" => lower_kv_step(cx, tail)
                         .map(|_| RVal::Borrowed(cx.get_reg_opt("_kv_last").unwrap_or(0))),
@@ -1578,28 +1580,360 @@ fn lower_safe_mul(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     Ok(RVal::Owned(dst))
 }
 
-// find the quoted (member ...)
-// list at rest[1] or rest[2]
-fn extract_member_from_quote(ast: &Ast) -> Option<&Ast> {
-    if let Ast::List(items) = ast {
-        if items.len() == 2 {
-            if let Ast::Atom(Atom::Sym(h)) = &items[0] {
-                if h == "quote" {
-                    if let Ast::List(inner) = &items[1] {
-                        if !inner.is_empty() {
-                            if let Ast::Atom(Atom::Sym(m)) = &inner[0] {
-                                if m == "member" {
-                                    return Some(&items[1]);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+// (divmod-q a b) -> floor(a/b)
+fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("divmod-q".into()));
     }
 
-    None
+    let av = lower_expr(cx, rest[0].clone())?;
+    let bv = lower_expr(cx, rest[1].clone())?;
+
+    let a = av.into_owned(cx)?;
+    let b = bv.into_owned(cx)?;
+
+    // Enforce inputs in u64
+    assert_range_bits_for_reg(cx, a.reg(), 64)?;
+    assert_range_bits_for_reg(cx, b.reg(), 64)?;
+
+    // Enforce b != 0
+    let zero_b = cx.alloc()?;
+    cx.b.push(Op::Const {
+        dst: zero_b,
+        imm: 0,
+    });
+
+    let eq_b0 = cx.alloc()?;
+    cx.b.push(Op::Eq {
+        dst: eq_b0,
+        a: b.reg(),
+        b: zero_b,
+    });
+
+    cx.free_reg(zero_b);
+
+    let one_b = cx.alloc()?;
+    cx.b.push(Op::Const { dst: one_b, imm: 1 });
+
+    let cond_b = cx.alloc()?;
+    cx.b.push(Op::Sub {
+        dst: cond_b,
+        a: one_b,
+        b: eq_b0,
+    });
+
+    cx.free_reg(one_b);
+
+    let assert_b_nz = cx.alloc()?;
+    cx.b.push(Op::Assert {
+        dst: assert_b_nz,
+        c: cond_b,
+    });
+
+    cx.free_reg(eq_b0);
+    cx.free_reg(cond_b);
+    cx.free_reg(assert_b_nz);
+
+    // Compute q via DivModQ op
+    let rq = cx.alloc()?;
+    cx.b.push(Op::DivModQ {
+        dst: rq,
+        a: a.reg(),
+        b: b.reg(),
+    });
+
+    // r = a - q*b
+    let qmulb = cx.alloc()?;
+    cx.b.push(Op::Mul {
+        dst: qmulb,
+        a: rq,
+        b: b.reg(),
+    });
+
+    let rr = cx.alloc()?;
+    cx.b.push(Op::Sub {
+        dst: rr,
+        a: a.reg(),
+        b: qmulb,
+    });
+
+    // Range constraints
+    // q is derived from a,b,r
+    assert_range_bits_for_reg(cx, rr, 64)?;
+
+    // Enforce a = b*q + r first,
+    // while qmulb is alive.
+    let sum1 = cx.alloc()?;
+    cx.b.push(Op::Add {
+        dst: sum1,
+        a: qmulb,
+        b: rr,
+    });
+
+    let eq = cx.alloc()?;
+    cx.b.push(Op::Eq {
+        dst: eq,
+        a: sum1,
+        b: a.reg(),
+    });
+
+    let assert_eq = cx.alloc()?;
+    cx.b.push(Op::Assert {
+        dst: assert_eq,
+        c: eq,
+    });
+
+    // Free equality temps and qmulb
+    cx.free_reg(sum1);
+    cx.free_reg(eq);
+    cx.free_reg(assert_eq);
+    cx.free_reg(qmulb);
+
+    // Enforce r < b via t = b - r;
+    // t in u64 and t != 0
+    let t = cx.alloc()?;
+    cx.b.push(Op::Sub {
+        dst: t,
+        a: b.reg(),
+        b: rr,
+    });
+
+    assert_range_bits_for_reg(cx, t, 64)?;
+
+    // Assert t != 0 with minimal live regs
+    let zero = cx.alloc()?;
+    cx.b.push(Op::Const { dst: zero, imm: 0 });
+
+    let eq_t0 = cx.alloc()?;
+    cx.b.push(Op::Eq {
+        dst: eq_t0,
+        a: t,
+        b: zero,
+    });
+
+    cx.free_reg(zero);
+
+    let one = cx.alloc()?;
+    cx.b.push(Op::Const { dst: one, imm: 1 });
+
+    let cond = cx.alloc()?;
+    cx.b.push(Op::Sub {
+        dst: cond,
+        a: one,
+        b: eq_t0,
+    });
+
+    cx.free_reg(one);
+
+    let assert_ok = cx.alloc()?;
+    cx.b.push(Op::Assert {
+        dst: assert_ok,
+        c: cond,
+    });
+
+    // Free temps (keep rq; drop rr)
+    cx.free_reg(eq_t0);
+    cx.free_reg(cond);
+    cx.free_reg(assert_ok);
+    cx.free_reg(rr);
+    cx.free_reg(t);
+
+    // Free inputs if owned locally
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+
+    Ok(RVal::Owned(rq))
+}
+
+// (divmod-r a b) -> a % b
+fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("divmod-r".into()));
+    }
+
+    let av = lower_expr(cx, rest[0].clone())?;
+    let bv = lower_expr(cx, rest[1].clone())?;
+
+    let a = av.into_owned(cx)?;
+    let b = bv.into_owned(cx)?;
+
+    // Enforce inputs in u64
+    assert_range_bits_for_reg(cx, a.reg(), 64)?;
+    assert_range_bits_for_reg(cx, b.reg(), 64)?;
+
+    // Enforce b != 0
+    let zero_b = cx.alloc()?;
+    cx.b.push(Op::Const {
+        dst: zero_b,
+        imm: 0,
+    });
+
+    let eq_b0 = cx.alloc()?;
+    cx.b.push(Op::Eq {
+        dst: eq_b0,
+        a: b.reg(),
+        b: zero_b,
+    });
+
+    cx.free_reg(zero_b);
+
+    let one_b = cx.alloc()?;
+    cx.b.push(Op::Const { dst: one_b, imm: 1 });
+
+    let cond_b = cx.alloc()?;
+    cx.b.push(Op::Sub {
+        dst: cond_b,
+        a: one_b,
+        b: eq_b0,
+    });
+
+    cx.free_reg(one_b);
+
+    let assert_b_nz = cx.alloc()?;
+    cx.b.push(Op::Assert {
+        dst: assert_b_nz,
+        c: cond_b,
+    });
+
+    cx.free_reg(eq_b0);
+    cx.free_reg(cond_b);
+    cx.free_reg(assert_b_nz);
+
+    // Compute q via DivModQ op
+    let rq = cx.alloc()?;
+    cx.b.push(Op::DivModQ {
+        dst: rq,
+        a: a.reg(),
+        b: b.reg(),
+    });
+
+    // r = a - q*b
+    let qmulb = cx.alloc()?;
+    cx.b.push(Op::Mul {
+        dst: qmulb,
+        a: rq,
+        b: b.reg(),
+    });
+
+    let rr = cx.alloc()?;
+    cx.b.push(Op::Sub {
+        dst: rr,
+        a: a.reg(),
+        b: qmulb,
+    });
+
+    // Range constraints and r < b
+    assert_range_bits_for_reg(cx, rr, 64)?;
+
+    // Enforce a = b*q + r first (mulb is alive)
+    let sum1 = cx.alloc()?;
+    cx.b.push(Op::Add {
+        dst: sum1,
+        a: qmulb,
+        b: rr,
+    });
+
+    let eq = cx.alloc()?;
+    cx.b.push(Op::Eq {
+        dst: eq,
+        a: sum1,
+        b: a.reg(),
+    });
+
+    let assert_eq = cx.alloc()?;
+    cx.b.push(Op::Assert {
+        dst: assert_eq,
+        c: eq,
+    });
+
+    cx.free_reg(sum1);
+    cx.free_reg(eq);
+    cx.free_reg(assert_eq);
+    cx.free_reg(qmulb);
+
+    let t = cx.alloc()?;
+    cx.b.push(Op::Sub {
+        dst: t,
+        a: b.reg(),
+        b: rr,
+    });
+
+    assert_range_bits_for_reg(cx, t, 64)?;
+
+    let zero = cx.alloc()?;
+    cx.b.push(Op::Const { dst: zero, imm: 0 });
+
+    let eq_t0 = cx.alloc()?;
+    cx.b.push(Op::Eq {
+        dst: eq_t0,
+        a: t,
+        b: zero,
+    });
+
+    cx.free_reg(zero);
+
+    let one = cx.alloc()?;
+    cx.b.push(Op::Const { dst: one, imm: 1 });
+
+    let cond = cx.alloc()?;
+    cx.b.push(Op::Sub {
+        dst: cond,
+        a: one,
+        b: eq_t0,
+    });
+
+    cx.free_reg(one);
+
+    let assert_ok = cx.alloc()?;
+    cx.b.push(Op::Assert {
+        dst: assert_ok,
+        c: cond,
+    });
+
+    // Free temps (keep rr)
+    cx.free_reg(eq_t0);
+    cx.free_reg(cond);
+    cx.free_reg(assert_ok);
+    cx.free_reg(t);
+
+    // Free inputs and q
+    cx.free_reg(rq);
+
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+
+    Ok(RVal::Owned(rr))
+}
+
+// find the quoted (member ...)
+// list at rest[1] or rest[2]
+// Returns the quoted (member ...)
+// form at rest[1] or rest[2]
+fn extract_member_from_quote(ast: &Ast) -> Option<&Ast> {
+    let Ast::List(items) = ast else { return None };
+    if items.len() != 2 {
+        return None;
+    }
+
+    let Ast::Atom(Atom::Sym(h)) = &items[0] else {
+        return None;
+    };
+    if h != "quote" {
+        return None;
+    }
+
+    let Ast::List(inner) = &items[1] else {
+        return None;
+    };
+    let Some(Ast::Atom(Atom::Sym(m))) = inner.first() else {
+        return None;
+    };
+
+    if m != "member" {
+        return None;
+    }
+
+    Some(&items[1])
 }
 
 fn u64_pair_from_le_16(b16: &[u8]) -> (u64, u64) {

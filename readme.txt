@@ -58,6 +58,10 @@ Quickstart:
         verify @./proof.bin examples/zk_example.zlisp \
             --arg 2 --arg 3
 
+Testing:
+
+    cargo run tests --release
+
 License:
 
   This project is licensed under the GPL v3 License.

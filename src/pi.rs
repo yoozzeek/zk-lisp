@@ -85,7 +85,8 @@ impl PublicInputsBuilder {
                 | AssertBit { .. }
                 | AssertRange { .. }
                 | AssertRangeLo { .. }
-                | AssertRangeHi { .. } => vm = true,
+                | AssertRangeHi { .. }
+                | DivModQ { .. } => vm = true,
                 SAbsorbN { .. } => {
                     vm = true;
                     pose = true;
@@ -346,11 +347,11 @@ mod tests {
         // 4*NR role booleans
         //   + 4 role sums
         //   + 1 select-cond
-        //   + 12 op booleans
+        //   + 13 op booleans
         //   + 1 one-hot
-        //   + 12 rom-op equality
+        //   + 13 rom-op equality
         //   + 2 PC constraints
-        let vm_ctrl_len_no_sponge = 4 * layout::NR + 4 + 1 + 12 + 1 + 12 + 2; // 64
+        let vm_ctrl_len_no_sponge = 4 * layout::NR + 4 + 1 + 13 + 1 + 13 + 2; // 66
 
         // 8 carry + 8 writes
         //   + 2 eq ties + 1 assert(c==1)

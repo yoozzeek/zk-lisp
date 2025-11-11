@@ -58,8 +58,8 @@ impl VmCtrlBlock {
             vec![STEPS_PER_LEVEL_P2],
         ));
 
-        // op_* booleans (12)
-        for _ in 0..12 {
+        // op_* booleans (13)
+        for _ in 0..13 {
             out.push(TransitionConstraintDegree::with_cycles(
                 2,
                 vec![STEPS_PER_LEVEL_P2],
@@ -73,8 +73,8 @@ impl VmCtrlBlock {
             vec![STEPS_PER_LEVEL_P2],
         ));
 
-        // ROM ↔ op one-hot equality (12)
-        for _ in 0..12 {
+        // ROM ↔ op one-hot equality (13)
+        for _ in 0..13 {
             out.push(TransitionConstraintDegree::with_cycles(
                 2,
                 vec![STEPS_PER_LEVEL_P2],
@@ -133,6 +133,7 @@ where
         let b_assert = cur[ctx.cols.op_assert];
         let b_assert_bit = cur[ctx.cols.op_assert_bit];
         let b_assert_range = cur[ctx.cols.op_assert_range];
+        let b_divmod = cur[ctx.cols.op_divmod];
 
         let mut sum_dst = E::ZERO;
         let mut sum_a = E::ZERO;
@@ -162,8 +163,8 @@ where
 
         // role usage gates: which roles
         // must select exactly one src.
-        let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel;
-        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel;
+        let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_divmod;
+        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_divmod;
         let uses_c = b_sel + b_assert + b_assert_bit + b_assert_range;
         let op_any = b_const
             + b_mov
@@ -176,7 +177,8 @@ where
             + b_sponge
             + b_assert
             + b_assert_bit
-            + b_assert_range;
+            + b_assert_range
+            + b_divmod;
 
         // dst required only for ops that
         // write a destination at final
@@ -241,6 +243,7 @@ where
             b_assert,
             b_assert_bit,
             b_assert_range,
+            b_divmod,
         ] {
             result[*ix] = p_map * b * (b - E::ONE) + s_high;
             *ix += 1;
@@ -257,7 +260,8 @@ where
             + b_sponge
             + b_assert
             + b_assert_bit
-            + b_assert_range;
+            + b_assert_range
+            + b_divmod;
         result[*ix] = p_map * op_sum * (op_sum - E::ONE) + s_low;
         *ix += 1;
 
@@ -282,6 +286,7 @@ where
             b_assert,
             b_assert_bit,
             b_assert_range,
+            b_divmod,
         ]
         .iter()
         .enumerate()
