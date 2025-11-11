@@ -3,7 +3,9 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::math::fields::f128::BaseElement as BE;
+use winterfell::math::FieldElement;
 use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
+use zk_lisp::compiler::ir::{Op, ProgramBuilder};
 use zk_lisp::compiler::compile_entry;
 use zk_lisp::layout::Columns;
 use zk_lisp::pi::{self};
@@ -124,4 +126,34 @@ fn divmod_basic_trace_and_prove() {
     // Example once implemented:
     // (def (main) (let ((a 23) (b 7)) (do (divmod 0 1 a b) r1))) ; return r1 == 2
     let _ = ();
+}
+
+#[test]
+fn rom_one_hot_op_mismatch_proof_fails() {
+    // Build a minimal program with a single CONST op
+    let mut b = ProgramBuilder::new();
+    b.push(Op::Const { dst: 0, imm: 7 });
+    b.push(Op::End);
+    
+    let program = b.finalize();
+
+    // Build PI and trace
+    let pi = pi::PublicInputsBuilder::for_program(&program)
+        .build()
+        .expect("pi");
+
+    let mut trace = build_trace_with_pi(&program, &pi).expect("trace");
+    let cols = Columns::baseline();
+
+    // Flip a ROM one-hot bit at the first map row to mismatch op_* vs ROM
+    // Program has op_const at level 0 map row; we set rom_op[1] (mov) = 1 as well.
+    let row_map0 = zk_lisp::schedule::pos_map();
+    trace.set(cols.rom_op_index(1), row_map0, BE::ONE);
+
+    // Proving must fail due to ROM↔op equality constraint violation
+    let opts = prove_opts();
+    let prover = ZkProver::new(opts.clone(), pi.clone()).with_preflight_mode(zk_lisp::PreflightMode::Off);
+    let res = prover.prove(trace);
+
+    assert!(res.is_err(), "proving unexpectedly succeeded despite ROM/op mismatch");
 }
