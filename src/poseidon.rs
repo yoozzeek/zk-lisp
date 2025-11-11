@@ -153,8 +153,12 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
                         DOM_POSEIDON_MDS_Y_FALLBACK,
                         &[&suite_id[..], &j_b[..], &k_b[..]],
                     );
-                    
-                    *yj = if cand == BE::ZERO { BE::from(1u64) } else { cand };
+
+                    *yj = if cand == BE::ZERO {
+                        BE::from(1u64)
+                    } else {
+                        cand
+                    };
                 }
 
                 // require pairwise distinct y2_j
@@ -167,14 +171,14 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
                         }
                     }
                 }
-                
+
                 if !distinct {
                     continue;
                 }
 
                 // check x_i + y2_j != 0
                 let mut ok2 = true;
-                
+
                 'check: for xi in &x {
                     for yj in &y2 {
                         if *xi + *yj == BE::ZERO {
@@ -198,7 +202,7 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
                     target = "poseidon.mds",
                     "RO fallback exhausted; using last candidate"
                 );
-                
+
                 y = last_candidate.to_vec();
             }
 

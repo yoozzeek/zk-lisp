@@ -33,6 +33,11 @@ pub(crate) fn pi4<E: FieldElement>(periodic: &[E], pi: E) -> E {
 }
 
 #[inline]
-pub(crate) fn pi5<E: FieldElement>(periodic: &[E], pi: E) -> E {
-    pi4(periodic, pi) * pi
+pub(crate) fn pi6<E: FieldElement>(periodic: &[E], pi: E) -> E {
+    // pi^6 = (pi^2)^3
+    let pi2 = pi * pi;
+    let pi4 = pi2 * pi2;
+    let pi6 = pi4 * pi2;
+
+    low(periodic) * pi6
 }

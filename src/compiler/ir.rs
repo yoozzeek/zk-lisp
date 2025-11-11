@@ -76,6 +76,13 @@ pub enum Op {
         dst: u8,
         r: u8,
     },
+    // writes q and r
+    DivMod {
+        dst_q: u8,
+        dst_r: u8,
+        a: u8,
+        b: u8,
+    },
 
     // CRYPTO
     // Sponge: absorb up to 10 elements (rate=10)
@@ -208,6 +215,12 @@ impl ProgramBuilder {
                 for &r in regs {
                     self.touch_reg(r);
                 }
+            }
+            DivMod { dst_q, dst_r, a, b } => {
+                self.touch_reg(dst_q);
+                self.touch_reg(dst_r);
+                self.touch_reg(a);
+                self.touch_reg(b);
             }
             SSqueeze { dst } => {
                 self.touch_reg(dst);
@@ -355,6 +368,13 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(0x13);
                 out.push(dir_reg);
                 out.push(sib_reg);
+            }
+            DivMod { dst_q, dst_r, a, b } => {
+                out.push(0x18);
+                out.push(dst_q);
+                out.push(dst_r);
+                out.push(a);
+                out.push(b);
             }
             AssertBit { dst, r } => {
                 out.push(0x14);

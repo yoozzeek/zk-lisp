@@ -47,13 +47,15 @@ pub struct Columns {
     pub op_assert: usize,
     pub op_assert_bit: usize,
     pub op_assert_range: usize,
+    pub op_divmod: usize,
 
     // Operand selectors
     // one-hot per role (8 each).
-    pub sel_dst_start: usize,
+    pub sel_dst0_start: usize,
     pub sel_a_start: usize,
     pub sel_b_start: usize,
     pub sel_c_start: usize,
+    pub sel_dst1_start: usize,
 
     // Sponge lane selectors:
     // for each rate lane i in 0..10.
@@ -86,6 +88,11 @@ pub struct Columns {
 
     // PI columns
     pub pi_prog: usize,
+
+    // PC/ROM tie-in
+    pub pc: usize,
+    // 12 rom-op one-hot columns
+    pub rom_op_start: usize,
 
     // Poseidon per-level activity gate
     pub pose_active: usize,
@@ -125,15 +132,17 @@ impl Columns {
         let op_assert = op_sponge + 1;
         let op_assert_bit = op_assert + 1;
         let op_assert_range = op_assert_bit + 1;
+        let op_divmod = op_assert_range + 1;
 
-        let sel_dst_start = op_assert_range + 1; // 8 cols
-        let sel_a_start = sel_dst_start + NR; // 8 cols
+        let sel_dst0_start = op_divmod + 1; // 8 cols
+        let sel_a_start = sel_dst0_start + NR; // 8 cols
         let sel_b_start = sel_a_start + NR; // 8 cols
         let sel_c_start = sel_b_start + NR; // 8 cols
+        let sel_dst1_start = sel_c_start + NR; // 8 cols
 
         // Sponge lane selectors
         // block (10 * NR)
-        let sel_s_start = sel_c_start + NR;
+        let sel_s_start = sel_dst1_start + NR;
 
         // Immediate and aux
         let imm = sel_s_start + (10 * NR); // 1 col after sponge selectors
@@ -159,8 +168,14 @@ impl Columns {
         // PI columns
         let pi_prog = merkle_leaf + 1;
 
-        // Extra KV column placed after PI
-        let kv_prev_acc = pi_prog + 1;
+        // PC column
+        let pc = pi_prog + 1;
+
+        // ROM op mirror (13 columns)
+        let rom_op_start = pc + 1;
+
+        // Extra KV column placed after PC/ROM
+        let kv_prev_acc = rom_op_start + 13;
 
         // Append pose_active followed
         // by gadget witness columns
@@ -193,10 +208,12 @@ impl Columns {
             op_assert,
             op_assert_bit,
             op_assert_range,
-            sel_dst_start,
+            op_divmod,
+            sel_dst0_start,
             sel_a_start,
             sel_b_start,
             sel_c_start,
+            sel_dst1_start,
             sel_s_start,
             imm,
             eq_inv,
@@ -215,6 +232,8 @@ impl Columns {
             merkle_last,
             merkle_leaf,
             pi_prog,
+            pc,
+            rom_op_start,
             pose_active,
             gadget_b_start,
             width,
@@ -233,10 +252,16 @@ impl Columns {
         self.r_start + i
     }
 
-    pub fn sel_dst_index(&self, i: usize) -> usize {
+    pub fn sel_dst0_index(&self, i: usize) -> usize {
         debug_assert!(i < NR);
 
-        self.sel_dst_start + i
+        self.sel_dst0_start + i
+    }
+
+    pub fn sel_dst1_index(&self, i: usize) -> usize {
+        debug_assert!(i < NR);
+
+        self.sel_dst1_start + i
     }
 
     pub fn sel_a_index(&self, i: usize) -> usize {
@@ -266,6 +291,7 @@ impl Columns {
 
     pub fn gadget_b_index(&self, i: usize) -> usize {
         debug_assert!(i < 32);
+
         self.gadget_b_start + i
     }
 
@@ -273,6 +299,12 @@ impl Columns {
         debug_assert!(i < 12);
 
         self.lanes_start + i
+    }
+
+    pub fn rom_op_index(&self, i: usize) -> usize {
+        debug_assert!(i < 13);
+
+        self.rom_op_start + i
     }
 
     pub fn width(&self, _feature_mask: u64) -> usize {

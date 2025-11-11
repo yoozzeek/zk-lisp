@@ -57,6 +57,14 @@ impl TraceBuilder {
             trace.set(cols.lane_c0, row_map, suite.dom[0]);
             trace.set(cols.lane_c1, row_map, suite.dom[1]);
 
+            // PC and ROM one-hot mirror at map row
+            trace.set(cols.pc, row_map, BE::from(lvl as u64));
+
+            let rom = op_to_one_hot(op);
+            for (k, &bit) in rom.iter().enumerate() {
+                trace.set(cols.rom_op_index(k), row_map, bit);
+            }
+
             // carry register file into
             // the new level at map row.
             for (i, val) in regs.iter().enumerate().take(NR) {
@@ -65,7 +73,8 @@ impl TraceBuilder {
 
             // zero decode/selectors for this map row
             for i in 0..NR {
-                trace.set(cols.sel_dst_index(i), row_map, BE::ZERO);
+                trace.set(cols.sel_dst0_index(i), row_map, BE::ZERO);
+                trace.set(cols.sel_dst1_index(i), row_map, BE::ZERO);
                 trace.set(cols.sel_a_index(i), row_map, BE::ZERO);
                 trace.set(cols.sel_b_index(i), row_map, BE::ZERO);
                 trace.set(cols.sel_c_index(i), row_map, BE::ZERO);
@@ -103,12 +112,12 @@ impl TraceBuilder {
                 // and dst selector on map.
                 Op::Const { dst, imm } => {
                     trace.set(cols.op_const, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     trace.set(cols.imm, row_map, BE::from(imm));
 
                     // latch to final
                     trace.set(cols.op_const, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     trace.set(cols.imm, row_final, BE::from(imm));
 
                     next_regs[dst as usize] = BE::from(imm);
@@ -117,10 +126,10 @@ impl TraceBuilder {
                 // selector "a" points to src
                 Op::Mov { dst, src } => {
                     trace.set(cols.op_mov, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, src);
                     trace.set(cols.op_mov, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, src);
 
                     next_regs[dst as usize] = regs[src as usize];
@@ -128,12 +137,12 @@ impl TraceBuilder {
                 // ALU: dst = a + b at final
                 Op::Add { dst, a, b } => {
                     trace.set(cols.op_add, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     trace.set(cols.op_add, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
@@ -142,12 +151,12 @@ impl TraceBuilder {
                 // ALU: dst = a - b at final
                 Op::Sub { dst, a, b } => {
                     trace.set(cols.op_sub, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     trace.set(cols.op_sub, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
@@ -156,12 +165,12 @@ impl TraceBuilder {
                 // ALU: dst = a * b at final
                 Op::Mul { dst, a, b } => {
                     trace.set(cols.op_mul, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     trace.set(cols.op_mul, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
@@ -170,11 +179,11 @@ impl TraceBuilder {
                 // ALU: dst = -a at final
                 Op::Neg { dst, a } => {
                     trace.set(cols.op_neg, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
 
                     trace.set(cols.op_neg, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
 
                     next_regs[dst as usize] = BE::ZERO - regs[a as usize];
@@ -183,13 +192,13 @@ impl TraceBuilder {
                 // set eq_inv witness on map
                 Op::Eq { dst, a, b } => {
                     trace.set(cols.op_eq, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     // latch op bit and selectors to final
                     trace.set(cols.op_eq, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
 
@@ -210,13 +219,13 @@ impl TraceBuilder {
                 // c must be boolean
                 Op::Select { dst, c, a, b } => {
                     trace.set(cols.op_select, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, c);
                     set_sel(&mut trace, row_map, cols.sel_a_start, a);
                     set_sel(&mut trace, row_map, cols.sel_b_start, b);
 
                     trace.set(cols.op_select, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, c);
                     set_sel(&mut trace, row_final, cols.sel_a_start, a);
                     set_sel(&mut trace, row_final, cols.sel_b_start, b);
@@ -227,11 +236,11 @@ impl TraceBuilder {
                 }
                 Op::Assert { dst, c } => {
                     trace.set(cols.op_assert, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, c);
 
                     trace.set(cols.op_assert, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, c);
 
                     // write 1 at final
@@ -239,11 +248,11 @@ impl TraceBuilder {
                 }
                 Op::AssertBit { dst, r } => {
                     trace.set(cols.op_assert_bit, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, r);
 
                     trace.set(cols.op_assert_bit, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, r);
 
                     next_regs[dst as usize] = BE::ONE;
@@ -253,13 +262,13 @@ impl TraceBuilder {
                     // stage=1 (imm=1),
                     // mode64=0 (eq_inv=0)
                     trace.set(cols.op_assert_range, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, r);
                     trace.set(cols.imm, row_map, BE::ONE);
                     trace.set(cols.eq_inv, row_map, BE::ZERO);
 
                     trace.set(cols.op_assert_range, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, r);
                     trace.set(cols.imm, row_final, BE::ONE);
                     trace.set(cols.eq_inv, row_final, BE::ZERO);
@@ -274,7 +283,7 @@ impl TraceBuilder {
                         let v = BE::from(bit_val);
                         trace.set(cols.gadget_b_index(i), row_map, v);
                         trace.set(cols.gadget_b_index(i), row_final, v);
-                        
+
                         if i < k {
                             n >>= 1;
                         }
@@ -287,13 +296,13 @@ impl TraceBuilder {
                     // stage=0 (imm=0),
                     // mode64=1 (eq_inv=1)
                     trace.set(cols.op_assert_range, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, r);
                     trace.set(cols.imm, row_map, BE::ZERO);
                     trace.set(cols.eq_inv, row_map, BE::ONE);
 
                     trace.set(cols.op_assert_range, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, r);
                     trace.set(cols.imm, row_final, BE::ZERO);
                     trace.set(cols.eq_inv, row_final, BE::ONE);
@@ -301,33 +310,35 @@ impl TraceBuilder {
                     // Witness: lower 32 bits
                     let x = regs[r as usize];
                     let mut n: u128 = x.as_int();
-                    
+
                     for i in 0..32 {
                         let bit_val = (n & 1) as u64;
                         let v = BE::from(bit_val);
                         trace.set(cols.gadget_b_index(i), row_map, v);
                         trace.set(cols.gadget_b_index(i), row_final, v);
-                        
+
                         n >>= 1;
                     }
 
-                    // res will write sum_lo into
-                    // dst at final (handled by vm_alu);
-                    // next_regs updated by generic
-                    // write rule; leave here
+                    // Ensure next row after final
+                    // reflects sum_lo so ALU write
+                    // constraint holds and stage1 can
+                    // reconstruct r via eq64 using dst_cur.
+                    let sum_lo = BE::from((x.as_int() & 0xFFFF_FFFFu128) as u64);
+                    next_regs[dst as usize] = sum_lo;
                 }
                 Op::AssertRangeHi { dst, r } => {
                     // Stage 1 of 64-bit:
                     // stage=1 (imm=1),
                     // mode64=1 (eq_inv=1)
                     trace.set(cols.op_assert_range, row_map, BE::ONE);
-                    set_sel(&mut trace, row_map, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_map, cols.sel_c_start, r);
                     trace.set(cols.imm, row_map, BE::ONE);
                     trace.set(cols.eq_inv, row_map, BE::ONE);
 
                     trace.set(cols.op_assert_range, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_c_start, r);
                     trace.set(cols.imm, row_final, BE::ONE);
                     trace.set(cols.eq_inv, row_final, BE::ONE);
@@ -335,13 +346,13 @@ impl TraceBuilder {
                     // Witness: upper 32 bits
                     let x = regs[r as usize];
                     let mut n: u128 = x.as_int() >> 32;
-                    
+
                     for i in 0..32 {
                         let bit_val = (n & 1) as u64;
                         let v = BE::from(bit_val);
                         trace.set(cols.gadget_b_index(i), row_map, v);
                         trace.set(cols.gadget_b_index(i), row_final, v);
-                        
+
                         n >>= 1;
                     }
 
@@ -349,11 +360,45 @@ impl TraceBuilder {
                     // 1 by vm_alu write rule
                     next_regs[dst as usize] = BE::ONE;
                 }
+                Op::DivMod { dst_q, dst_r, a, b } => {
+                    // DivMod: two destinations
+                    trace.set(cols.op_divmod, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst_q);
+                    set_sel(&mut trace, row_map, cols.sel_dst1_start, dst_r);
+                    set_sel(&mut trace, row_map, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_map, cols.sel_b_start, b);
+
+                    trace.set(cols.op_divmod, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst_q);
+                    set_sel(&mut trace, row_final, cols.sel_dst1_start, dst_r);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, a);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, b);
+
+                    // Compute host-side q,r using u128 division
+                    let av = regs[a as usize].as_int();
+                    let bv = regs[b as usize].as_int();
+
+                    let q = if bv == 0 { 0u128 } else { av / bv };
+                    let r = if bv == 0 { av } else { av % bv };
+
+                    next_regs[dst_q as usize] = BE::from((q & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
+                    next_regs[dst_r as usize] = BE::from((r & 0xFFFF_FFFF_FFFF_FFFFu128) as u64);
+
+                    // Provide inv_b witness in eq_inv
+                    let inv = if bv != 0 {
+                        BE::from(bv as u64).inv()
+                    } else {
+                        BE::ZERO
+                    };
+                    trace.set(cols.eq_inv, row_map, inv);
+                    trace.set(cols.eq_inv, row_final, inv);
+                }
                 Op::SSqueeze { dst } => {
                     // Execute one permutation
                     // absorbing all pending regs (<=10)
+                    trace.set(cols.op_sponge, row_map, BE::ONE);
                     trace.set(cols.op_sponge, row_final, BE::ONE);
-                    set_sel(&mut trace, row_final, cols.sel_dst_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
 
                     let mut inputs: Vec<BE> = Vec::with_capacity(pending_regs.len());
                     for &r in &pending_regs {
@@ -587,6 +632,9 @@ impl TraceBuilder {
                 for (i, val) in regs.iter().enumerate().take(NR) {
                     trace.set(cols.r_index(i), r, *val);
                 }
+
+                // carry PC across map..final rows
+                trace.set(cols.pc, r, BE::from(lvl as u64));
             }
 
             // after final within level: keep next_regs
@@ -594,6 +642,8 @@ impl TraceBuilder {
                 for (i, val) in next_regs.iter().enumerate().take(NR) {
                     trace.set(cols.r_index(i), r, *val);
                 }
+
+                trace.set(cols.pc, r, BE::from(lvl as u64));
             }
 
             // commit next_regs to regs for next level.
@@ -603,6 +653,14 @@ impl TraceBuilder {
             }
 
             regs = next_regs;
+        }
+
+        // PC is set consistently across levels
+        for lvl in 0..total_levels {
+            let base = lvl * steps;
+            for r in base..(base + steps) {
+                trace.set(cols.pc, r, BE::from(lvl as u64));
+            }
         }
 
         // Ensure Poseidon domain tags are
@@ -618,6 +676,40 @@ impl TraceBuilder {
 
         Ok(trace)
     }
+}
+
+fn op_to_one_hot(op: &Op) -> [BE; 13] {
+    // Order matches Columns.op_* sequence
+    // [const, mov, add, sub, mul, neg, eq,
+    //  select, sponge, assert, assert_bit,
+    //  assert_range, divmod]
+    let mut v = [BE::ZERO; 13];
+    use ir::Op::*;
+    match op {
+        Const { .. } => v[0] = BE::ONE,
+        Mov { .. } => v[1] = BE::ONE,
+        Add { .. } => v[2] = BE::ONE,
+        Sub { .. } => v[3] = BE::ONE,
+        Mul { .. } => v[4] = BE::ONE,
+        Neg { .. } => v[5] = BE::ONE,
+        Eq { .. } => v[6] = BE::ONE,
+        Select { .. } => v[7] = BE::ONE,
+        SAbsorbN { .. } | SSqueeze { .. } => v[8] = BE::ONE,
+        Assert { .. } => v[9] = BE::ONE,
+        AssertBit { .. } => v[10] = BE::ONE,
+        AssertRange { .. } | AssertRangeLo { .. } | AssertRangeHi { .. } => v[11] = BE::ONE,
+        DivMod { .. } => v[12] = BE::ONE,
+        KvMap { .. }
+        | KvFinal
+        | MerkleStepFirst { .. }
+        | MerkleStep { .. }
+        | MerkleStepLast { .. }
+        | End => {
+            // Non-ALU ops: leave all zeros
+        }
+    }
+
+    v
 }
 
 #[inline]
@@ -778,5 +870,150 @@ mod tests {
         let pc = pi::be_from_le8(&p.commitment);
 
         assert_eq!(trace.get(cols.pi_prog, row0_map), pc);
+    }
+
+    #[test]
+    fn rom_matches_op_bits_at_map_rows() {
+        let mut b = ir::ProgramBuilder::new();
+        b.push(Op::Const { dst: 0, imm: 7 });
+        b.push(Op::Const { dst: 1, imm: 9 });
+        b.push(Op::Add { dst: 2, a: 0, b: 1 });
+        b.push(Op::End);
+
+        let p = b.finalize();
+
+        let trace = TraceBuilder::build_from_program(&p).unwrap();
+        let cols = Columns::baseline();
+        let steps = STEPS_PER_LEVEL_P2;
+
+        for lvl in 0..p.ops.len() {
+            let row_map = lvl * steps + crate::schedule::pos_map();
+            let ops = [
+                cols.op_const,
+                cols.op_mov,
+                cols.op_add,
+                cols.op_sub,
+                cols.op_mul,
+                cols.op_neg,
+                cols.op_eq,
+                cols.op_select,
+                cols.op_sponge,
+                cols.op_assert,
+                cols.op_assert_bit,
+                cols.op_assert_range,
+                cols.op_divmod,
+            ];
+
+            for (k, c) in ops.iter().enumerate() {
+                assert_eq!(
+                    trace.get(*c, row_map),
+                    trace.get(cols.rom_op_index(k), row_map),
+                    "lvl {lvl} k {k}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pose_active_zero_on_alu_levels() {
+        let mut b = ir::ProgramBuilder::new();
+        b.push(Op::Const { dst: 0, imm: 7 });
+        b.push(Op::Const { dst: 1, imm: 9 });
+        b.push(Op::Add { dst: 2, a: 0, b: 1 });
+        b.push(Op::End);
+
+        let p = b.finalize();
+
+        let trace = TraceBuilder::build_from_program(&p).unwrap();
+        let cols = Columns::baseline();
+        let steps = STEPS_PER_LEVEL_P2;
+
+        for lvl in 0..p.ops.len() {
+            let base = lvl * steps;
+            for r in base..(base + steps) {
+                assert_eq!(
+                    trace.get(cols.pose_active, r),
+                    BE::ZERO,
+                    "lvl {lvl} row {r}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rom_matches_op_bits_for_arith_select_program() {
+        let src = r"
+(def (main)
+  (let ((a 7) (b 9))
+    (select (= a b) (+ a b) 0)))
+ ";
+
+        let p = crate::compiler::compile_entry(src, &[]).unwrap();
+        let trace = TraceBuilder::build_from_program(&p).unwrap();
+        let cols = Columns::baseline();
+        let steps = STEPS_PER_LEVEL_P2;
+
+        // check first few levels
+        for lvl in 0..p.ops.len() {
+            let row_map = lvl * steps + schedule::pos_map();
+            let ops = [
+                cols.op_const,
+                cols.op_mov,
+                cols.op_add,
+                cols.op_sub,
+                cols.op_mul,
+                cols.op_neg,
+                cols.op_eq,
+                cols.op_select,
+                cols.op_sponge,
+                cols.op_assert,
+                cols.op_assert_bit,
+                cols.op_assert_range,
+                cols.op_divmod,
+            ];
+
+            for (k, c) in ops.iter().enumerate() {
+                assert_eq!(
+                    trace.get(*c, row_map),
+                    trace.get(cols.rom_op_index(k), row_map),
+                    "lvl {lvl} k {k}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pc_carries_and_increments_per_level() {
+        let src = r"
+(def (main)
+  (let ((a 7) (b 9))
+    (select (= a b) (+ a b) 0)))
+";
+
+        let p = crate::compiler::compile_entry(src, &[]).unwrap();
+        let trace = TraceBuilder::build_from_program(&p).unwrap();
+        let cols = Columns::baseline();
+        let steps = STEPS_PER_LEVEL_P2;
+        let total_levels = trace.length() / steps;
+
+        for lvl in 0..total_levels {
+            let base = lvl * steps;
+            // map row pc == lvl
+            assert_eq!(
+                trace.get(cols.pc, base + schedule::pos_map()),
+                BE::from(lvl as u64)
+            );
+
+            // carry across level
+            for r in base..(base + steps) {
+                assert_eq!(trace.get(cols.pc, r), BE::from(lvl as u64));
+            }
+
+            // increment: next map row should be lvl+1 if exists
+            if lvl + 1 < total_levels {
+                let next_map = (lvl + 1) * steps + schedule::pos_map();
+                assert_eq!(trace.get(cols.pc, next_map), BE::from((lvl + 1) as u64));
+            }
+        }
     }
 }

@@ -8,15 +8,15 @@ use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use super::{AirBlock, BlockCtx};
 use crate::air::mixers;
-use crate::layout::{NR, STEPS_PER_LEVEL_P2};
+use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
 pub struct VmCtrlBlock;
 
 impl VmCtrlBlock {
     pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>, sponge: bool) {
         // selector bits booleanity
-        // for ALU roles (4*NR)
-        for _ in 0..(4 * NR) {
+        // for ALU roles (dst0,a,b,c,dst1) => (5*NR)
+        for _ in 0..(5 * NR) {
             out.push(TransitionConstraintDegree::with_cycles(
                 2,
                 vec![STEPS_PER_LEVEL_P2],
@@ -24,10 +24,19 @@ impl VmCtrlBlock {
         }
 
         // selector sums for
-        // ALU roles (4).
-        for _ in 0..4 {
+        // ALU roles: dst0,a,b,c,dst1 (5)
+        for _ in 0..5 {
             out.push(TransitionConstraintDegree::with_cycles(
                 1,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+
+        // no-overlap constraint per register
+        // between dst0 and dst1 (NR)
+        for _ in 0..NR {
+            out.push(TransitionConstraintDegree::with_cycles(
+                2,
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
@@ -58,8 +67,8 @@ impl VmCtrlBlock {
             vec![STEPS_PER_LEVEL_P2],
         ));
 
-        // op_* booleans (12)
-        for _ in 0..12 {
+        // op_* booleans (13)
+        for _ in 0..13 {
             out.push(TransitionConstraintDegree::with_cycles(
                 2,
                 vec![STEPS_PER_LEVEL_P2],
@@ -70,6 +79,24 @@ impl VmCtrlBlock {
         // sum is boolean (1)
         out.push(TransitionConstraintDegree::with_cycles(
             2,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
+        // ROM ↔ op one-hot equality (13)
+        for _ in 0..13 {
+            out.push(TransitionConstraintDegree::with_cycles(
+                2,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
+        }
+
+        // PC carry (1) and increment at last pad (1)
+        out.push(TransitionConstraintDegree::with_cycles(
+            1,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+        out.push(TransitionConstraintDegree::with_cycles(
+            1,
             vec![STEPS_PER_LEVEL_P2],
         ));
     }
@@ -89,6 +116,7 @@ where
         ix: &mut usize,
     ) {
         let cur = frame.current();
+        let next = frame.next();
         let p_map = periodic[0];
 
         // Mixer:
@@ -114,24 +142,28 @@ where
         let b_assert = cur[ctx.cols.op_assert];
         let b_assert_bit = cur[ctx.cols.op_assert_bit];
         let b_assert_range = cur[ctx.cols.op_assert_range];
+        let b_divmod = cur[ctx.cols.op_divmod];
 
-        let mut sum_dst = E::ZERO;
+        let mut sum_dst0 = E::ZERO;
         let mut sum_a = E::ZERO;
         let mut sum_b = E::ZERO;
         let mut sum_c = E::ZERO;
+        let mut sum_dst1 = E::ZERO;
 
         for i in 0..NR {
-            let sd = cur[ctx.cols.sel_dst_index(i)];
+            let sd0 = cur[ctx.cols.sel_dst0_index(i)];
             let sa = cur[ctx.cols.sel_a_index(i)];
             let sb = cur[ctx.cols.sel_b_index(i)];
             let sc = cur[ctx.cols.sel_c_index(i)];
+            let sd1 = cur[ctx.cols.sel_dst1_index(i)];
 
-            sum_dst += sd;
+            sum_dst0 += sd0;
             sum_a += sa;
             sum_b += sb;
             sum_c += sc;
+            sum_dst1 += sd1;
 
-            result[*ix] = p_map * sd * (sd - E::ONE) + s_high;
+            result[*ix] = p_map * sd0 * (sd0 - E::ONE) + s_high;
             *ix += 1;
             result[*ix] = p_map * sa * (sa - E::ONE) + s_high;
             *ix += 1;
@@ -139,12 +171,14 @@ where
             *ix += 1;
             result[*ix] = p_map * sc * (sc - E::ONE) + s_high;
             *ix += 1;
+            result[*ix] = p_map * sd1 * (sd1 - E::ONE) + s_high;
+            *ix += 1;
         }
 
         // role usage gates: which roles
         // must select exactly one src.
-        let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel;
-        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel;
+        let uses_a = b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_divmod;
+        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_divmod;
         let uses_c = b_sel + b_assert + b_assert_bit + b_assert_range;
         let op_any = b_const
             + b_mov
@@ -157,12 +191,21 @@ where
             + b_sponge
             + b_assert
             + b_assert_bit
-            + b_assert_range;
+            + b_assert_range
+            + b_divmod;
 
-        // dst required only for ops that
-        // write a destination at final.
-        let uses_dst = op_any - b_sponge;
-        result[*ix] = p_map * (sum_dst - uses_dst) + s_low;
+        // dst0 required for all
+        // write ops except sponge
+        // (1 for most, 1 for divmod as well)
+        let uses_dst0 = op_any - b_sponge;
+
+        // dst1 required only for divmod
+        // (1 when divmod, 0 otherwise)
+        let uses_dst1 = b_divmod;
+
+        // emit sums in declared order:
+        // dst0, a, b, c, dst1
+        result[*ix] = p_map * (sum_dst0 - uses_dst0) + s_low;
         *ix += 1;
         result[*ix] = p_map * (sum_a - uses_a) + s_low;
         *ix += 1;
@@ -170,6 +213,20 @@ where
         *ix += 1;
         result[*ix] = p_map * (sum_c - uses_c) + s_low;
         *ix += 1;
+        result[*ix] = p_map * (sum_dst1 - uses_dst1) + s_low;
+        *ix += 1;
+
+        // no-overlap:
+        // for each reg, sd0_i * sd1_i == 0
+        for i in 0..NR {
+            let sd0 = cur[ctx.cols.sel_dst0_index(i)];
+            let sd1 = cur[ctx.cols.sel_dst1_index(i)];
+            // for non-divmod ops,
+            // all sd1 bits are 0,
+            // making this term 0
+            result[*ix] = p_map * sd0 * sd1 + s_high;
+            *ix += 1;
+        }
 
         // Sponge selectors booleanity
         // and per-lane sum constraints
@@ -188,7 +245,7 @@ where
                 }
 
                 // sum is boolean (0 or 1)
-                result[*ix] = p_map * b_sponge * sum * (sum - E::ONE) + s_low;
+                result[*ix] = p_map * b_sponge * sum * (sum - E::ONE) + s_high;
                 *ix += 1;
             }
         }
@@ -221,6 +278,7 @@ where
             b_assert,
             b_assert_bit,
             b_assert_range,
+            b_divmod,
         ] {
             result[*ix] = p_map * b * (b - E::ONE) + s_high;
             *ix += 1;
@@ -237,8 +295,62 @@ where
             + b_sponge
             + b_assert
             + b_assert_bit
-            + b_assert_range;
-        result[*ix] = p_map * op_sum * (op_sum - E::ONE) + s_low;
+            + b_assert_range
+            + b_divmod;
+        result[*ix] = p_map * op_sum * (op_sum - E::ONE) + s_high;
+        *ix += 1;
+
+        // ROM ↔ op equality;
+        // gated when program_commitment != 0
+        let rom_enabled = if ctx.pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            E::ONE
+        } else {
+            E::ZERO
+        };
+
+        for (k, b) in [
+            b_const,
+            b_mov,
+            b_add,
+            b_sub,
+            b_mul,
+            b_neg,
+            b_eq,
+            b_sel,
+            b_sponge,
+            b_assert,
+            b_assert_bit,
+            b_assert_range,
+            b_divmod,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let rom_b = cur[ctx.cols.rom_op_index(k)];
+            result[*ix] = rom_enabled * p_map * (*b - rom_b) + s_high;
+            *ix += 1;
+        }
+
+        // PC carry within level
+        // and increment at last pad
+        let p_pad = periodic[1 + POSEIDON_ROUNDS + 1];
+        let p_pad_last = periodic[1 + POSEIDON_ROUNDS + 2];
+
+        let mut g_carry = p_map + (p_pad - p_pad_last);
+        for gr in (0..(POSEIDON_ROUNDS - 1)).map(|j| periodic[1 + j]) {
+            g_carry += gr;
+        }
+
+        let pc_cur = cur[ctx.cols.pc];
+        let pc_next = next[ctx.cols.pc];
+
+        // carry PC on non-final-next rows
+        result[*ix] = rom_enabled * (g_carry * (pc_next - pc_cur)) + s_low;
+        *ix += 1;
+
+        // increment at last pad
+        // row: next_pc = pc + 1
+        result[*ix] = rom_enabled * (p_pad_last * (pc_next - (pc_cur + E::ONE))) + s_low;
         *ix += 1;
     }
 }
@@ -291,7 +403,8 @@ mod tests {
         VmCtrlBlock::eval_block(&ctx, &frame_a, &periodic, &mut ra, &mut ia);
         VmCtrlBlock::eval_block(&ctx, &frame_b, &periodic, &mut rb, &mut ib);
 
-        // With sponge disabled, changing sel_s must not change evaluation
+        // With sponge disabled, changing sel_s
+        // must not change evaluation.
         assert_eq!(ia, ib);
         assert_eq!(ra, rb);
     }

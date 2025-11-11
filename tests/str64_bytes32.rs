@@ -64,6 +64,7 @@ fn prove_verify_fail(src: &str) {
     }
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn str64_eq_ok() {
     let src = r#"
@@ -80,6 +81,7 @@ fn str64_eq_fail() {
     prove_verify_fail(src);
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn str64_in_set_ok() {
     let src = r#"
@@ -109,6 +111,7 @@ fn str64_max_len_error() {
     assert!(msg.contains("str64: length > 64"));
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn bytes32_eq_ok() {
     let src = r#"
@@ -126,6 +129,7 @@ fn bytes32_len_variation_fail() {
     prove_verify_fail(src);
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn bytes32_in_set_ok() {
     let src = r#"

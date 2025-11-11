@@ -110,6 +110,12 @@ where
                 if vm_enabled {
                     let pc = pi::be_from_le8(&ctx.pub_inputs.program_commitment);
                     out.push(Assertion::single(ctx.cols.pi_prog, row_map, pc));
+
+                    // Bind PC=0 at the first map row
+                    // when program commitment is set.
+                    if ctx.pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+                        out.push(Assertion::single(ctx.cols.pc, row_map, BE::from(0u32)));
+                    }
                 }
             }
         }
