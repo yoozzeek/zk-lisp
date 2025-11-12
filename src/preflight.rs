@@ -3,7 +3,7 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use crate::air::ZkLispAir;
-use crate::pi::{PublicInputs, be_from_le8};
+use crate::pi::PublicInputs;
 use crate::prove::Error;
 use crate::{layout, poseidon};
 
@@ -33,21 +33,16 @@ pub(crate) struct PreflightReport {
     pub lanes_cur: (String, String, String, String),
     pub lanes_next: (String, String, String, String),
     pub lanes_exp: Option<(String, String, String, String)>,
-    pub kv: Option<KvSnap>,
+    pub ram: Option<RamSnap>,
     pub vm: Option<VmSnap>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct KvSnap {
-    pub p_map: String,
-    pub p_final: String,
-    pub ver_cur: String,
-    pub ver_next: String,
-    pub acc_cur: String,
-    pub acc_next: String,
-    pub expect_enabled: bool,
-    pub exp_map: String,
-    pub exp_fin: String,
+pub(crate) struct RamSnap {
+    pub shadow_cur: String,
+    pub shadow_next: String,
+    pub addr_cur: String,
+    pub addr_next: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -196,33 +191,17 @@ pub(crate) fn run(
                 None
             };
 
-            // KV snapshot
-            let kv_snap = {
-                let p_map = pc[0][r];
-                let p_final = pc[1 + layout::POSEIDON_ROUNDS][r];
-                let kv_ver = frame.current()[cols.kv_version];
-                let kv_ver_next = frame.next()[cols.kv_version];
-                let kv_acc_cur = frame.current()[cols.kv_acc];
-                let kv_acc_next = frame.next()[cols.kv_acc];
-                let exp_map = be_from_le8(&pub_inputs.kv_map_acc_bytes);
-                let exp_fin = be_from_le8(&pub_inputs.kv_fin_acc_bytes);
-                let exp_en = (pub_inputs.feature_mask & crate::pi::FM_KV_EXPECT) != 0;
-
-                if (pub_inputs.feature_mask & crate::pi::FM_KV) != 0 {
-                    Some(KvSnap {
-                        p_map: fe_s(p_map),
-                        p_final: fe_s(p_final),
-                        ver_cur: fe_s(kv_ver),
-                        ver_next: fe_s(kv_ver_next),
-                        acc_cur: fe_s(kv_acc_cur),
-                        acc_next: fe_s(kv_acc_next),
-                        expect_enabled: exp_en,
-                        exp_map: fe_s(exp_map),
-                        exp_fin: fe_s(exp_fin),
-                    })
-                } else {
-                    None
-                }
+            // RAM snapshot
+            let cols = crate::layout::Columns::baseline();
+            let ram_snap = if cols.mem_shadow < trace.width() {
+                Some(RamSnap {
+                    shadow_cur: fe_s(frame.current()[cols.mem_shadow]),
+                    shadow_next: fe_s(frame.next()[cols.mem_shadow]),
+                    addr_cur: fe_s(frame.current()[cols.mem_active_addr]),
+                    addr_next: fe_s(frame.next()[cols.mem_active_addr]),
+                })
+            } else {
+                None
             };
 
             // VM write snapshot (only if write constraint area)
@@ -354,7 +333,7 @@ pub(crate) fn run(
                 lanes_cur,
                 lanes_next,
                 lanes_exp,
-                kv: kv_snap,
+                ram: ram_snap,
                 vm: vm_snap,
             };
 
@@ -417,7 +396,7 @@ fn render_console(report: &PreflightReport) {
             "lanes(cur)",
             "lanes(next)",
             "lanes(exp)",
-            "kv",
+            "ram",
             "vm",
         ]);
 
@@ -436,18 +415,10 @@ fn render_console(report: &PreflightReport) {
         .map(|l| format!("{},{},{},{}", l.0, l.1, l.2, l.3))
         .unwrap_or_else(|| "-".into());
 
-    let kv = if let Some(kv) = &report.kv {
+    let ram = if let Some(r) = &report.ram {
         format!(
-            "p={} f={} ver {}->{} acc {}->{} exp_en={} map={} fin={}",
-            kv.p_map,
-            kv.p_final,
-            kv.ver_cur,
-            kv.ver_next,
-            kv.acc_cur,
-            kv.acc_next,
-            kv.expect_enabled,
-            kv.exp_map,
-            kv.exp_fin
+            "shadow {}->{} addr {}->{}",
+            r.shadow_cur, r.shadow_next, r.addr_cur, r.addr_next
         )
     } else {
         "-".into()
@@ -472,7 +443,7 @@ fn render_console(report: &PreflightReport) {
         Cell::new(lanes_cur),
         Cell::new(lanes_next),
         Cell::new(lanes_exp),
-        Cell::new(kv),
+        Cell::new(ram),
         Cell::new(vm),
     ]);
 

@@ -19,12 +19,6 @@ pub(crate) fn pi1<E: FieldElement>(periodic: &[E], pi: E) -> E {
 }
 
 #[inline]
-pub(crate) fn pi2<E: FieldElement>(periodic: &[E], pi: E) -> E {
-    let pi2 = pi * pi;
-    low(periodic) * pi2
-}
-
-#[inline]
 pub(crate) fn pi4<E: FieldElement>(periodic: &[E], pi: E) -> E {
     let pi2 = pi * pi;
     let pi4 = pi2 * pi2;

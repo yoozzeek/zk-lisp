@@ -13,31 +13,26 @@ use winterfell::math::fields::f128::BaseElement as BE;
 // Feature bits
 pub const FM_POSEIDON: u64 = 1 << 0;
 pub const FM_VM: u64 = 1 << 1;
-pub const FM_KV: u64 = 1 << 2;
-pub const FM_KV_EXPECT: u64 = 1 << 3;
 pub const FM_VM_EXPECT: u64 = 1 << 4;
 pub const FM_SPONGE: u64 = 1 << 5;
 pub const FM_MERKLE: u64 = 1 << 6;
+pub const FM_RAM: u64 = 1 << 7;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FeaturesMap {
     pub poseidon: bool,
     pub vm: bool,
-    pub kv: bool,
-    pub kv_expect: bool,
     pub vm_expect: bool,
     pub sponge: bool,
     pub merkle: bool,
+    pub ram: bool,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct PublicInputs {
     pub feature_mask: u64,
     pub program_commitment: [u8; 32],
-    pub kv_map_acc_bytes: [u8; 32],
-    pub kv_fin_acc_bytes: [u8; 32],
     pub cn_root: [u8; 32],
-    pub kv_levels_mask: u128,
 
     // VM PI binding:
     // inputs and expected output
@@ -69,10 +64,10 @@ impl PublicInputsBuilder {
 
         let mut vm = false;
         let mut pose = false;
-        let mut kv = false;
 
         for op in &program.ops {
             match *op {
+                // ALU ops
                 Const { .. }
                 | Mov { .. }
                 | Add { .. }
@@ -88,7 +83,15 @@ impl PublicInputsBuilder {
                 | AssertRangeHi { .. }
                 | DivMod { .. }
                 | MulWide { .. }
-                | DivMod128 { .. } => vm = true,
+                | DivMod128 { .. } => {
+                    vm = true;
+                }
+                // RAM ops
+                Load { .. } | Store { .. } => {
+                    vm = true;
+                    self.pi.feature_mask |= FM_RAM;
+                }
+                // Cryptographic ops
                 SAbsorbN { .. } => {
                     vm = true;
                     pose = true;
@@ -99,10 +102,7 @@ impl PublicInputsBuilder {
                     pose = true;
                     self.pi.feature_mask |= FM_SPONGE;
                 }
-                KvMap { .. } | KvFinal => {
-                    kv = true;
-                    pose = true;
-                }
+                // Merkle ops
                 MerkleStepFirst { .. } | MerkleStep { .. } | MerkleStepLast { .. } => {
                     pose = true;
                     self.pi.feature_mask |= FM_MERKLE;
@@ -113,9 +113,6 @@ impl PublicInputsBuilder {
 
         if vm {
             self.pi.feature_mask |= FM_VM;
-        }
-        if kv {
-            self.pi.feature_mask |= FM_KV;
         }
         if pose {
             self.pi.feature_mask |= FM_POSEIDON;
@@ -182,23 +179,14 @@ impl PublicInputs {
         FeaturesMap {
             poseidon: (m & FM_POSEIDON) != 0,
             vm: (m & FM_VM) != 0,
-            kv: (m & FM_KV) != 0,
-            kv_expect: (m & FM_KV_EXPECT) != 0,
             vm_expect: (m & FM_VM_EXPECT) != 0,
             sponge: (m & FM_SPONGE) != 0,
             merkle: (m & FM_MERKLE) != 0,
+            ram: (m & FM_RAM) != 0,
         }
     }
 
     pub fn validate_flags(&self) -> Result<()> {
-        if (self.feature_mask & FM_KV_EXPECT) != 0 && (self.feature_mask & FM_KV) == 0 {
-            return Err(Error::InvalidInput("FM_KV_EXPECT requires FM_KV"));
-        }
-        if (self.feature_mask & FM_KV) == 0 && self.kv_levels_mask != 0 {
-            return Err(Error::InvalidInput(
-                "kv_levels_mask must be zero when FM_KV is disabled",
-            ));
-        }
         if ((self.feature_mask & FM_VM) != 0 || (self.feature_mask & FM_POSEIDON) != 0)
             && self.program_commitment.iter().all(|b| *b == 0)
         {
@@ -220,19 +208,10 @@ impl PublicInputs {
 // PI encoding for Winterfell
 impl winterfell::math::ToElements<BE> for PublicInputs {
     fn to_elements(&self) -> Vec<BE> {
-        // encode kv_levels_mask into
-        // one field element (lo + hi*2^64)
-        let lo = (self.kv_levels_mask & 0xFFFF_FFFF_FFFF_FFFFu128) as u64;
-        let hi = (self.kv_levels_mask >> 64) as u64;
-        let kv_mask_fe = BE::from(lo) + BE::from(hi) * utils::pow2_64();
-
         let out = vec![
             BE::from(self.feature_mask),
             be_from_le8(&self.program_commitment),
-            be_from_le8(&self.kv_map_acc_bytes),
-            be_from_le8(&self.kv_fin_acc_bytes),
             be_from_le8(&self.cn_root),
-            kv_mask_fe,
         ];
 
         out
@@ -258,48 +237,6 @@ mod tests {
 
     fn non_zero32(x: u8) -> [u8; 32] {
         [x; 32]
-    }
-
-    #[test]
-    fn validate_expect_requires_kv() {
-        let pi = PublicInputs {
-            feature_mask: FM_KV_EXPECT,
-            ..Default::default()
-        };
-        let err = pi
-            .validate_flags()
-            .expect_err("EXPECT without KV must error");
-
-        let Error::InvalidInput(msg) = err;
-        assert!(msg.contains("FM_KV_EXPECT requires FM_KV"));
-    }
-
-    #[test]
-    fn validate_expect_with_zero_accs_allowed() {
-        let pi = PublicInputs {
-            feature_mask: FM_KV | FM_KV_EXPECT,
-            ..Default::default()
-        };
-
-        // Zero expected accs are allowed:
-        // 0 is a valid field value
-        pi.validate_flags().expect("ok with zero accs");
-    }
-
-    #[test]
-    fn validate_kv_levels_mask_requires_kv() {
-        let mut pi = PublicInputs {
-            feature_mask: 0,
-            ..Default::default()
-        };
-        pi.kv_levels_mask = 1;
-
-        let err = pi
-            .validate_flags()
-            .expect_err("kv_levels_mask without KV must error");
-
-        let Error::InvalidInput(msg) = err;
-        assert!(msg.contains("kv_levels_mask must be zero"));
     }
 
     #[test]
@@ -349,19 +286,20 @@ mod tests {
         // 5*NR role booleans (dst0,a,b,c,dst1)
         //   + 5 role sums
         //   + 1 select-cond
-        //   + 15 op booleans
+        //   + 17 op booleans
         //   + 1 one-hot
-        //   + 15 rom-op equality
+        //   + 17 rom-op equality
         //   + 2 PC constraints
         //   + NR no-overlap(dst0,dst1)
-        let vm_ctrl_len_no_sponge = 5 * layout::NR + 5 + 1 + 15 + 1 + 15 + 2 + layout::NR; // 87
+        let vm_ctrl_len_no_sponge = 5 * layout::NR + 5 + 1 + 17 + 1 + 17 + 2 + layout::NR; // 91
 
         // 8 carry + 8 writes
         //   + 2 eq ties + 2 divmod ties + 2 div128
         //   + 1 assert(c==1)
         //   + 1 assert-bit + 32 range bits
         //   + 1 range sum + 1 mulwide
-        let vm_alu_len = 8 + 8 + 2 + 2 + 2 + 1 + 1 + 32 + 1 + 1; // 56 + 2 = 58
+        //   + 2 RAM (shadow + active_addr)
+        let vm_alu_len = 8 + 8 + 2 + 2 + 2 + 1 + 1 + 32 + 1 + 1; // 58
 
         // Case A: Poseidon only
         let pi_pose = PublicInputs {
@@ -389,16 +327,16 @@ mod tests {
         );
         assert_eq!(air_vm.get_assertions().len(), sched_asserts + 1);
 
-        // Case C: all features
+        // Case C: VM + Poseidon
         let pi_all = PublicInputs {
-            feature_mask: FM_POSEIDON | FM_VM | FM_KV,
+            feature_mask: FM_POSEIDON | FM_VM,
             ..Default::default()
         };
 
         let air_all = air::ZkLispAir::new(info, pi_all, opts);
         assert_eq!(
             air_all.context().num_main_transition_constraints(),
-            pose_len + (vm_ctrl_len_no_sponge + vm_alu_len) + 6
+            pose_len + (vm_ctrl_len_no_sponge + vm_alu_len)
         );
         assert_eq!(air_all.get_assertions().len(), sched_asserts + 1);
     }

@@ -4,7 +4,6 @@
 
 //! Trace builder orchestrator
 
-pub mod kv;
 pub mod poseidon;
 pub mod vm;
 

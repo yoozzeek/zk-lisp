@@ -33,8 +33,6 @@ pub enum Error {
     RegOverflow { need: usize, have: usize },
     #[error("lower: invalid form '{0}'")]
     InvalidForm(String),
-    #[error("lower: invalid kv-step dir '{0}' (expected 0 or 1)")]
-    InvalidDir(u64),
     #[error("lower: recursion detected in call '{0}'")]
     Recursion(String),
     #[error("limit: {0}")]
@@ -439,17 +437,15 @@ mod tests {
     }
 
     #[test]
-    fn lower_hash2_and_kv() {
-        let src = "(let ((x 1) (y 2)) (hash2 x y)) (kv-step 0 7) (kv-final)";
+    fn lower_hash2_produces_sponge_ops() {
+        let src = "(let ((x 1) (y 2)) (hash2 x y))";
         let p = compile_str(src).unwrap();
-        // hash now represented via sponge ops SAbsorb2/SSqueeze
+        // hash represented via sponge ops SAbsorbN/SSqueeze
         assert!(
             p.ops
                 .iter()
                 .any(|op| matches!(op, Op::SAbsorbN { .. } | Op::SSqueeze { .. }))
         );
-        assert!(p.ops.iter().any(|op| matches!(op, Op::KvMap { .. })));
-        assert!(p.ops.iter().any(|op| matches!(op, Op::KvFinal)));
     }
 
     #[test]

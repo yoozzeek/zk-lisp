@@ -50,6 +50,8 @@ pub struct Columns {
     pub op_divmod: usize,
     pub op_div128: usize,
     pub op_mulwide: usize,
+    pub op_load: usize,
+    pub op_store: usize,
 
     // Operand selectors
     // one-hot per role (8 each).
@@ -70,14 +72,9 @@ pub struct Columns {
     // Aux for Eq
     pub eq_inv: usize,
 
-    // KV columns
-    pub kv_g_map: usize,
-    pub kv_g_final: usize,
-    pub kv_dir: usize,
-    pub kv_sib: usize,
-    pub kv_acc: usize,
-    pub kv_version: usize,
-    pub kv_prev_acc: usize,
+    // RAM columns
+    pub mem_shadow: usize,
+    pub mem_active_addr: usize,
 
     // Merkle columns
     pub merkle_g: usize,
@@ -137,8 +134,10 @@ impl Columns {
         let op_divmod = op_assert_range + 1;
         let op_div128 = op_divmod + 1;
         let op_mulwide = op_div128 + 1;
+        let op_load = op_mulwide + 1;
+        let op_store = op_load + 1;
 
-        let sel_dst0_start = op_mulwide + 1; // 8 cols
+        let sel_dst0_start = op_store + 1; // 8 cols
         let sel_a_start = sel_dst0_start + NR; // 8 cols
         let sel_b_start = sel_a_start + NR; // 8 cols
         let sel_c_start = sel_b_start + NR; // 8 cols
@@ -152,16 +151,12 @@ impl Columns {
         let imm = sel_s_start + (10 * NR); // 1 col after sponge selectors
         let eq_inv = imm + 1; // 1 col
 
-        // KV columns
-        let kv_g_map = eq_inv + 1;
-        let kv_g_final = kv_g_map + 1;
-        let kv_dir = kv_g_final + 1;
-        let kv_sib = kv_dir + 1;
-        let kv_acc = kv_sib + 1;
-        let kv_version = kv_acc + 1;
+        // RAM columns
+        let mem_shadow = eq_inv + 1;
+        let mem_active_addr = mem_shadow + 1;
 
-        // Merkle block columns after KV
-        let merkle_g = kv_version + 1;
+        // Merkle block columns
+        let merkle_g = mem_active_addr + 1;
         let merkle_dir = merkle_g + 1;
         let merkle_sib = merkle_dir + 1;
         let merkle_acc = merkle_sib + 1;
@@ -175,15 +170,12 @@ impl Columns {
         // PC column
         let pc = pi_prog + 1;
 
-        // ROM op mirror (15 columns)
+        // ROM op mirror (17 columns)
         let rom_op_start = pc + 1;
-
-        // Extra KV column placed after PC/ROM
-        let kv_prev_acc = rom_op_start + 15;
 
         // Append pose_active followed
         // by gadget witness columns
-        let pose_active = kv_prev_acc + 1;
+        let pose_active = rom_op_start + 17;
 
         // Gadget: 32 reusable bit witnesses
         let gadget_b_start = pose_active + 1;
@@ -215,6 +207,8 @@ impl Columns {
             op_divmod,
             op_div128,
             op_mulwide,
+            op_load,
+            op_store,
             sel_dst0_start,
             sel_a_start,
             sel_b_start,
@@ -223,13 +217,8 @@ impl Columns {
             sel_s_start,
             imm,
             eq_inv,
-            kv_g_map,
-            kv_g_final,
-            kv_dir,
-            kv_sib,
-            kv_acc,
-            kv_version,
-            kv_prev_acc,
+            mem_shadow,
+            mem_active_addr,
             merkle_g,
             merkle_dir,
             merkle_sib,
@@ -308,7 +297,7 @@ impl Columns {
     }
 
     pub fn rom_op_index(&self, i: usize) -> usize {
-        debug_assert!(i < 15);
+        debug_assert!(i < 17);
 
         self.rom_op_start + i
     }

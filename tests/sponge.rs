@@ -4,7 +4,7 @@
 
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField};
-use winterfell::{BatchingMethod, FieldExtension, ProofOptions, Trace};
+use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
 
 use zk_lisp::compiler::compile_str;
 use zk_lisp::compiler::ir::{Op, ProgramBuilder};
@@ -247,51 +247,6 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
         Err(e) => {
             if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
                 panic!("verify sp failed: {e}");
-            }
-        }
-    }
-}
-
-#[test]
-fn kv_and_sponge_mix_prove_verify() {
-    // Mix hash2 with a single kv step and final
-    let src = "(let ((h (hash2 1 2))) h) (kv-step 0 7) (kv-final)";
-    let program = compile_str(src).expect("compile");
-    let trace = prove::build_trace(&program).expect("trace");
-
-    let mut pi = PublicInputs {
-        feature_mask: zk_lisp::pi::FM_VM | zk_lisp::pi::FM_POSEIDON | zk_lisp::pi::FM_KV,
-        program_commitment: program.commitment,
-        ..Default::default()
-    };
-    pi.program_commitment = program.commitment;
-
-    // Compute KV levels mask from
-    // trace (same as existing kv test).
-    let cols = zk_lisp::layout::Columns::baseline();
-    let steps = zk_lisp::layout::STEPS_PER_LEVEL_P2;
-    let lvls = trace.length() / steps;
-
-    let mut mask: u128 = 0;
-
-    for lvl in 0..lvls {
-        let base = lvl * steps;
-        let row_map = base + zk_lisp::schedule::pos_map();
-
-        if trace.get(cols.kv_g_map, row_map) == BE::ONE {
-            mask |= 1u128 << lvl;
-        }
-    }
-
-    pi.kv_levels_mask = mask;
-
-    let prover = ZkProver::new(opts(), pi.clone());
-    let proof = prover.prove(trace).expect("prove");
-    match prove::verify_proof(proof, pi, &opts()) {
-        Ok(()) => {}
-        Err(e) => {
-            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
-                panic!("verify failed: {e}");
             }
         }
     }

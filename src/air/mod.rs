@@ -2,7 +2,6 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
-mod kv;
 mod merkle;
 mod mixers;
 mod poseidon;
@@ -11,8 +10,8 @@ mod vm_alu;
 mod vm_ctrl;
 
 use crate::air::{
-    kv::KvBlock, merkle::MerkleBlock, poseidon::PoseidonBlock, schedule::ScheduleBlock,
-    vm_alu::VmAluBlock, vm_ctrl::VmCtrlBlock,
+    merkle::MerkleBlock, poseidon::PoseidonBlock, schedule::ScheduleBlock, vm_alu::VmAluBlock,
+    vm_ctrl::VmCtrlBlock,
 };
 use crate::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::pi::{FeaturesMap, PublicInputs};
@@ -107,9 +106,10 @@ impl Air for ZkLispAir {
         if features.vm {
             VmCtrlBlock::push_degrees(&mut degrees, features.sponge);
             <VmAluBlock as AirBlock<BE>>::push_degrees(&mut degrees);
-        }
-        if features.kv {
-            <KvBlock as AirBlock<BE>>::push_degrees(&mut degrees);
+
+            if features.ram {
+                vm_alu::VmAluBlock::push_degrees_ram(&mut degrees);
+            }
         }
         if features.merkle {
             <MerkleBlock as AirBlock<BE>>::push_degrees(&mut degrees);
@@ -143,13 +143,6 @@ impl Air for ZkLispAir {
             // one assertion for expected
             // output at computed row.
             num_assertions += 1;
-        }
-        if features.kv && features.kv_expect {
-            // offset for EXPECT ties alignment
-            num_assertions += 2 * (pub_inputs.kv_levels_mask.count_ones() as usize) + 1;
-        }
-        if features.kv {
-            num_assertions += 4 * (pub_inputs.kv_levels_mask.count_ones() as usize);
         }
         if num_assertions == 0 {
             num_assertions = 1;
@@ -219,9 +212,6 @@ impl Air for ZkLispAir {
             vm_ctrl::VmCtrlBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
             vm_alu::VmAluBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
         }
-        if self.features.kv {
-            kv::KvBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
-        }
         if self.features.merkle {
             merkle::MerkleBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
         }
@@ -260,18 +250,6 @@ impl Air for ZkLispAir {
             &self.poseidon_dom,
         );
         ScheduleBlock::append_assertions(&bctx_sched, &mut out, last);
-
-        // Kv per-level boundary assertions
-        if self.features.kv {
-            let bctx = BlockCtx::<BaseElement>::new(
-                &self.cols,
-                &self.pub_inputs,
-                &self.poseidon_rc,
-                &self.poseidon_mds,
-                &self.poseidon_dom,
-            );
-            KvBlock::append_assertions(&bctx, &mut out, last);
-        }
 
         // VM PI binding assertions (inputs/outputs)
         if self.features.vm {
@@ -426,6 +404,7 @@ impl Air for ZkLispAir {
 
 impl ZkLispAir {
     #[inline]
+    #[allow(unused_assignments)]
     fn print_evals_debug(
         _pub_inputs: &PublicInputs,
         info: &TraceInfo,
@@ -456,27 +435,32 @@ impl ZkLispAir {
         }
         if features.vm {
             // vm_ctrl dynamic length:
-            // 4*NR bit bools + 4 sums + 1 (sel cond)
-            // + 10 op bools + 1 one-hot
-            // + optional sponge: 10*NR bit bools + 10 sums
-            let len = 4 * NR + 4 + 1 + 10 + 1 + if features.sponge { 10 * NR + 10 } else { 0 };
+            // 5*NR role booleans + 5 role sums + NR no-overlap
+            // + optional sponge: 10*NR lane booleans + 10 lane sums
+            // + 1 select-cond + 17 op booleans + 1 one-hot + 17 rom-op eq + 2 PC
+            let len = 5 * NR
+                + 5
+                + NR
+                + if features.sponge { 10 * NR + 10 } else { 0 }
+                + 1
+                + 17
+                + 1
+                + 17
+                + 2;
             dbg.push(("vm_ctrl", evals[ofs..ofs + len].to_vec()));
             ofs += len;
 
-            // vm_alu (19)
-            let len = 19;
+            // vm_alu base (58) + RAM (3 if enabled)
+            let len = 58 + if features.ram { 3 } else { 0 };
             dbg.push(("vm_alu", evals[ofs..ofs + len].to_vec()));
             ofs += len;
-        }
-        if features.kv {
-            let len = 6;
-            dbg.push(("kv", evals[ofs..ofs + len].to_vec()));
         }
 
         tracing::debug!(target = "proof.air", "per_block_evals: {:?}", dbg);
     }
 
     #[inline]
+    #[allow(unused_assignments)]
     fn print_degrees_debug(
         ctx: &AirContext<BE>,
         _pub_inputs: &PublicInputs,
@@ -506,18 +490,21 @@ impl ZkLispAir {
             ofs += len;
         }
         if features.vm {
-            let len = 4 * NR + 4 + 1 + 10 + 1 + if features.sponge { 10 * NR + 10 } else { 0 };
+            let len = 5 * NR
+                + 5
+                + NR
+                + if features.sponge { 10 * NR + 10 } else { 0 }
+                + 1
+                + 17
+                + 1
+                + 17
+                + 2;
             ranges.push(("vm_ctrl", ofs, ofs + len));
             ofs += len;
 
-            let len2 = 19;
+            let len2 = 58 + if features.ram { 3 } else { 0 };
             ranges.push(("vm_alu", ofs, ofs + len2));
             ofs += len2;
-        }
-        if features.kv {
-            let len = 6;
-            ranges.push(("kv", ofs, ofs + len));
-            ofs += len;
         }
 
         tracing::debug!(target = "proof.air", "deg_ranges: {:?}", ranges);
