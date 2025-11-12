@@ -2,6 +2,8 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
+#![forbid(unsafe_code)]
+
 mod air;
 mod commit;
 mod preflight;

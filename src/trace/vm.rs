@@ -10,6 +10,7 @@ use crate::poseidon as poseidon_core;
 use crate::schedule;
 use crate::trace::poseidon;
 
+use arrayvec::ArrayVec;
 use winterfell::TraceTable;
 use winterfell::math::FieldElement;
 use winterfell::math::StarkField;
@@ -33,7 +34,7 @@ impl TraceBuilder {
         // Buffer absorbed registers
         // across levels until SSqueeze;
         // gather up to 10.
-        let mut pending_regs: Vec<u8> = Vec::new();
+        let mut pending_regs: ArrayVec<u8, 10> = ArrayVec::new();
 
         for (lvl, op) in p.ops.iter().enumerate() {
             // snapshot current regs and
@@ -812,7 +813,7 @@ fn set_sel(trace: &mut TraceTable<BE>, row: usize, sel_start: usize, idx: u8) {
 // Push an absorbed register
 // with strict rate bound
 #[inline]
-fn push_absorb(pending: &mut Vec<u8>, r: u8) -> crate::error::Result<()> {
+fn push_absorb(pending: &mut ArrayVec<u8, 10>, r: u8) -> crate::error::Result<()> {
     // rate = 10 lanes for absorption
     if pending.len() >= 10 {
         return Err(crate::error::Error::InvalidInput("sponge rate overflow"));

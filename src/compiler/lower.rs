@@ -106,7 +106,7 @@ impl<'a> LowerCtx<'a> {
         let free: Vec<u8> = (0u8..NR as u8).collect();
 
         // simple stack: pop() to allocate from
-        // the end gives small regs first.
+        // the end gives high-numbered regs first.
         Self {
             b: ProgramBuilder::new(),
             free,
@@ -233,6 +233,7 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "kv-final" => lower_kv_final(cx, tail)
                         .map(|_| RVal::Borrowed(cx.get_reg_opt("_kv_last").unwrap_or(0))),
                     "hex-to-bytes32" => lower_hex_to_bytes32(cx, tail),
+                    "seq" => lower_seq(cx, tail),
                     _ => lower_call(cx, s, tail),
                 }
             }
@@ -1923,12 +1924,12 @@ fn lower_mulwide_hi(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         b: b.reg(),
     });
 
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+
     // outputs in u64
     assert_range_bits_for_reg(cx, rhi, 64)?;
     assert_range_bits_for_reg(cx, rlo, 64)?;
-
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
 
     cx.free_reg(rlo);
 
@@ -1962,12 +1963,12 @@ fn lower_mulwide_lo(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         b: b.reg(),
     });
 
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+
     // outputs in u64
     assert_range_bits_for_reg(cx, rhi, 64)?;
     assert_range_bits_for_reg(cx, rlo, 64)?;
-
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
 
     cx.free_reg(rhi);
 
@@ -2003,6 +2004,9 @@ fn lower_muldiv_floor(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         b: b.reg(),
     });
 
+    free_if_owned(cx, a);
+    free_if_owned(cx, b);
+
     // 128/64 division -> q,r
     let rq = cx.alloc()?;
     let rr = cx.alloc()?;
@@ -2018,8 +2022,6 @@ fn lower_muldiv_floor(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     assert_range_bits_for_reg(cx, rq, 64)?;
     assert_range_bits_for_reg(cx, rr, 64)?;
 
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
     free_if_owned(cx, c);
 
     cx.free_reg(rhi);
@@ -2058,6 +2060,20 @@ fn extract_member_from_quote(ast: &Ast) -> Option<&Ast> {
     }
 
     Some(&items[1])
+}
+
+fn lower_seq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("seq".into()));
+    }
+
+    let a = lower_expr(cx, rest[0].clone())?;
+
+    free_if_owned(cx, a);
+
+    let b = lower_expr(cx, rest[1].clone())?;
+
+    Ok(b)
 }
 
 fn u64_pair_from_le_16(b16: &[u8]) -> (u64, u64) {

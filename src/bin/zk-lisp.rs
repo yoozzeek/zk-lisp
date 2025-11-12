@@ -2,6 +2,8 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
+#![forbid(unsafe_code)]
+
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -13,6 +15,10 @@ use thiserror::Error;
 use winterfell::math::StarkField;
 use winterfell::{BatchingMethod, FieldExtension, Proof, ProofOptions, Trace};
 use zk_lisp::{PreflightMode, compiler, error, prove};
+
+// Max file size for REPL
+// operations (load/verify @PATH)
+const REPL_MAX_BYTES: usize = 1_048_576; // 1 MiB
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -29,15 +35,20 @@ struct Cli {
     #[arg(long, global = true, default_value_t = false)]
     json: bool,
     /// Global log level (trace|debug|info|warn|error)
-    #[arg(long, global = true, default_value = "info")]
+    #[arg(
+        long,
+        global = true,
+        default_value = "info",
+        value_parser = ["trace","debug","info","warn","error"],
+    )]
     log_level: String,
     /// Max input file size in bytes
     #[arg(long, global = true, default_value_t = 1_048_576)]
     max_bytes: usize,
     /// Preflight mode:
     /// off|console|json|auto (auto: console in debug, off in release)
-    #[arg(long, global = true, default_value = "auto")]
-    preflight: String,
+    #[arg(long, global = true, default_value = "auto", value_enum)]
+    preflight: PreflightArg,
     #[command(subcommand)]
     command: Command,
 }
@@ -116,6 +127,14 @@ struct VerifyArgs {
     seed: Option<u64>,
 }
 
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+enum PreflightArg {
+    Off,
+    Console,
+    Json,
+    Auto,
+}
+
 #[derive(Error, Debug)]
 enum CliError {
     #[error("invalid input: {0}")]
@@ -156,8 +175,8 @@ impl CliError {
 
 fn try_main(cli: Cli) -> Result<(), CliError> {
     match cli.command {
-        Command::Run(args) => cmd_run(args, cli.json, cli.max_bytes, &cli.preflight),
-        Command::Prove(args) => cmd_prove(args, cli.json, cli.max_bytes, &cli.preflight),
+        Command::Run(args) => cmd_run(args, cli.json, cli.max_bytes, cli.preflight),
+        Command::Prove(args) => cmd_prove(args, cli.json, cli.max_bytes, cli.preflight),
         Command::Verify(args) => cmd_verify(args, cli.json, cli.max_bytes),
         Command::Repl => cmd_repl(),
     }
@@ -176,10 +195,11 @@ fn proof_opts(queries: u8, blowup: u8, grind: u32) -> ProofOptions {
     )
 }
 
-fn read_program(path: &PathBuf, max_bytes: usize) -> Result<String, CliError> {
-    let meta = fs::metadata(path).map_err(|e| CliError::IoPath {
+fn read_program(path: impl AsRef<std::path::Path>, max_bytes: usize) -> Result<String, CliError> {
+    let path_ref = path.as_ref();
+    let meta = fs::metadata(path_ref).map_err(|e| CliError::IoPath {
         source: e,
-        path: path.clone(),
+        path: path_ref.to_path_buf(),
     })?;
 
     if meta.len() as usize > max_bytes {
@@ -190,9 +210,9 @@ fn read_program(path: &PathBuf, max_bytes: usize) -> Result<String, CliError> {
         )));
     }
 
-    let s = fs::read_to_string(path).map_err(|e| CliError::IoPath {
+    let s = fs::read_to_string(path_ref).map_err(|e| CliError::IoPath {
         source: e,
-        path: path.clone(),
+        path: path_ref.to_path_buf(),
     })?;
 
     Ok(s)
@@ -269,7 +289,7 @@ fn build_pi_for_program(
     }
 }
 
-fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: &str) -> Result<(), CliError> {
+fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: PreflightArg) -> Result<(), CliError> {
     let src = read_program(&args.path, max_bytes)?;
     let program = compiler::compile_entry(&src, &args.args)?;
 
@@ -277,7 +297,7 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: &str) -> Result<(), 
     // Build trace with VM args
     let trace = prove::build_trace_with_pi(&program, &pi)?;
 
-    let pf_mode = parse_preflight_mode(pf);
+    let pf_mode = resolve_preflight_mode(pf);
     if !matches!(pf_mode, PreflightMode::Off) {
         let opts = proof_opts(1, 8, 0);
         prove::preflight_check(pf_mode, &opts, &pi, &trace)?;
@@ -312,7 +332,12 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: &str) -> Result<(), 
     Ok(())
 }
 
-fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize, pf: &str) -> Result<(), CliError> {
+fn cmd_prove(
+    args: ProveArgs,
+    json: bool,
+    max_bytes: usize,
+    pf: PreflightArg,
+) -> Result<(), CliError> {
     if args.seed.is_some() {
         return Err(CliError::InvalidInput(
             "seed is not supported yet".to_string(),
@@ -336,7 +361,7 @@ fn cmd_prove(args: ProveArgs, json: bool, max_bytes: usize, pf: &str) -> Result<
     pi.vm_out_row = out_row;
 
     let opts = proof_opts(args.queries, args.blowup, args.grind);
-    let pf_mode = parse_preflight_mode(pf);
+    let pf_mode = resolve_preflight_mode(pf);
     let prover = prove::ZkProver::new(opts.clone(), pi.clone()).with_preflight_mode(pf_mode);
 
     let proof = prover.prove(trace)?;
@@ -562,8 +587,9 @@ fn cmd_repl() -> Result<(), CliError> {
   :help              - this help
   :quit, :q          - exit
   :load PATH         - load file into session (base)
+  :playground        - load playground into session
   :reset             - clear session
-  :fns               - list defined functions (best-effort)
+  :docs               - list defined functions (best-effort)
   :prove [EXPR]      - build proof for EXPR (or last expr)
   :verify B64|@PATH  - verify proof against last expr and current session
   EXPR               - evaluate EXPR with current session defs
@@ -574,10 +600,24 @@ fn cmd_repl() -> Result<(), CliError> {
         }
 
         if let Some(rest) = s.strip_prefix(":load ") {
-            match fs::read_to_string(rest) {
+            let path = std::path::PathBuf::from(rest.trim());
+            match read_program(&path, REPL_MAX_BYTES) {
                 Ok(src) => {
                     session.base_src = src;
-                    println!("OK loaded {rest}");
+                    println!("OK loaded {}", path.display());
+                }
+                Err(e) => println!("error: load failed: {e}"),
+            }
+
+            continue;
+        }
+
+        if s == ":playground" {
+            let path = std::path::PathBuf::from("./examples/playground.zlisp");
+            match read_program(&path, REPL_MAX_BYTES) {
+                Ok(src) => {
+                    session.base_src = src;
+                    println!("OK loaded {}", path.display());
                 }
                 Err(e) => println!("error: load failed: {e}"),
             }
@@ -594,7 +634,7 @@ fn cmd_repl() -> Result<(), CliError> {
             continue;
         }
 
-        if s == ":fns" {
+        if s == ":docs" {
             let mut all = extract_def_names(&session.base_src);
             for f in &session.forms {
                 for n in extract_def_names(f) {
@@ -712,6 +752,23 @@ merkle_steps={}",
             }
 
             let bytes = if let Some(path) = arg.strip_prefix('@') {
+                match fs::metadata(path) {
+                    Ok(meta) => {
+                        if meta.len() as usize > REPL_MAX_BYTES {
+                            println!(
+                                "error: proof file too large: {} bytes (limit {})",
+                                meta.len(),
+                                REPL_MAX_BYTES
+                            );
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        println!("error: stat proof: {e}");
+                        continue;
+                    }
+                }
+
                 match fs::read(path) {
                     Ok(b) => b,
                     Err(e) => {
@@ -862,13 +919,12 @@ fn proof_from_bytes(bytes: &[u8]) -> Result<Proof, CliError> {
     Ok(p)
 }
 
-fn parse_preflight_mode(s: &str) -> PreflightMode {
-    match s.to_ascii_lowercase().as_str() {
-        "off" => PreflightMode::Off,
-        "console" => PreflightMode::Console,
-        "json" => PreflightMode::Json,
-        _ => {
-            // auto
+fn resolve_preflight_mode(p: PreflightArg) -> PreflightMode {
+    match p {
+        PreflightArg::Off => PreflightMode::Off,
+        PreflightArg::Console => PreflightMode::Console,
+        PreflightArg::Json => PreflightMode::Json,
+        PreflightArg::Auto => {
             if cfg!(debug_assertions) {
                 PreflightMode::Console
             } else {

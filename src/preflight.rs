@@ -360,10 +360,16 @@ pub(crate) fn run(
 
             match mode {
                 PreflightMode::Console => render_console(&report),
-                PreflightMode::Json => println!(
-                    "{}",
-                    serde_json::to_string_pretty(&report).unwrap_or_default()
-                ),
+                PreflightMode::Json => match serde_json::to_string_pretty(&report) {
+                    Ok(j) => println!("{j}"),
+                    Err(e) => println!(
+                        "{}",
+                        serde_json::json!({
+                            "ok": false,
+                            "error": e.to_string()
+                        })
+                    ),
+                },
                 PreflightMode::Off => {}
             }
 
