@@ -373,7 +373,15 @@ mod tests {
 
         PoseidonBlock::eval_block(
             &BlockCtx::new(
-                &cols, &pi, &rc_box, &mds_box, &dom_box, &rc3_box, &mds3_box, &w_enc0_box, &w_enc1_box,
+                &cols,
+                &pi,
+                &rc_box,
+                &mds_box,
+                &dom_box,
+                &rc3_box,
+                &mds3_box,
+                &w_enc0_box,
+                &w_enc1_box,
             ),
             &frame,
             &periodic,
@@ -427,7 +435,15 @@ mod tests {
 
         PoseidonBlock::eval_block(
             &BlockCtx::new(
-                &cols, &pi, &rc_box, &mds_box, &dom_box, &rc3_box, &mds3_box, &w_enc0_box, &w_enc1_box,
+                &cols,
+                &pi,
+                &rc_box,
+                &mds_box,
+                &dom_box,
+                &rc3_box,
+                &mds3_box,
+                &w_enc0_box,
+                &w_enc1_box,
             ),
             &frame,
             &periodic,

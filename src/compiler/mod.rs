@@ -146,7 +146,15 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     // Lower (main ...) as expression
     let res_v = lower::lower_expr(&mut cx, call_ast)?;
     let res_v = res_v.into_owned(&mut cx)?;
-    let res_reg = res_v.reg();
+    let res_reg = match res_v {
+        lower::RVal::Owned(r) => r,
+        lower::RVal::Borrowed(r) => r,
+        lower::RVal::Imm(_) => {
+            return Err(Error::InvalidForm(
+                "internal: immediate result where register expected".into(),
+            ));
+        }
+    };
 
     // Normalize main return into r0
     if res_reg != 0 {

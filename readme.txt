@@ -16,51 +16,31 @@ Disclaimer:
 
 How it works:
 
-  Parse source /
-              / -> lower to IR /
-                              / -> emit sequence of VM ops.
+  Parse source > AST > IR > VM ops
 
-  A trace builder executes these ops into a fixed-shape
-  trace (VM/Poseidon/KV/Merkle blocks). AIR is predefined;
-  you don't write constraints. Winterfell proves the
-  trace satisfies the AIR.
-
-  The VM includes arithmetic, Poseidon sponge, range/bit
-  checks, and KV/Merkle gadgets.
-
-  This gives a higher‑level programming model over manual
-  trace/AIR authoring so you can focus on application logic,
-  while the system handles STARK proving details.
-
-  Program example:
-
-    (def (main x y)
-      (+ x y))
+  The trace builder executes VM ops into a fixed-shape
+  trace. AIR is predefined, you don't write constraints.
+  Winterfell proves the trace satisfies AIR.
 
 Quickstart:
 
-  Check the examples:
-    cargo run --example generate_root \
-        -- verify 1 0:22,1:23
-    cargo run --example merkle_verify \
-        -- 1 0:22,1:23 0x7383de959c89890b122b26ea99cbf333
-
-  Run a program from source file:
+  Run:
     cargo run --bin zk-lisp -- \
-        run examples/zk_example.zlisp --arg 2 --arg 3
+      run examples/zk_example.zlisp --arg 2 --arg 3
 
-  Prove and verify:
+  Prove:
     cargo run --bin zk-lisp -- \
-        prove examples/zk_example.zlisp \
-            --out ./proof.bin --quiet --arg 2 --arg 3
+      prove examples/zk_example.zlisp \
+        --out ./proof.bin --quiet --arg 2 --arg 3
 
+  Verify:
     cargo run --bin zk-lisp -- \
-        verify @./proof.bin examples/zk_example.zlisp \
-            --arg 2 --arg 3
+      verify @./proof.bin examples/zk_example.zlisp \
+        --arg 2 --arg 3
 
 Testing:
 
-    cargo run tests --release
+  cargo run tests --release
 
 License:
 

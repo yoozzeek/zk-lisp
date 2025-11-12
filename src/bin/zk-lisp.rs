@@ -318,7 +318,7 @@ fn cmd_prove(
 
     let proof = prover.prove(trace)?;
 
-    // Serialize proof to bytes and hex
+    // Serialize proof to bytes
     let proof_bytes = proof_to_bytes(&proof)?;
     if let Some(path) = args.out {
         if let Err(e) = fs::write(&path, &proof_bytes) {
@@ -326,29 +326,29 @@ fn cmd_prove(
         }
     }
 
-    let proof_hex = hex::encode(&proof_bytes);
-
     if !args.quiet {
+        let proof_b64 = base64::engine::general_purpose::STANDARD.encode(&proof_bytes);
+        
         if json {
             println!(
                 "{}",
                 serde_json::json!({
                     "ok": true,
-                    "proof_hex": proof_hex,
+                    "proof_b64": proof_b64,
                     "opts": {"queries": args.queries, "blowup": args.blowup, "grind": args.grind},
                     "commitment": format!("0x{:02x?}", program.commitment),
                 })
             );
         } else {
-            // Print a short preview by
-            // default to avoid huge stdout
-            let preview = if proof_hex.len() > 64 {
-                format!("{}... (len={} bytes)", &proof_hex[..64], proof_bytes.len())
+            // Print a short preview
+            // to avoid huge stdout.
+            let preview = if proof_b64.len() > 88 {
+                format!("{}... (len={} bytes)", &proof_b64[..88], proof_bytes.len())
             } else {
-                format!("{} (len={} bytes)", proof_hex, proof_bytes.len())
+                format!("{} (len={} bytes)", proof_b64, proof_bytes.len())
             };
 
-            println!("proof(hex): {preview}");
+            println!("proof: {preview}");
         }
     }
 
@@ -518,8 +518,20 @@ fn cmd_repl() -> Result<(), CliError> {
         // accumulate for multiline
         acc.push_str(&line);
         acc.push('\n');
+        
+        // enforce size cap to avoid runaway buffers
+        if acc.len() > REPL_MAX_BYTES {
+            println!("error: input too large (>{REPL_MAX_BYTES} bytes); buffer cleared");
+            
+            acc.clear();
+            need_more = false;
+            
+            continue;
+        }
+        
         let bal = paren_balance(&acc);
         need_more = bal > 0;
+        
         if need_more {
             continue;
         }
@@ -670,8 +682,12 @@ fn cmd_repl() -> Result<(), CliError> {
                                     Ok(bytes) => {
                                         let proof_b64 = base64::engine::general_purpose::STANDARD
                                             .encode(&bytes);
-                                        let preview =
-                                            format!("{proof_b64} (len={} bytes)", bytes.len());
+                                        let preview = if proof_b64.len() > 88 {
+                                            format!("{}... (len={} bytes)", &proof_b64[..88], bytes.len())
+                                        } else {
+                                            format!("{} (len={} bytes)", proof_b64, bytes.len())
+                                        };
+                                        
                                         println!("proof: {preview}");
                                     }
                                 },

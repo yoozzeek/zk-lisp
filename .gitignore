@@ -1,3 +1,4 @@
 /target
 .idea
-proof.bin
+*.bin
+.zk-lisp_history

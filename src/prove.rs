@@ -215,42 +215,23 @@ impl ZkWinterfellProver {
         let steps = layout::STEPS_PER_LEVEL_P2;
         let lvls = trace.length() / steps;
 
-        let op_bits = [
-            cols.op_const,
-            cols.op_mov,
-            cols.op_add,
-            cols.op_sub,
-            cols.op_mul,
-            cols.op_neg,
-            cols.op_eq,
-            cols.op_select,
-            cols.op_sponge,
-            cols.op_assert,
-        ];
-
-        let mut last_op_lvl: usize = 0;
+        // Scan levels backwards and pick
+        // the most recent write at final row.
         for lvl in (0..lvls).rev() {
             let base = lvl * steps;
-            let row_map = base + schedule::pos_map();
-
-            if op_bits.iter().any(|&c| trace.get(c, row_map) == BE::ONE) {
-                last_op_lvl = lvl;
-                break;
+            let row_fin = base + schedule::pos_final();
+            
+            for i in 0..layout::NR {
+                if trace.get(cols.sel_dst0_index(i), row_fin) == BE::ONE {
+                    return (i as u8, (row_fin + 1) as u32);
+                }
             }
         }
 
-        let base = last_op_lvl * steps;
-        let row_fin = base + schedule::pos_final();
-
-        let mut out_reg = 0u8;
-        for i in 0..layout::NR {
-            if trace.get(cols.sel_dst0_index(i), row_fin) == BE::ONE {
-                out_reg = i as u8;
-                break;
-            }
-        }
-
-        (out_reg, (row_fin + 1) as u32)
+        // Fallback: no write observed;
+        // default to (r0, first row after final of level 0)
+        let row_fin0 = schedule::pos_final();
+        (0u8, (row_fin0 + 1) as u32)
     }
 }
 

@@ -179,22 +179,16 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
         adj_ctr = adj_ctr.wrapping_add(1);
 
         if adj_ctr > (1 << 24) {
-            // Fail-closed without panic:
-            // derive a fallback Y set
-            // via deterministic offset
-            // sweep to avoid x_i + y_j == 0.
+            // Fail-closed: derive a valid Y set via a deterministic separate domain.
+            // Continue searching until a set is found that satisfies:
+            // (1) all y_j are distinct; (2) x_i + y_j != 0 for all i,j.
             tracing::error!(
                 target = "poseidon.mds",
-                "MDS derivation did not converge quickly; applying fallback"
+                "MDS derivation did not converge quickly; switching to exhaustive fallback search"
             );
 
             let mut found = false;
-            let mut last_candidate = [BE::ZERO; 12];
-
-            // Pure-RO fallback: sample Y from a separate
-            // domain with seed k and require uniqueness
-            // and x_i + y_j != 0 for all i,j.
-            for k in 1u32..=65_536u32 {
+            for k in 1u32..=1_000_000u32 {
                 let k_b = k.to_le_bytes();
                 let mut y2 = [BE::ZERO; 12];
 
@@ -204,12 +198,7 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
                         DOM_POSEIDON_MDS_Y_FALLBACK,
                         &[&suite_id[..], &j_b[..], &k_b[..]],
                     );
-
-                    *yj = if cand == BE::ZERO {
-                        BE::from(1u64)
-                    } else {
-                        cand
-                    };
+                    *yj = if cand == BE::ZERO { BE::from(1u64) } else { cand };
                 }
 
                 // require pairwise distinct y2_j
@@ -222,39 +211,20 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
                         }
                     }
                 }
-
-                if !distinct {
-                    continue;
-                }
+                if !distinct { continue; }
 
                 // check x_i + y2_j != 0
                 let mut ok2 = true;
-
                 'check: for xi in &x {
                     for yj in &y2 {
-                        if *xi + *yj == BE::ZERO {
-                            ok2 = false;
-                            break 'check;
-                        }
+                        if *xi + *yj == BE::ZERO { ok2 = false; break 'check; }
                     }
                 }
-
-                if ok2 {
-                    y = y2.to_vec();
-                    found = true;
-                    break;
-                } else {
-                    last_candidate = y2;
-                }
+                if ok2 { y = y2.to_vec(); found = true; break; }
             }
 
             if !found {
-                tracing::error!(
-                    target = "poseidon.mds",
-                    "RO fallback exhausted; using last candidate"
-                );
-
-                y = last_candidate.to_vec();
+                panic!("poseidon: failed to derive valid MDS Y set (x_i + y_j == 0)");
             }
 
             break;
