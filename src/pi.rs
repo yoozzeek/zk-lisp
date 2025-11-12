@@ -4,10 +4,11 @@
 
 //! Public inputs and features
 
+use crate::commit::program_field_commitment;
+use crate::compiler::ir;
 use crate::error::{Error, Result};
 use crate::utils;
 
-use crate::compiler::ir;
 use winterfell::math::fields::f128::BaseElement as BE;
 
 // Feature bits
@@ -33,6 +34,8 @@ pub struct PublicInputs {
     pub feature_mask: u64,
     pub program_commitment: [u8; 32],
     pub cn_root: [u8; 32],
+    pub program_commitment_f0: BE,
+    pub program_commitment_f1: BE,
 
     // VM PI binding:
     // inputs and expected output
@@ -61,6 +64,12 @@ impl PublicInputsBuilder {
         };
 
         b.pi.program_commitment = program.commitment;
+
+        // derive internal field-friendly
+        // commitment from Blake3 digest.
+        let fc = program_field_commitment(&program.commitment);
+        b.pi.program_commitment_f0 = fc[0];
+        b.pi.program_commitment_f1 = fc[1];
 
         // infer features from program ops
         b.infer_features(program);
@@ -173,11 +182,9 @@ impl PublicInputsBuilder {
 
     pub fn build(self) -> Result<PublicInputs> {
         // basic validation and defaults
-        if (self.pi.feature_mask & (FM_VM | FM_POSEIDON)) != 0
-            && self.pi.program_commitment.iter().all(|b| *b == 0)
-        {
+        if self.pi.program_commitment.iter().all(|b| *b == 0) {
             return Err(Error::InvalidInput(
-                "program_commitment must be non-zero when VM or POSEIDON is enabled",
+                "program_commitment (Blake3) must be non-zero",
             ));
         }
         if self.pi.vm_args.len() > crate::layout::NR {
@@ -204,11 +211,9 @@ impl PublicInputs {
     }
 
     pub fn validate_flags(&self) -> Result<()> {
-        if ((self.feature_mask & FM_VM) != 0 || (self.feature_mask & FM_POSEIDON) != 0)
-            && self.program_commitment.iter().all(|b| *b == 0)
-        {
+        if self.program_commitment.iter().all(|b| *b == 0) {
             return Err(Error::InvalidInput(
-                "program_commitment must be non-zero when VM or POSEIDON is enabled",
+                "program_commitment (Blake3) must be non-zero",
             ));
         }
         if (self.feature_mask & FM_VM_EXPECT) != 0 && (self.feature_mask & FM_VM) == 0 {
@@ -229,6 +234,8 @@ impl winterfell::math::ToElements<BE> for PublicInputs {
             BE::from(self.feature_mask),
             be_from_le8(&self.program_commitment),
             be_from_le8(&self.cn_root),
+            self.program_commitment_f0,
+            self.program_commitment_f1,
         ];
 
         out

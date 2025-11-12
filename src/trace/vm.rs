@@ -4,11 +4,13 @@
 
 use crate::compiler::ir;
 use crate::compiler::ir::Op;
+use crate::error::Error;
 use crate::layout::{Columns, NR, STEPS_PER_LEVEL_P2};
-use crate::pi;
 use crate::poseidon as poseidon_core;
+use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
 use crate::schedule;
 use crate::trace::poseidon;
+use crate::{pi, utils};
 
 use arrayvec::ArrayVec;
 use winterfell::TraceTable;
@@ -526,7 +528,7 @@ impl TraceBuilder {
                     for (i, &r) in rr.iter().enumerate() {
                         // Enforce lane index bound
                         if i >= 10 {
-                            return Err(crate::error::Error::InvalidInput("sponge rate overflow"));
+                            return Err(Error::InvalidInput("sponge rate overflow"));
                         }
 
                         // Set packed bits and
@@ -707,7 +709,7 @@ impl TraceBuilder {
                     // load only from active address
                     let addr_v = regs[addr as usize];
                     if addr_v != mem_active_addr {
-                        return Err(crate::error::Error::InvalidInput(
+                        return Err(Error::InvalidInput(
                             "load address must equal active addr (store first)",
                         ));
                     }
@@ -752,7 +754,8 @@ impl TraceBuilder {
                 trace.set(cols.pc, r, BE::from(lvl as u64));
             }
 
-            // after final within level: keep next_regs
+            // after final within level:
+            // keep next_regs
             for r in (row_final + 1)..(base + steps) {
                 for (i, val) in next_regs.iter().enumerate().take(NR) {
                     trace.set(cols.r_index(i), r, *val);
@@ -787,6 +790,77 @@ impl TraceBuilder {
             let row_map = base + schedule::pos_map();
             trace.set(cols.lane_c0, row_map, dom_all[0]);
             trace.set(cols.lane_c1, row_map, dom_all[1]);
+        }
+
+        // Populate ROM accumulator
+        // t=3 across all levels.
+        {
+            let rc3 = derive_rom_round_constants_3(&p.commitment, crate::layout::POSEIDON_ROUNDS);
+            let mds3 = derive_rom_mds_cauchy_3x3(&p.commitment);
+
+            // Precompute weights
+            let w_enc0 = utils::rom_weights_for_seed(utils::ROM_W_SEED_0);
+            let w_enc1 = utils::rom_weights_for_seed(utils::ROM_W_SEED_1);
+
+            // initial accumulator
+            let mut s0_prev = BE::ZERO;
+
+            for lvl in 0..total_levels {
+                let base = lvl * steps;
+                let row_map = base + schedule::pos_map();
+                let row_final = base + schedule::pos_final();
+
+                // Compute encodings from map
+                // row columns using precomputed weights
+                let s1_map = utils::rom_linear_encode_from_trace(&trace, row_map, &cols, &w_enc0);
+                let s2_map = utils::rom_linear_encode_from_trace(&trace, row_map, &cols, &w_enc1);
+
+                // Set map row state
+                trace.set(cols.rom_s_index(0), row_map, s0_prev);
+                trace.set(cols.rom_s_index(1), row_map, s1_map);
+                trace.set(cols.rom_s_index(2), row_map, s2_map);
+
+                // Execute 27 rounds:
+                // y = MDS * s^3 + rc.
+                let mut s = [s0_prev, s1_map, s2_map];
+                for (j, rc_row) in rc3.iter().enumerate().take(crate::layout::POSEIDON_ROUNDS) {
+                    let r = base + 1 + j; // round row index
+
+                    // set current state s at round row
+                    trace.set(cols.rom_s_index(0), r, s[0]);
+                    trace.set(cols.rom_s_index(1), r, s[1]);
+                    trace.set(cols.rom_s_index(2), r, s[2]);
+
+                    // compute next state
+                    let s3 = [s[0] * s[0] * s[0], s[1] * s[1] * s[1], s[2] * s[2] * s[2]];
+                    let y0 =
+                        mds3[0][0] * s3[0] + mds3[0][1] * s3[1] + mds3[0][2] * s3[2] + rc_row[0];
+                    let y1 =
+                        mds3[1][0] * s3[0] + mds3[1][1] * s3[1] + mds3[1][2] * s3[2] + rc_row[1];
+                    let y2 =
+                        mds3[2][0] * s3[0] + mds3[2][1] * s3[1] + mds3[2][2] * s3[2] + rc_row[2];
+
+                    // write next state at next row (r+1)
+                    let rn = r + 1;
+                    trace.set(cols.rom_s_index(0), rn, y0);
+                    trace.set(cols.rom_s_index(1), rn, y1);
+                    trace.set(cols.rom_s_index(2), rn, y2);
+
+                    s = [y0, y1, y2];
+                }
+
+                // Set pad rows after
+                // final to last state.
+                let last_state = s;
+
+                for r in (row_final + 1)..(base + steps) {
+                    trace.set(cols.rom_s_index(0), r, last_state[0]);
+                    trace.set(cols.rom_s_index(1), r, last_state[1]);
+                    trace.set(cols.rom_s_index(2), r, last_state[2]);
+                }
+
+                s0_prev = last_state[0];
+            }
         }
 
         Ok(trace)
@@ -843,7 +917,7 @@ fn set_sel(trace: &mut TraceTable<BE>, row: usize, sel_start: usize, idx: u8) {
 fn push_absorb(pending: &mut ArrayVec<u8, 10>, r: u8) -> crate::error::Result<()> {
     // rate = 10 lanes for absorption
     if pending.len() >= 10 {
-        return Err(crate::error::Error::InvalidInput("sponge rate overflow"));
+        return Err(Error::InvalidInput("sponge rate overflow"));
     }
 
     pending.push(r);

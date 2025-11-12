@@ -407,9 +407,15 @@ mod tests {
 
         // Build ctx without SPONGE feature
         let pi_no_sponge = crate::pi::PublicInputs::default();
+
         let rc_binding = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
         let mds_binding = Box::new([[BE::ZERO; 12]; 12]);
         let dom_binding = Box::new([BE::ZERO; 2]);
+
+        let rc3_binding = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
+        let mds3_binding = Box::new([[BE::ZERO; 3]; 3]);
+        let w_enc0_binding = Box::new([BE::ZERO; 59]);
+        let w_enc1_binding = Box::new([BE::ZERO; 59]);
 
         let ctx = BlockCtx::new(
             &cols,
@@ -417,6 +423,10 @@ mod tests {
             &rc_binding,
             &mds_binding,
             &dom_binding,
+            &rc3_binding,
+            &mds3_binding,
+            &w_enc0_binding,
+            &w_enc1_binding,
         );
 
         let mut ra = vec![BE::ZERO; 256];
@@ -461,8 +471,22 @@ mod tests {
         let rc_binding = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
         let mds_binding = Box::new([[BE::ZERO; 12]; 12]);
         let dom_binding = Box::new([BE::ZERO; 2]);
+        let rc3_binding = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
+        let mds3_binding = Box::new([[BE::ZERO; 3]; 3]);
+        let w_enc0_binding = Box::new([BE::ZERO; 59]);
+        let w_enc1_binding = Box::new([BE::ZERO; 59]);
 
-        let ctx = BlockCtx::new(&cols, &pi, &rc_binding, &mds_binding, &dom_binding);
+        let ctx = BlockCtx::new(
+            &cols,
+            &pi,
+            &rc_binding,
+            &mds_binding,
+            &dom_binding,
+            &rc3_binding,
+            &mds3_binding,
+            &w_enc0_binding,
+            &w_enc1_binding,
+        );
 
         let mut ra = vec![BE::ZERO; 256];
         let mut rb = vec![BE::ZERO; 256];
@@ -503,6 +527,11 @@ mod tests {
             m
         });
 
+        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
+        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
+        let w_enc0_box = Box::new([BE::ZERO; 59]);
+        let w_enc1_box = Box::new([BE::ZERO; 59]);
+
         VmCtrlBlock::eval_block(
             &BlockCtx::new(
                 &cols,
@@ -510,6 +539,57 @@ mod tests {
                 &rc_box,
                 &mds_box,
                 &Box::new([BE::ZERO; 2]),
+                &rc3_box,
+                &mds3_box,
+                &w_enc0_box,
+                &w_enc1_box,
+            ),
+            &frame,
+            &periodic,
+            &mut res,
+            &mut ix,
+        );
+
+        assert!(res.iter().any(|v| *v != BE::ZERO));
+    }
+
+    #[test]
+    fn packed_bits_booleanity_violation() {
+        let cols = Columns::baseline();
+        let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
+
+        // map row
+        periodic[0] = BE::ONE;
+        // sponge gate
+        frame.current_mut()[cols.op_sponge] = BE::ONE;
+
+        // set bit b0=2 (invalid), active=1
+        frame.current_mut()[cols.sel_s_b_index(0, 0)] = BE::from(2u64);
+        frame.current_mut()[cols.sel_s_b_index(0, 1)] = BE::ZERO;
+        frame.current_mut()[cols.sel_s_b_index(0, 2)] = BE::ZERO;
+        frame.current_mut()[cols.sel_s_active_index(0)] = BE::ONE;
+
+        // Evaluate
+        let mut res = vec![BE::ZERO; 256];
+        let mut ix = 0usize;
+
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
+        let mds_box = Box::new([[BE::ZERO; 12]; 12]);
+        let dom_box = Box::new([BE::ZERO; 2]);
+        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
+        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
+        let w_enc0_box = Box::new([BE::ZERO; 59]);
+        let w_enc1_box = Box::new([BE::ZERO; 59]);
+
+        // Enable SPONGE feature in PI
+        // so booleanity constraints are active.
+        let mut pi = crate::pi::PublicInputs::default();
+        pi.feature_mask |= crate::pi::FM_SPONGE | crate::pi::FM_VM;
+
+        VmCtrlBlock::eval_block(
+            &BlockCtx::new(
+                &cols, &pi, &rc_box, &mds_box, &dom_box, &rc3_box, &mds3_box, &w_enc0_box, &w_enc1_box,
             ),
             &frame,
             &periodic,

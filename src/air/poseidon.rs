@@ -196,8 +196,23 @@ mod tests {
         let mut res = vec![BE::ZERO; 12 * POSEIDON_ROUNDS + 12];
         let mut ix = 0usize;
 
+        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
+        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
+        let w_enc0_box = Box::new([BE::ZERO; 59]);
+        let w_enc1_box = Box::new([BE::ZERO; 59]);
+
         PoseidonBlock::eval_block(
-            &BlockCtx::new(&cols, &Default::default(), &rc_arr, &ps.mds, &ps.dom),
+            &BlockCtx::new(
+                &cols,
+                &Default::default(),
+                &rc_arr,
+                &ps.mds,
+                &ps.dom,
+                &rc3_box,
+                &mds3_box,
+                &w_enc0_box,
+                &w_enc1_box,
+            ),
             &frame,
             &periodic,
             &mut res,
@@ -229,6 +244,10 @@ mod tests {
         let mut ix = 0usize;
 
         let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
+        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
+        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
+        let w_enc0_box = Box::new([BE::ZERO; 59]);
+        let w_enc1_box = Box::new([BE::ZERO; 59]);
 
         PoseidonBlock::eval_block(
             &BlockCtx::new(
@@ -237,6 +256,10 @@ mod tests {
                 &rc_box,
                 &[[BE::ZERO; 12]; 12],
                 &[BE::ZERO; 2],
+                &rc3_box,
+                &mds3_box,
+                &w_enc0_box,
+                &w_enc1_box,
             ),
             &frame,
             &periodic,
@@ -275,6 +298,10 @@ mod tests {
         let mut ix = 0usize;
 
         let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
+        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
+        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
+        let w_enc0_box = Box::new([BE::ZERO; 59]);
+        let w_enc1_box = Box::new([BE::ZERO; 59]);
 
         PoseidonBlock::eval_block(
             &BlockCtx::new(
@@ -283,6 +310,10 @@ mod tests {
                 &rc_box,
                 &[[BE::ZERO; 12]; 12],
                 &[BE::ZERO; 2],
+                &rc3_box,
+                &mds3_box,
+                &w_enc0_box,
+                &w_enc1_box,
             ),
             &frame,
             &periodic,
@@ -291,5 +322,119 @@ mod tests {
         );
 
         assert!(res.iter().all(|v| *v == BE::ZERO));
+    }
+
+    #[test]
+    fn sponge_binding_mux_positive() {
+        let cols = Columns::baseline();
+
+        let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
+        // map row active
+        periodic[0] = BE::ONE;
+
+        // pose_active and op_sponge on
+        frame.current_mut()[cols.pose_active] = BE::ONE;
+        frame.current_mut()[cols.op_sponge] = BE::ONE;
+
+        // set registers r0..r7 to known values
+        for i in 0..8 {
+            frame.current_mut()[cols.r_index(i)] = BE::from((10 + i) as u64);
+        }
+
+        // choose lane 0,
+        // index = 5 (b2,b1,b0 = 1,0,1),
+        // active=1
+        frame.current_mut()[cols.sel_s_b_index(0, 0)] = BE::ONE; // b0
+        frame.current_mut()[cols.sel_s_b_index(0, 1)] = BE::ZERO; // b1
+        frame.current_mut()[cols.sel_s_b_index(0, 2)] = BE::ONE; // b2
+        frame.current_mut()[cols.sel_s_active_index(0)] = BE::ONE;
+
+        // expected lane value = r5 = 15
+        let expected = BE::from(15u64);
+        frame.current_mut()[cols.lane_index(0)] = expected;
+
+        // Build ctx with VM+SPONGE
+        // features to enable binding constraints
+        let mut pi = crate::pi::PublicInputs::default();
+        pi.feature_mask |= crate::pi::FM_VM | crate::pi::FM_SPONGE;
+
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
+        let mds_box = Box::new([[BE::ZERO; 12]; 12]);
+        let dom_box = Box::new([BE::ZERO; 2]);
+
+        let mut res = vec![BE::ZERO; 12 * POSEIDON_ROUNDS + 12 + 16];
+        let mut ix = 0usize;
+
+        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
+        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
+        let w_enc0_box = Box::new([BE::ZERO; 59]);
+        let w_enc1_box = Box::new([BE::ZERO; 59]);
+
+        PoseidonBlock::eval_block(
+            &BlockCtx::new(
+                &cols, &pi, &rc_box, &mds_box, &dom_box, &rc3_box, &mds3_box, &w_enc0_box, &w_enc1_box,
+            ),
+            &frame,
+            &periodic,
+            &mut res,
+            &mut ix,
+        );
+
+        assert!(res.iter().all(|v| *v == BE::ZERO));
+    }
+
+    #[test]
+    fn sponge_binding_mux_negative() {
+        let cols = Columns::baseline();
+
+        let mut frame = EvaluationFrame::<BE>::new(cols.width(0));
+        let mut periodic = vec![BE::ZERO; 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1];
+        periodic[0] = BE::ONE; // map
+
+        frame.current_mut()[cols.pose_active] = BE::ONE;
+        frame.current_mut()[cols.op_sponge] = BE::ONE;
+
+        for i in 0..8 {
+            frame.current_mut()[cols.r_index(i)] = BE::from((20 + i) as u64);
+        }
+
+        // pick index 3 (b2,b1,b0=0,1,1),
+        // active=1
+        frame.current_mut()[cols.sel_s_b_index(0, 0)] = BE::ONE;
+        frame.current_mut()[cols.sel_s_b_index(0, 1)] = BE::ONE;
+        frame.current_mut()[cols.sel_s_b_index(0, 2)] = BE::ZERO;
+        frame.current_mut()[cols.sel_s_active_index(0)] = BE::ONE;
+
+        // put wrong lane
+        // value (e.g., r5)
+        frame.current_mut()[cols.lane_index(0)] = BE::from(25u64);
+
+        let mut pi = crate::pi::PublicInputs::default();
+        pi.feature_mask |= crate::pi::FM_VM | crate::pi::FM_SPONGE;
+
+        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
+        let mds_box = Box::new([[BE::ZERO; 12]; 12]);
+        let dom_box = Box::new([BE::ZERO; 2]);
+
+        let mut res = vec![BE::ZERO; 12 * POSEIDON_ROUNDS + 12 + 16];
+        let mut ix = 0usize;
+
+        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
+        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
+        let w_enc0_box = Box::new([BE::ZERO; 59]);
+        let w_enc1_box = Box::new([BE::ZERO; 59]);
+
+        PoseidonBlock::eval_block(
+            &BlockCtx::new(
+                &cols, &pi, &rc_box, &mds_box, &dom_box, &rc3_box, &mds3_box, &w_enc0_box, &w_enc1_box,
+            ),
+            &frame,
+            &periodic,
+            &mut res,
+            &mut ix,
+        );
+
+        assert!(res.iter().any(|v| *v != BE::ZERO));
     }
 }

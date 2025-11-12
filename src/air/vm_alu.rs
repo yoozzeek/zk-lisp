@@ -387,6 +387,10 @@ mod tests {
 
             m
         });
+        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
+        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
+        let w_enc0_box = Box::new([BE::ZERO; 59]);
+        let w_enc1_box = Box::new([BE::ZERO; 59]);
 
         VmAluBlock::eval_block(
             &BlockCtx::new(
@@ -395,6 +399,10 @@ mod tests {
                 &rc_box,
                 &mds_box,
                 &Box::new([BE::ZERO; 2]),
+                &rc3_box,
+                &mds3_box,
+                &w_enc0_box,
+                &w_enc1_box,
             ),
             &frame,
             &periodic,

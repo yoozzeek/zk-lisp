@@ -5,18 +5,20 @@
 mod merkle;
 mod mixers;
 mod poseidon;
+mod rom;
 mod schedule;
 mod vm_alu;
 mod vm_ctrl;
 
 use crate::air::{
-    merkle::MerkleBlock, poseidon::PoseidonBlock, schedule::ScheduleBlock, vm_alu::VmAluBlock,
-    vm_ctrl::VmCtrlBlock,
+    merkle::MerkleBlock, poseidon::PoseidonBlock, rom::RomBlock, schedule::ScheduleBlock,
+    vm_alu::VmAluBlock, vm_ctrl::VmCtrlBlock,
 };
 use crate::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::pi::{FeaturesMap, PublicInputs};
-use crate::poseidon as poseidon_core;
+use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
 use crate::schedule as schedule_core;
+use crate::{poseidon as poseidon_core, utils};
 
 use core::marker::PhantomData;
 use winterfell::math::FieldElement;
@@ -33,16 +35,25 @@ pub struct BlockCtx<'a, E: FieldElement> {
     pub poseidon_rc: &'a [[BE; 12]; POSEIDON_ROUNDS],
     pub poseidon_mds: &'a [[BE; 12]; 12],
     pub poseidon_dom: &'a [BE; 2],
+    pub rom_rc: &'a [[BE; 3]; POSEIDON_ROUNDS],
+    pub rom_mds: &'a [[BE; 3]; 3],
+    pub rom_w_enc0: &'a [BE; 59],
+    pub rom_w_enc1: &'a [BE; 59],
     _pd: PhantomData<E>,
 }
 
 impl<'a, E: FieldElement> BlockCtx<'a, E> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cols: &'a Columns,
         pub_inputs: &'a PublicInputs,
         poseidon_rc: &'a [[BE; 12]; POSEIDON_ROUNDS],
         poseidon_mds: &'a [[BE; 12]; 12],
         poseidon_dom: &'a [BE; 2],
+        rom_rc: &'a [[BE; 3]; POSEIDON_ROUNDS],
+        rom_mds: &'a [[BE; 3]; 3],
+        rom_w_enc0: &'a [BE; 59],
+        rom_w_enc1: &'a [BE; 59],
     ) -> Self {
         Self {
             cols,
@@ -50,6 +61,10 @@ impl<'a, E: FieldElement> BlockCtx<'a, E> {
             poseidon_rc,
             poseidon_mds,
             poseidon_dom,
+            rom_rc,
+            rom_mds,
+            rom_w_enc0,
+            rom_w_enc1,
             _pd: PhantomData,
         }
     }
@@ -83,6 +98,10 @@ pub struct ZkLispAir {
     poseidon_rc: [[BaseElement; 12]; POSEIDON_ROUNDS],
     poseidon_mds: [[BaseElement; 12]; 12],
     poseidon_dom: [BaseElement; 2],
+    rom_rc: [[BaseElement; 3]; POSEIDON_ROUNDS],
+    rom_mds: [[BaseElement; 3]; 3],
+    rom_w_enc0: [BaseElement; 59],
+    rom_w_enc1: [BaseElement; 59],
 }
 
 impl Air for ZkLispAir {
@@ -114,6 +133,11 @@ impl Air for ZkLispAir {
         if features.merkle {
             <MerkleBlock as AirBlock<BE>>::push_degrees(&mut degrees);
         }
+        // ROM accumulator when program
+        // commitment is provided.
+        if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            <RomBlock as AirBlock<BE>>::push_degrees(&mut degrees);
+        }
 
         // Boundary assertions count per level:
         let levels = (info.length() / STEPS_PER_LEVEL_P2).max(1);
@@ -133,7 +157,7 @@ impl Air for ZkLispAir {
             num_assertions += 1;
 
             if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-                num_assertions += 1;
+                num_assertions += 1; // PC=0 at lvl0 map
             }
 
             // bind VM args at lvl0 map row
@@ -146,6 +170,13 @@ impl Air for ZkLispAir {
         }
         if num_assertions == 0 {
             num_assertions = 1;
+        }
+
+        // ROM accumulator boundaries:
+        // - initial s0(map0) = 0 (1)
+        // - final s0(last) = f0 and s1(last) = f1 (2)
+        if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            num_assertions += 3;
         }
 
         // Debug: print expected evals and context
@@ -174,6 +205,50 @@ impl Air for ZkLispAir {
         let mds = ps.mds;
         let dom = ps.dom;
 
+        // Derive ROM t=3 params
+        let rc_vec = derive_rom_round_constants_3(suite_id, POSEIDON_ROUNDS);
+        let mut rom_rc_arr = [[BaseElement::ZERO; 3]; POSEIDON_ROUNDS];
+
+        for (i, row) in rc_vec.iter().enumerate().take(POSEIDON_ROUNDS) {
+            rom_rc_arr[i] = *row;
+        }
+
+        let rom_mds_arr = derive_rom_mds_cauchy_3x3(suite_id);
+
+        // Precompute ROM encoding weights
+        // W_k = g^k, k=1..59 for seeds
+        // ROM_W_SEED_0 and ROM_W_SEED_1.
+        let compute_weights = |seed: u32| -> [BaseElement; 59] {
+            let g = BaseElement::from(3u64);
+
+            // compute g^seed via exp
+            let mut acc = BaseElement::ONE;
+            let mut base = g;
+            let mut e = seed as u64;
+
+            while e > 0 {
+                if (e & 1) == 1 {
+                    acc *= base;
+                }
+
+                base *= base;
+                e >>= 1;
+            }
+
+            let mut out = [BaseElement::ZERO; 59];
+            let mut cur = acc * g; // g^(seed+1)
+
+            for item in out.iter_mut() {
+                *item = cur;
+                cur *= g;
+            }
+
+            out
+        };
+
+        let rom_w_enc0 = compute_weights(utils::ROM_W_SEED_0);
+        let rom_w_enc1 = compute_weights(utils::ROM_W_SEED_1);
+
         Self {
             ctx,
             pub_inputs,
@@ -182,6 +257,10 @@ impl Air for ZkLispAir {
             poseidon_rc: rc_arr,
             poseidon_mds: mds,
             poseidon_dom: dom,
+            rom_rc: rom_rc_arr,
+            rom_mds: rom_mds_arr,
+            rom_w_enc0,
+            rom_w_enc1,
         }
     }
 
@@ -201,6 +280,10 @@ impl Air for ZkLispAir {
             &self.poseidon_rc,
             &self.poseidon_mds,
             &self.poseidon_dom,
+            &self.rom_rc,
+            &self.rom_mds,
+            &self.rom_w_enc0,
+            &self.rom_w_enc1,
         );
 
         let mut ix = 0usize;
@@ -214,6 +297,13 @@ impl Air for ZkLispAir {
         }
         if self.features.merkle {
             MerkleBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+        }
+
+        // ROM accumulator block is
+        // independent of pose_active
+        // and always runs when commit != 0
+        if self.pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            RomBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
         }
 
         debug_assert_eq!(ix, result.len());
@@ -248,6 +338,10 @@ impl Air for ZkLispAir {
             &self.poseidon_rc,
             &self.poseidon_mds,
             &self.poseidon_dom,
+            &self.rom_rc,
+            &self.rom_mds,
+            &self.rom_w_enc0,
+            &self.rom_w_enc1,
         );
         ScheduleBlock::append_assertions(&bctx_sched, &mut out, last);
 
@@ -281,6 +375,12 @@ impl Air for ZkLispAir {
 
                 out.push(Assertion::single(self.cols.r_index(reg), row, exp));
             }
+        }
+
+        // ROM accumulator boundary assertions:
+        // first map = 0, last = commit
+        if self.pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            RomBlock::append_assertions(&bctx_sched, &mut out, last);
         }
 
         if out.is_empty() {
@@ -406,7 +506,7 @@ impl ZkLispAir {
     #[inline]
     #[allow(unused_assignments)]
     fn print_evals_debug(
-        _pub_inputs: &PublicInputs,
+        pub_inputs: &PublicInputs,
         info: &TraceInfo,
         features: &FeaturesMap,
         degrees: &[TransitionConstraintDegree],
@@ -431,6 +531,12 @@ impl ZkLispAir {
         if features.poseidon {
             let len = 12 * POSEIDON_ROUNDS + 12; // rounds + holds
             dbg.push(("poseidon", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+        }
+        // ROM block
+        if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            let len = 3 * POSEIDON_ROUNDS + 3 + 2;
+            dbg.push(("rom", evals[ofs..ofs + len].to_vec()));
             ofs += len;
         }
         if features.vm {
@@ -463,7 +569,7 @@ impl ZkLispAir {
     #[allow(unused_assignments)]
     fn print_degrees_debug(
         ctx: &AirContext<BE>,
-        _pub_inputs: &PublicInputs,
+        pub_inputs: &PublicInputs,
         features: &FeaturesMap,
     ) {
         let tl = ctx.trace_len();
@@ -487,6 +593,11 @@ impl ZkLispAir {
         if features.poseidon {
             let len = 12 * POSEIDON_ROUNDS + 12; // rounds + holds
             ranges.push(("poseidon", ofs, ofs + len));
+            ofs += len;
+        }
+        if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            let len = 3 * POSEIDON_ROUNDS + 3 + 2;
+            ranges.push(("rom", ofs, ofs + len));
             ofs += len;
         }
         if features.vm {

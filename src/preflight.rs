@@ -193,7 +193,7 @@ pub(crate) fn run(
             };
 
             // RAM snapshot
-            let cols = crate::layout::Columns::baseline();
+            let cols = layout::Columns::baseline();
             let ram_snap = if cols.mem_shadow < trace.width() {
                 Some(RamSnap {
                     shadow_cur: fe_s(frame.current()[cols.mem_shadow]),

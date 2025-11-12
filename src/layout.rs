@@ -191,8 +191,10 @@ impl Columns {
         // Gadget: 32 reusable bit witnesses
         let gadget_b_start = pose_active + 1;
 
-        // Final width after gadget bits
-        let width = gadget_b_start + 32;
+        // ROM accumulator t=3 lanes after gadget bits
+        let rom_s_start = gadget_b_start + 32;
+
+        let width = rom_s_start + 3;
 
         Self {
             lane_l,
@@ -320,6 +322,12 @@ impl Columns {
         debug_assert!(i < 17);
 
         self.rom_op_start + i
+    }
+
+    pub fn rom_s_index(&self, i: usize) -> usize {
+        debug_assert!(i < 3);
+
+        self.gadget_b_start + 32 + i
     }
 
     pub fn width(&self, _feature_mask: u64) -> usize {

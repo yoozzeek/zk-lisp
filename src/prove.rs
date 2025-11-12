@@ -155,6 +155,17 @@ impl WProver for ZkWinterfellProver {
             }
         }
 
+        // Populate internal field commitment f0/f1 from
+        // trace if missing. This ensures ROM final-state
+        // binding is consistent even when PublicInputs
+        // were constructed without the builder.
+        if pi.program_commitment.iter().any(|b| *b != 0) {
+            let cols = layout::Columns::baseline();
+            let last = trace.length().saturating_sub(1);
+            pi.program_commitment_f0 = trace.get(cols.rom_s_index(0), last);
+            pi.program_commitment_f1 = trace.get(cols.rom_s_index(1), last);
+        }
+
         pi
     }
 

@@ -16,6 +16,11 @@ const DOM_POSEIDON_MDS_X: &str = "zkl/poseidon2/mds/x";
 const DOM_POSEIDON_MDS_Y: &str = "zkl/poseidon2/mds/y";
 const DOM_POSEIDON_MDS_Y_FALLBACK: &str = "zkl/poseidon2/mds/y/fallback";
 
+// Domains for ROM t=3 parameters
+const DOM_ROM_RC: &str = "zkl/rom3/rc";
+const DOM_ROM_MDS_X: &str = "zkl/rom3/mds/x";
+const DOM_ROM_MDS_Y: &str = "zkl/rom3/mds/y";
+
 #[derive(Clone)]
 pub struct PoseidonSuite {
     pub dom: [BE; 2],
@@ -48,9 +53,21 @@ pub fn get_poseidon_suite_with_rounds(suite_id: &[u8; 32], rounds: usize) -> Pos
     suite
 }
 
+pub fn derive_rom_round_constants_3(suite_id: &[u8; 32], rounds: usize) -> Vec<[BE; 3]> {
+    let mut rc = vec![[BE::ZERO; 3]; rounds];
+    for (r, row) in rc.iter_mut().enumerate() {
+        let r_b = [r as u8];
+        for (lane, cell) in row.iter_mut().enumerate() {
+            let lane_b = [lane as u8];
+            *cell = ro_from_slices(DOM_ROM_RC, &[&suite_id[..], &r_b[..], &lane_b[..]]);
+        }
+    }
+
+    rc
+}
+
 pub fn derive_poseidon_round_constants_12(suite_id: &[u8; 32], rounds: usize) -> Vec<[BE; 12]> {
     let mut rc = vec![[BE::ZERO; 12]; rounds];
-
     for (r, row) in rc.iter_mut().enumerate() {
         let r_b = [r as u8];
         for (lane, cell) in row.iter_mut().enumerate() {
@@ -67,6 +84,40 @@ pub fn derive_poseidon_domain_tags(suite_id: &[u8; 32]) -> [BE; 2] {
         ro_from_slices(DOM_POSEIDON_DOM0, &[&suite_id[..]]),
         ro_from_slices(DOM_POSEIDON_DOM1, &[&suite_id[..]]),
     ]
+}
+
+pub fn derive_rom_mds_cauchy_3x3(suite_id: &[u8; 32]) -> [[BE; 3]; 3] {
+    fn derive_points(domain: &str, suite_id: &[u8; 32], n: usize) -> Vec<BE> {
+        let mut pts = Vec::with_capacity(n);
+        let mut ctr: u32 = 0;
+
+        while pts.len() < n {
+            let idx_b = [pts.len() as u8];
+            let ctr_b = ctr.to_le_bytes();
+            let cand = ro_from_slices(domain, &[&suite_id[..], &idx_b[..], &ctr_b[..]]);
+
+            if cand != BE::ZERO && !pts.contains(&cand) {
+                pts.push(cand);
+            } else {
+                ctr = ctr.wrapping_add(1);
+            }
+        }
+
+        pts
+    }
+
+    let x = derive_points(DOM_ROM_MDS_X, suite_id, 3);
+    let y = derive_points(DOM_ROM_MDS_Y, suite_id, 3);
+
+    let mut m = [[BE::ZERO; 3]; 3];
+    for (i, xi) in x.iter().enumerate().take(3) {
+        for (j, yj) in y.iter().enumerate().take(3) {
+            let denom = *xi + *yj;
+            m[i][j] = denom.inv();
+        }
+    }
+
+    m
 }
 
 pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
