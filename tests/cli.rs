@@ -15,7 +15,7 @@ fn run_add_json_ok() {
     let mut cmd = bin();
     cmd.args([
         "run",
-        "examples/zk_example.zlisp",
+        "examples/hello-zk.zlisp",
         "--arg",
         "2",
         "--arg",
@@ -36,7 +36,7 @@ fn prove_and_verify_ok() {
     let mut cmd = bin();
     cmd.args([
         "prove",
-        "examples/zk_example.zlisp",
+        "examples/hello-zk.zlisp",
         "--arg",
         "2",
         "--arg",
@@ -52,7 +52,7 @@ fn prove_and_verify_ok() {
     cmd2.args([
         "verify",
         &format!("@{}", &path),
-        "examples/zk_example.zlisp",
+        "examples/hello-zk.zlisp",
         "--arg",
         "2",
         "--arg",
@@ -80,7 +80,7 @@ fn verify_bad_hex_fails_json() {
     cmd.args([
         "verify",
         "zzzz",
-        "examples/zk_example.zlisp",
+        "examples/hello-zk.zlisp",
         "--arg",
         "2",
         "--arg",
@@ -104,7 +104,7 @@ fn run_too_big_file_limit() {
         "--max-bytes",
         "1",
         "run",
-        "examples/zk_example.zlisp",
+        "examples/hello-zk.zlisp",
         "--arg",
         "1",
         "--json",

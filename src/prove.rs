@@ -220,7 +220,7 @@ impl ZkWinterfellProver {
         for lvl in (0..lvls).rev() {
             let base = lvl * steps;
             let row_fin = base + schedule::pos_final();
-            
+
             for i in 0..layout::NR {
                 if trace.get(cols.sel_dst0_index(i), row_fin) == BE::ONE {
                     return (i as u8, (row_fin + 1) as u32);

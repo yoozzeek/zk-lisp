@@ -142,7 +142,7 @@ impl<'a> LowerCtx<'a> {
             self.cur_live -= 1;
         }
     }
-    
+
     pub fn val_reg(&self, v: &RVal) -> Result<u8, Error> {
         match *v {
             RVal::Owned(r) | RVal::Borrowed(r) => Ok(r),
@@ -561,9 +561,21 @@ fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<RVal, Error> 
 
     // Emit op using semantic (a,b)
     match op {
-        BinOp::Add => cx.b.push(Op::Add { dst, a: a_r, b: b_r }),
-        BinOp::Sub => cx.b.push(Op::Sub { dst, a: a_r, b: b_r }),
-        BinOp::Mul => cx.b.push(Op::Mul { dst, a: a_r, b: b_r }),
+        BinOp::Add => cx.b.push(Op::Add {
+            dst,
+            a: a_r,
+            b: b_r,
+        }),
+        BinOp::Sub => cx.b.push(Op::Sub {
+            dst,
+            a: a_r,
+            b: b_r,
+        }),
+        BinOp::Mul => cx.b.push(Op::Mul {
+            dst,
+            a: a_r,
+            b: b_r,
+        }),
     }
 
     // Free temps
@@ -610,7 +622,10 @@ fn lower_neg(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         _ => cx.alloc()?,
     };
 
-    cx.b.push(Op::Neg { dst, a: cx.val_reg(&a)? });
+    cx.b.push(Op::Neg {
+        dst,
+        a: cx.val_reg(&a)?,
+    });
 
     // reused 'a' remains
     // owned as result
@@ -641,7 +656,10 @@ fn lower_assert(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let c = c.into_owned(cx)?;
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Assert { dst, c: cx.val_reg(&c)? });
+    cx.b.push(Op::Assert {
+        dst,
+        c: cx.val_reg(&c)?,
+    });
     free_if_owned(cx, c);
 
     Ok(RVal::Owned(dst))
@@ -1483,7 +1501,10 @@ fn lower_assert_bit(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let x = x.into_owned(cx)?;
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::AssertBit { dst, r: cx.val_reg(&x)? });
+    cx.b.push(Op::AssertBit {
+        dst,
+        r: cx.val_reg(&x)?,
+    });
 
     free_if_owned(cx, x);
 
@@ -1541,8 +1562,14 @@ fn lower_assert_range(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         let x = x.into_owned(cx)?;
         let dst = cx.alloc()?;
 
-        cx.b.push(Op::AssertRangeLo { dst, r: cx.val_reg(&x)? });
-        cx.b.push(Op::AssertRangeHi { dst, r: cx.val_reg(&x)? });
+        cx.b.push(Op::AssertRangeLo {
+            dst,
+            r: cx.val_reg(&x)?,
+        });
+        cx.b.push(Op::AssertRangeHi {
+            dst,
+            r: cx.val_reg(&x)?,
+        });
 
         free_if_owned(cx, x);
 
@@ -1578,7 +1605,7 @@ fn lower_safe_add(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // inputs in u64
     let a_r = cx.val_reg(&a)?;
     let b_r = cx.val_reg(&b)?;
-    
+
     assert_range_bits_for_reg(cx, a_r, 64)?;
     assert_range_bits_for_reg(cx, b_r, 64)?;
 
@@ -1621,7 +1648,7 @@ fn lower_safe_sub(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // inputs in u64
     let a_r = cx.val_reg(&a)?;
     let b_r = cx.val_reg(&b)?;
-    
+
     assert_range_bits_for_reg(cx, a_r, 64)?;
     assert_range_bits_for_reg(cx, b_r, 64)?;
 
@@ -1666,7 +1693,7 @@ fn lower_safe_mul(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // Use 32x32->64 safe policy
     let a_r = cx.val_reg(&a)?;
     let b_r = cx.val_reg(&b)?;
-    
+
     assert_range_bits_for_reg(cx, a_r, 32)?;
     assert_range_bits_for_reg(cx, b_r, 32)?;
 

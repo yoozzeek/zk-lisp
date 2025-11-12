@@ -26,16 +26,16 @@ Quickstart:
 
   Run:
     cargo run --bin zk-lisp -- \
-      run examples/zk_example.zlisp --arg 2 --arg 3
+      run examples/hello-zk.zlisp --arg 2 --arg 3
 
   Prove:
     cargo run --bin zk-lisp -- \
-      prove examples/zk_example.zlisp \
+      prove examples/hello-zk.zlisp \
         --out ./proof.bin --quiet --arg 2 --arg 3
 
   Verify:
     cargo run --bin zk-lisp -- \
-      verify @./proof.bin examples/zk_example.zlisp \
+      verify @./proof.bin examples/hello-zk.zlisp \
         --arg 2 --arg 3
 
 Testing:

@@ -328,7 +328,7 @@ fn cmd_prove(
 
     if !args.quiet {
         let proof_b64 = base64::engine::general_purpose::STANDARD.encode(&proof_bytes);
-        
+
         if json {
             println!(
                 "{}",
@@ -342,12 +342,7 @@ fn cmd_prove(
         } else {
             // Print a short preview
             // to avoid huge stdout.
-            let preview = if proof_b64.len() > 88 {
-                format!("{}... (len={} bytes)", &proof_b64[..88], proof_bytes.len())
-            } else {
-                format!("{} (len={} bytes)", proof_b64, proof_bytes.len())
-            };
-
+            let preview = format!("{} (len={} bytes)", proof_b64, proof_bytes.len());
             println!("proof: {preview}");
         }
     }
@@ -518,20 +513,20 @@ fn cmd_repl() -> Result<(), CliError> {
         // accumulate for multiline
         acc.push_str(&line);
         acc.push('\n');
-        
+
         // enforce size cap to avoid runaway buffers
         if acc.len() > REPL_MAX_BYTES {
             println!("error: input too large (>{REPL_MAX_BYTES} bytes); buffer cleared");
-            
+
             acc.clear();
             need_more = false;
-            
+
             continue;
         }
-        
+
         let bal = paren_balance(&acc);
         need_more = bal > 0;
-        
+
         if need_more {
             continue;
         }
@@ -682,12 +677,9 @@ fn cmd_repl() -> Result<(), CliError> {
                                     Ok(bytes) => {
                                         let proof_b64 = base64::engine::general_purpose::STANDARD
                                             .encode(&bytes);
-                                        let preview = if proof_b64.len() > 88 {
-                                            format!("{}... (len={} bytes)", &proof_b64[..88], bytes.len())
-                                        } else {
-                                            format!("{} (len={} bytes)", proof_b64, bytes.len())
-                                        };
-                                        
+                                        let preview =
+                                            format!("{} (len={} bytes)", proof_b64, bytes.len());
+
                                         println!("proof: {preview}");
                                     }
                                 },
