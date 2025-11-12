@@ -4,9 +4,7 @@
 
 use std::env;
 use std::error::Error;
-use tracing::{error, info};
 use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
-use zk_lisp::logging;
 use zk_lisp::pi;
 use zk_lisp::prove::{self, ZkProver, verify_proof};
 
@@ -24,8 +22,7 @@ fn opts() -> ProofOptions {
 }
 
 fn usage() {
-    error!(
-        target = "examples.merkle_airdrop_claim",
+    println!(
         "usage: cargo run --example merkle_airdrop_claim -- <addr:u64> <amount:u64> <path_pairs> <root_hex>\npath_pairs: d0:s0,d1:s1,... (e.g. 0:2,1:3); root_hex: 0x... (128-bit LE16)"
     );
 }
@@ -98,7 +95,7 @@ fn build_program(
         r#"
 (def (main {})
   (let ((receipt (hash2 addr amount)))
-        (merkle-verify receipt ({}))
+    (load-ca receipt ({}))
     receipt))
 "#,
         params.join(" "),
@@ -116,8 +113,7 @@ fn build_program(
 }
 
 fn main() {
-    logging::init_with_level(None);
-    info!(target = "examples.merkle_airdrop_claim", "start");
+    println!("start");
 
     let mut it = env::args().skip(1);
 
@@ -153,17 +149,14 @@ fn main() {
     let path = match parse_pairs(&pairs_s) {
         Ok(v) => v,
         Err(e) => {
-            error!(target = "examples.merkle_airdrop_claim", "{e}");
+            println!("{e}");
             return;
         }
     };
     let program = match build_program(addr, amount, &path) {
         Ok(p) => p,
         Err(e) => {
-            error!(
-                target = "examples.merkle_airdrop_claim",
-                "compile failed: {e}",
-            );
+            println!("compile failed: {e}");
             return;
         }
     };
@@ -177,7 +170,7 @@ fn main() {
     let root_bytes = match parse_root_hex_to_bytes32(&root_hex) {
         Ok(b) => b,
         Err(e) => {
-            error!(target = "examples.merkle_airdrop_claim", "{e}");
+            println!("{e}");
             return;
         }
     };
@@ -187,10 +180,7 @@ fn main() {
     let trace = match prove::build_trace(&program) {
         Ok(t) => t,
         Err(e) => {
-            error!(
-                target = "examples.merkle_airdrop_claim",
-                "trace build failed: {e}",
-            );
+            println!("trace build failed: {e}");
             return;
         }
     };
@@ -199,14 +189,11 @@ fn main() {
     let proof = match prover.prove(trace) {
         Ok(p) => p,
         Err(e) => {
-            error!(
-                target = "examples.merkle_airdrop_claim",
-                "prove failed: {e}",
-            );
+            println!("prove failed: {e}");
 
             if let Some(mut s) = e.source() {
                 while let Some(c) = s.source() {
-                    error!(target = "examples.merkle_airdrop_claim", "caused by: {c}",);
+                    println!("caused by: {c}");
                     s = c;
                 }
             }
@@ -216,14 +203,11 @@ fn main() {
     };
 
     if let Err(e) = verify_proof(proof, pi, &opts()) {
-        error!(
-            target = "examples.merkle_airdrop_claim",
-            "verify failed: {e}",
-        );
+        println!("verify failed: {e}");
 
         if let Some(mut s) = e.source() {
             while let Some(c) = s.source() {
-                error!(target = "examples.merkle_airdrop_claim", "caused by: {c}",);
+                println!("caused by: {c}");
                 s = c;
             }
         }
@@ -231,8 +215,5 @@ fn main() {
         return;
     }
 
-    info!(
-        target = "examples.merkle_airdrop_claim",
-        "OK: claim verified for addr={addr}, amount={amount}",
-    );
+    println!("OK: claim verified for addr={addr}, amount={amount}");
 }

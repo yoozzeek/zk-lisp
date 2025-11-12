@@ -270,6 +270,8 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "str64" => lower_str64(cx, tail),
                     "hash2" => lower_hash2(cx, tail),
                     "merkle-verify" => lower_merkle_verify(cx, tail),
+                    "load-ca" => lower_load_ca(cx, tail),
+                    "store-ca" => lower_store_ca(cx, tail),
                     "select" => lower_select(cx, tail),
                     "assert" => lower_assert(cx, tail),
                     "bit?" => lower_bit_pred(cx, tail),
@@ -2195,6 +2197,117 @@ fn lower_store(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     Ok(())
 }
 
+// Lower (load-ca leaf ((d0 s0) (d1 s1) ...)) -> leaf value;
+// Verifies membership by binding
+// last-level root to PI via MerkleStepLast.
+fn lower_load_ca(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("load-ca".into()));
+    }
+
+    let leaf = lower_expr(cx, rest[0].clone())?;
+    let leaf = leaf.into_owned(cx)?;
+
+    // list of (dir sib)
+    let path_list = match &rest[1] {
+        Ast::List(items) => items,
+        _ => return Err(Error::InvalidForm("load-ca: path".into())),
+    };
+
+    if path_list.is_empty() {
+        return Err(Error::InvalidForm("load-ca: empty path".into()));
+    }
+
+    // first step
+    let (dir0_reg, sib0_reg) = parse_dir_sib_pair(cx, &path_list[0])?;
+    cx.b.push(Op::MerkleStepFirst {
+        leaf_reg: leaf.reg(),
+        dir_reg: dir0_reg,
+        sib_reg: sib0_reg,
+    });
+
+    cx.free_reg(dir0_reg);
+    cx.free_reg(sib0_reg);
+
+    for pair in path_list
+        .iter()
+        .skip(1)
+        .take(path_list.len().saturating_sub(2))
+    {
+        let (dir_r, sib_r) = parse_dir_sib_pair(cx, pair)?;
+        cx.b.push(Op::MerkleStep {
+            dir_reg: dir_r,
+            sib_reg: sib_r,
+        });
+
+        cx.free_reg(dir_r);
+        cx.free_reg(sib_r);
+    }
+
+    // last step binds
+    // acc to PI root
+    if path_list.len() > 1 {
+        let (dir_l, sib_l) = parse_dir_sib_pair(cx, path_list.last().unwrap())?;
+        cx.b.push(Op::MerkleStepLast {
+            dir_reg: dir_l,
+            sib_reg: sib_l,
+        });
+
+        cx.free_reg(dir_l);
+        cx.free_reg(sib_l);
+    }
+
+    Ok(leaf)
+}
+
+// Lower (store-ca new_leaf ((d0 s0) (d1 s1) ...)) -> 0;
+// acc holds new_root.
+fn lower_store_ca(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("store-ca".into()));
+    }
+
+    let leaf = lower_expr(cx, rest[0].clone())?;
+    let leaf = leaf.into_owned(cx)?;
+
+    let path_list = match &rest[1] {
+        Ast::List(items) => items,
+        _ => return Err(Error::InvalidForm("store-ca: path".into())),
+    };
+
+    if path_list.is_empty() {
+        return Err(Error::InvalidForm("store-ca: empty path".into()));
+    }
+
+    let (dir0_reg, sib0_reg) = parse_dir_sib_pair(cx, &path_list[0])?;
+    cx.b.push(Op::MerkleStepFirst {
+        leaf_reg: leaf.reg(),
+        dir_reg: dir0_reg,
+        sib_reg: sib0_reg,
+    });
+
+    cx.free_reg(dir0_reg);
+    cx.free_reg(sib0_reg);
+
+    // rest; no Last at the end
+    // to avoid binding to PI root.
+    for pair in path_list.iter().skip(1) {
+        let (dir_r, sib_r) = parse_dir_sib_pair(cx, pair)?;
+        cx.b.push(Op::MerkleStep {
+            dir_reg: dir_r,
+            sib_reg: sib_r,
+        });
+
+        cx.free_reg(dir_r);
+        cx.free_reg(sib_r);
+    }
+
+    // free temp leaf
+    cx.free_reg(leaf.reg());
+
+    Ok(RVal::Imm(0))
+}
+
 // Determine if subtree is pure arithmetic
 fn is_pure_arith(ast: &Ast) -> bool {
     match ast {
@@ -2375,4 +2488,19 @@ fn assert_range_bits_for_reg(cx: &mut LowerCtx, r: u8, bits: u8) -> Result<(), E
     }
 
     Ok(())
+}
+
+fn parse_dir_sib_pair(cx: &mut LowerCtx, pair: &Ast) -> Result<(u8, u8), Error> {
+    let Ast::List(items) = pair else {
+        return Err(Error::InvalidForm("path: pair".into()));
+    };
+
+    if items.len() != 2 {
+        return Err(Error::InvalidForm("path: pair arity".into()));
+    }
+
+    let dir = lower_expr(cx, items[0].clone())?.into_owned(cx)?;
+    let sib = lower_expr(cx, items[1].clone())?.into_owned(cx)?;
+
+    Ok((dir.reg(), sib.reg()))
 }

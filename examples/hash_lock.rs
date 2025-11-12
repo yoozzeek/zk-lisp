@@ -8,7 +8,6 @@ use winterfell::ProofOptions;
 use winterfell::math::StarkField;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp::compiler::compile_entry;
-use zk_lisp::logging;
 use zk_lisp::poseidon::poseidon_hash_two_lanes;
 use zk_lisp::prove::{self, ZkProver, verify_proof};
 
@@ -53,24 +52,19 @@ fn hex128_to_bytes32(hex: &str) -> Result<[u8; 32], String> {
 }
 
 fn main() {
-    logging::init_with_level(None);
-    tracing::info!(target = "examples.hash_lock", "start");
+    println!("start");
 
     let (secret, salt, expect_hex) = match parse_args() {
         Ok(v) => v,
         Err(msg) => {
-            tracing::error!(
-                target = "examples.hash_lock",
+            println!(
                 "usage: cargo run --example hash_lock -- <secret:u64> <salt:u64> [<expected_hex>]\nerror: {msg}"
             );
             return;
         }
     };
 
-    tracing::info!(
-        target = "examples.hash_lock",
-        "args: secret={secret}, salt={salt}"
-    );
+    println!("args: secret={secret}, salt={salt}");
 
     // Program: compute commit = Poseidon(secret, salt)
     let src = r"
@@ -81,11 +75,15 @@ fn main() {
     // Build program with entry args
     let program = compile_entry(src, &[secret, salt]).expect("compile");
 
-    tracing::info!(
-        target = "examples.hash_lock",
-        "suite_id (commitment) = 0x{:02x?}",
-        program.commitment
+    let commit_hex = format!(
+        "0x{}",
+        program
+            .commitment
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     );
+    println!("suite_id (commitment) = {commit_hex}");
 
     // Compute expected digest on host
     let expected = poseidon_hash_two_lanes(&program.commitment, BE::from(secret), BE::from(salt));
@@ -96,7 +94,7 @@ fn main() {
         match hex128_to_bytes32(&hex) {
             Ok(b) => b,
             Err(e) => {
-                tracing::error!(target = "examples.hash_lock", "invalid expected_hex: {e}");
+                println!("invalid expected_hex: {e}");
                 return;
             }
         }
@@ -119,31 +117,31 @@ fn main() {
 
     let trace = prove::build_trace_with_pi(&program, &pi).expect("trace");
 
-    tracing::info!(target = "examples.hash_lock", "proving...");
+    println!("proving...");
 
     let opts = opts();
     let prover = ZkProver::new(opts.clone(), pi.clone());
 
     match prover.prove(trace) {
         Err(e) => {
-            tracing::error!(target = "examples.hash_lock", "prove failed: {e}");
+            println!("prove failed: {e}");
 
             let mut s = e.source();
             while let Some(c) = s {
-                tracing::error!(target = "examples.hash_lock", "caused by: {}", c);
+                println!("caused by: {c}");
                 s = c.source();
             }
         }
         Ok(proof) => {
-            tracing::info!(target = "examples.hash_lock", "verifying...");
+            println!("verifying...");
             match verify_proof(proof, pi, &opts) {
-                Ok(()) => tracing::info!(target = "examples.hash_lock", "OK"),
+                Ok(()) => println!("OK"),
                 Err(e) => {
-                    tracing::error!(target = "examples.hash_lock", "VERIFY FAILED: {e}");
+                    println!("VERIFY FAILED: {e}");
 
                     let mut s = e.source();
                     while let Some(c) = s {
-                        tracing::error!(target = "examples.hash_lock", "caused by: {}", c);
+                        println!("caused by: {c}");
                         s = c.source();
                     }
                 }

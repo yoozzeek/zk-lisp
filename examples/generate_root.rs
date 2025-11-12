@@ -3,22 +3,17 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use std::env;
-use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField};
-use zk_lisp::logging;
+use winterfell::math::fields::f128::BaseElement as BE;
 
 fn main() {
-    logging::init_with_level(None);
-    tracing::info!(target = "examples.generate_root", "start");
+    println!("start");
 
     let mut it = env::args().skip(1);
     let mode = match it.next() {
         Some(m) => m,
         None => {
-            tracing::error!(
-                target = "examples.generate_root",
-                "usage: airdrop <addr> <amount> <d:s,...> | verify <leaf> <d:s,...>"
-            );
+            println!("usage: airdrop <addr> <amount> <d:s,...> | verify <leaf> <d:s,...>");
             return;
         }
     };
@@ -28,28 +23,28 @@ fn main() {
             let addr = match it.next().and_then(|s| s.parse::<u64>().ok()) {
                 Some(v) => v,
                 None => {
-                    tracing::error!(target = "examples.generate_root", "missing <addr>");
+                    println!("missing <addr>");
                     return;
                 }
             };
             let amount = match it.next().and_then(|s| s.parse::<u64>().ok()) {
                 Some(v) => v,
                 None => {
-                    tracing::error!(target = "examples.generate_root", "missing <amount>");
+                    println!("missing <amount>");
                     return;
                 }
             };
             let pairs_s = match it.next() {
                 Some(v) => v,
                 None => {
-                    tracing::error!(target = "examples.generate_root", "missing <path_pairs>");
+                    println!("missing <path_pairs>");
                     return;
                 }
             };
             let pairs = match parse_pairs(&pairs_s) {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!(target = "examples.generate_root", "{e}");
+                    println!("{e}");
                     return;
                 }
             };
@@ -57,7 +52,7 @@ fn main() {
             let program = match build_airdrop_program(addr, amount, &pairs) {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::error!(target = "examples.generate_root", "compile failed: {e}");
+                    println!("compile failed: {e}");
                     return;
                 }
             };
@@ -72,17 +67,10 @@ fn main() {
             );
             let root_hex = be_to_hex128(root);
 
-            tracing::info!(
-                target = "examples.generate_root",
-                "commitment = {commit_hex}"
-            );
-            tracing::info!(
-                target = "examples.generate_root",
-                "expected_root_hex = {root_hex}"
-            );
-            tracing::info!(target = "examples.generate_root", "-- verify with:");
-            tracing::info!(
-                target = "examples.generate_root",
+            println!("commitment = {commit_hex}");
+            println!("expected_root_hex = {root_hex}");
+            println!("-- verify with:");
+            println!(
                 "cargo run --example merkle_airdrop_claim -- {addr} {amount} {pairs_s} {root_hex}"
             );
         }
@@ -90,21 +78,21 @@ fn main() {
             let leaf = match it.next().and_then(|s| s.parse::<u64>().ok()) {
                 Some(v) => v,
                 None => {
-                    tracing::error!(target = "examples.generate_root", "missing <leaf>");
+                    println!("missing <leaf>");
                     return;
                 }
             };
             let pairs_s = match it.next() {
                 Some(v) => v,
                 None => {
-                    tracing::error!(target = "examples.generate_root", "missing <path_pairs>");
+                    println!("missing <path_pairs>");
                     return;
                 }
             };
             let pairs = match parse_pairs(&pairs_s) {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!(target = "examples.generate_root", "{e}");
+                    println!("{e}");
                     return;
                 }
             };
@@ -112,7 +100,7 @@ fn main() {
             let program = match build_verify_program(leaf, &pairs) {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::error!(target = "examples.generate_root", "compile failed: {e}");
+                    println!("compile failed: {e}");
                     return;
                 }
             };
@@ -127,25 +115,13 @@ fn main() {
             );
             let root_hex = be_to_hex128(root);
 
-            tracing::info!(
-                target = "examples.generate_root",
-                "commitment = {commit_hex}"
-            );
-            tracing::info!(
-                target = "examples.generate_root",
-                "expected_root_hex = {root_hex}"
-            );
-            tracing::info!(target = "examples.generate_root", "-- verify with:");
-            tracing::info!(
-                target = "examples.generate_root",
-                "cargo run --example merkle_verify -- {leaf} {pairs_s} {root_hex}"
-            );
+            println!("commitment = {commit_hex}");
+            println!("expected_root_hex = {root_hex}");
+            println!("-- verify with:");
+            println!("cargo run --example merkle_verify -- {leaf} {pairs_s} {root_hex}");
         }
         _ => {
-            tracing::error!(
-                target = "examples.generate_root",
-                "unknown mode: {mode}. Use 'airdrop' or 'verify'"
-            );
+            println!("unknown mode: {mode}. Use 'airdrop' or 'verify'");
         }
     }
 }
@@ -205,7 +181,10 @@ fn build_airdrop_program(
     }
 
     let src = format!(
-        r#"(def (main {}) (let ((r (hash2 addr amount))) (merkle-verify r ({})) r))"#,
+        r#"
+(def (main {})
+  (let ((r (hash2 addr amount)))
+    (load-ca r ({})) r))"#,
         params.join(" "),
         pairs_src
     );
@@ -236,7 +215,7 @@ fn build_verify_program(
     }
 
     let src = format!(
-        r#"(def (main {}) (merkle-verify leaf ({})))"#,
+        r#"(def (main {}) (load-ca leaf ({})))"#,
         params.join(" "),
         pairs_src
     );

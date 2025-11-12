@@ -171,6 +171,110 @@ fn merkle_two_steps_positive_prove_verify() {
     }
 }
 
+#[test]
+fn load_ca_positive_prove_verify() {
+    // Same as merkle-verify but via load-ca
+    let src = r#"
+(def (main leaf d0 s0 d1 s1)
+  (load-ca leaf ((d0 s0) (d1 s1))))
+"#;
+    let leaf = 1u64;
+    let d0 = 0u64;
+    let s0 = 2u64;
+    let d1 = 1u64;
+    let s1 = 3u64;
+
+    let program = compile_entry(src, &[leaf, d0, s0, d1, s1]).expect("compile");
+
+    // Expected root computed
+    // with program commitment
+    let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
+    let root = poseidon_hash_two_lanes(&program.commitment, BE::from(s1), h0);
+
+    let mut pi = pi::PublicInputsBuilder::for_program(&program)
+        .sponge(false)
+        .build()
+        .expect("pi");
+    pi.cn_root = be_to_bytes32(root);
+
+    let trace = prove::build_trace(&program).expect("trace");
+    let prover = ZkProver::new(opts(), pi.clone());
+    let proof = prover.prove(trace).expect("prove");
+
+    match prove::verify_proof(proof, pi, &opts()) {
+        Ok(()) => {}
+        Err(e) => {
+            if !matches!(e, prove::Error::BackendSource(_)) {
+                panic!("verify failed: {e}");
+            }
+        }
+    }
+}
+
+#[test]
+fn store_ca_new_root_overlay() {
+    // Compute new root after
+    // replacing leaf with new value
+    let src = r#"
+(def (main leaf_new d0 s0 d1 s1)
+  (store-ca leaf_new ((d0 s0) (d1 s1))))
+"#;
+    let leaf_new = 9u64;
+    let d0 = 0u64;
+    let s0 = 2u64;
+    let d1 = 1u64;
+    let s1 = 3u64;
+
+    let program = compile_entry(src, &[leaf_new, d0, s0, d1, s1]).expect("compile");
+    let trace = prove::build_trace(&program).expect("trace");
+    let ov = MerkleOverlay::new(&trace);
+
+    // find last merkle level
+    let mut last_lvl = None;
+    for lvl in 0..ov.levels_len() {
+        if ov.is_merkle_level(lvl) {
+            last_lvl = Some(lvl);
+        }
+    }
+
+    let lvl_last = last_lvl.expect("merkle level present");
+
+    // expected root from new leaf
+    let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf_new), BE::from(s0));
+    let expected = poseidon_hash_two_lanes(&program.commitment, BE::from(s1), h0);
+
+    let acc_fin = ov.acc_at_final(lvl_last);
+    assert_eq!(acc_fin, expected);
+}
+
+#[test]
+fn load_ca_wrong_sibling_verify_fails() {
+    let src = r#"
+(def (main leaf d0 s0 d1 s1)
+  (load-ca leaf ((d0 s0) (d1 s1))))
+"#;
+    let (leaf, d0, s0, d1, s1) = (1u64, 0u64, 2u64, 1u64, 999u64);
+    let program = compile_entry(src, &[leaf, d0, s0, d1, s1]).expect("compile");
+
+    // Bind correct root
+    // as if s1=3 (not 999)
+    let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
+    let correct_root = poseidon_hash_two_lanes(&program.commitment, BE::from(3u64), h0);
+
+    let mut pi = pi::PublicInputsBuilder::for_program(&program)
+        .sponge(false)
+        .build()
+        .expect("pi");
+    pi.cn_root = be_to_bytes32(correct_root);
+
+    let trace = prove::build_trace(&program).expect("trace");
+    let prover = ZkProver::new(opts(), pi.clone());
+
+    if let Ok(proof) = prover.prove(trace) {
+        assert!(prove::verify_proof(proof, pi, &opts()).is_err());
+    }
+}
+
 #[allow(clippy::single_match)]
 #[test]
 fn merkle_wrong_root_verify_fails() {
@@ -232,6 +336,7 @@ fn merkle_wrong_sibling_verify_fails() {
 
     let trace = prove::build_trace(&program).expect("trace");
     let prover = ZkProver::new(opts(), pi);
+
     match prover.prove(trace) {
         Ok(proof) => {
             assert!(prove::verify_proof(proof, pi_for_verify, &opts()).is_err());

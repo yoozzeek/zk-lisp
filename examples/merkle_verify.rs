@@ -4,7 +4,6 @@
 
 use std::error::Error;
 use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
-use zk_lisp::logging;
 use zk_lisp::pi;
 use zk_lisp::prove::{self, ZkProver, verify_proof};
 
@@ -62,17 +61,15 @@ fn parse_root_hex_to_bytes32(hex: &str) -> Result<[u8; 32], String> {
 }
 
 fn main() {
-    logging::init_with_level(None);
-    tracing::info!(target = "examples.merkle_verify", "start");
+    println!("start");
 
     // CLI: <leaf:u64> <path_pairs> <root_hex>
     let mut it = std::env::args().skip(1);
     let leaf: u64 = match it.next().and_then(|s| s.parse::<u64>().ok()) {
         Some(v) => v,
         None => {
-            tracing::error!(
-                target = "examples.merkle_verify",
-                "usage: cargo run --example merkle_verify -- <leaf:u64> <d0:s0,d1:s1,...> <root_hex>",
+            println!(
+                "usage: cargo run --example merkle_verify -- <leaf:u64> <d0:s0,d1:s1,...> <root_hex>"
             );
             return;
         }
@@ -80,14 +77,14 @@ fn main() {
     let pairs_s = match it.next() {
         Some(v) => v,
         None => {
-            tracing::error!(target = "examples.merkle_verify", "missing path_pairs",);
+            println!("missing path_pairs");
             return;
         }
     };
     let root_hex = match it.next() {
         Some(v) => v,
         None => {
-            tracing::error!(target = "examples.merkle_verify", "missing root_hex",);
+            println!("missing root_hex");
             return;
         }
     };
@@ -95,7 +92,7 @@ fn main() {
     let pairs = match parse_pairs(&pairs_s) {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!(target = "examples.merkle_verify", "{e}");
+            println!("{e}");
             return;
         }
     };
@@ -116,7 +113,7 @@ fn main() {
     }
 
     let src = format!(
-        "(def (main {}) (merkle-verify leaf ({})))",
+        "(def (main {}) (load-ca leaf ({})))",
         params.join(" "),
         path_pairs
     );
@@ -131,7 +128,7 @@ fn main() {
     let program = match zk_lisp::compiler::compile_entry(&src, &argv) {
         Ok(p) => p,
         Err(e) => {
-            tracing::error!(target = "examples.merkle_verify", "compile failed: {e}");
+            println!("compile failed: {e}");
             return;
         }
     };
@@ -140,7 +137,7 @@ fn main() {
     let root_bytes = match parse_root_hex_to_bytes32(&root_hex) {
         Ok(b) => b,
         Err(e) => {
-            tracing::error!(target = "examples.merkle_verify", "{e}");
+            println!("{e}");
             return;
         }
     };
@@ -154,7 +151,7 @@ fn main() {
     let trace = match prove::build_trace(&program) {
         Ok(t) => t,
         Err(e) => {
-            tracing::error!(target = "examples.merkle_verify", "trace build failed: {e}");
+            println!("trace build failed: {e}");
             return;
         }
     };
@@ -163,11 +160,11 @@ fn main() {
     let proof = match prover.prove(trace) {
         Ok(p) => p,
         Err(e) => {
-            tracing::error!(target = "examples.merkle_verify", "prove failed: {e}");
+            println!("prove failed: {e}");
 
             let mut s = e.source();
             while let Some(c) = s {
-                tracing::error!(target = "examples.merkle_verify", "caused by: {}", c);
+                println!("caused by: {c}");
                 s = c.source();
             }
 
@@ -176,16 +173,16 @@ fn main() {
     };
 
     if let Err(e) = verify_proof(proof, pi, &opts()) {
-        tracing::error!(target = "examples.merkle_verify", "verify failed: {e}");
+        println!("verify failed: {e}");
 
         let mut s = e.source();
         while let Some(c) = s {
-            tracing::error!(target = "examples.merkle_verify", "caused by: {}", c);
+            println!("caused by: {c}");
             s = c.source();
         }
 
         return;
     }
 
-    tracing::info!(target = "examples.merkle_verify", "OK");
+    println!("OK");
 }
