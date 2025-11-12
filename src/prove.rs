@@ -144,10 +144,6 @@ impl WProver for ZkWinterfellProver {
     fn get_pub_inputs(&self, trace: &Self::Trace) -> <Self::Air as Air>::PublicInputs {
         let mut pi = self.pub_inputs.clone();
 
-        if (pi.feature_mask & crate::pi::FM_KV) != 0 {
-            pi.kv_levels_mask = Self::compute_kv_levels_mask_from_trace(trace);
-        }
-
         // Compute VM output location (last op level)
         if (pi.feature_mask & crate::pi::FM_VM) != 0 {
             // If caller provided explicit
@@ -203,26 +199,6 @@ impl WProver for ZkWinterfellProver {
 
 impl ZkWinterfellProver {
     #[inline]
-    fn compute_kv_levels_mask_from_trace(trace: &TraceTable<BE>) -> u128 {
-        let cols = layout::Columns::baseline();
-        let steps = layout::STEPS_PER_LEVEL_P2;
-        let lvls = trace.length() / steps;
-
-        let mut mask: u128 = 0;
-
-        for lvl in 0..lvls {
-            let base = lvl * steps;
-            let row_map = base + schedule::pos_map();
-
-            if trace.get(cols.kv_g_map, row_map) == BE::ONE {
-                mask |= 1u128 << lvl;
-            }
-        }
-
-        mask
-    }
-
-    #[inline]
     fn compute_vm_output_from_trace(trace: &TraceTable<BE>) -> (u8, u32) {
         let cols = layout::Columns::baseline();
         let steps = layout::STEPS_PER_LEVEL_P2;
@@ -265,10 +241,6 @@ impl ZkWinterfellProver {
 
         (out_reg, (row_fin + 1) as u32)
     }
-}
-
-pub fn compute_kv_levels_mask(trace: &TraceTable<BE>) -> u128 {
-    ZkWinterfellProver::compute_kv_levels_mask_from_trace(trace)
 }
 
 pub fn compute_vm_output(trace: &TraceTable<BE>) -> (u8, u32) {

@@ -99,6 +99,18 @@ pub enum Op {
         b: u8,
     },
 
+    // RAM
+    // Load: dst <- Mem[addr]
+    Load {
+        dst: u8,
+        addr: u8,
+    },
+    // Store: Mem[addr] <- src
+    Store {
+        addr: u8,
+        src: u8,
+    },
+
     // CRYPTO
     // Sponge: absorb up to 10 elements (rate=10)
     SAbsorbN {
@@ -108,14 +120,6 @@ pub enum Op {
     SSqueeze {
         dst: u8,
     },
-
-    // KV
-    // one level of path
-    KvMap {
-        dir_reg: u8,
-        sib_reg: u8,
-    },
-    KvFinal,
 
     // MERKLE
     MerkleStepFirst {
@@ -226,6 +230,14 @@ impl ProgramBuilder {
                 self.touch_reg(dst);
                 self.touch_reg(r);
             }
+            Load { dst, addr } => {
+                self.touch_reg(dst);
+                self.touch_reg(addr);
+            }
+            Store { addr, src } => {
+                self.touch_reg(addr);
+                self.touch_reg(src);
+            }
             SAbsorbN { ref regs } => {
                 for &r in regs {
                     self.touch_reg(r);
@@ -264,11 +276,6 @@ impl ProgramBuilder {
             SSqueeze { dst } => {
                 self.touch_reg(dst);
             }
-            KvMap { dir_reg, sib_reg } => {
-                self.touch_reg(dir_reg);
-                self.touch_reg(sib_reg);
-            }
-            KvFinal => {}
             MerkleStepFirst {
                 leaf_reg,
                 dir_reg,
@@ -360,14 +367,6 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(c);
                 out.push(a);
                 out.push(b);
-            }
-            KvMap { dir_reg, sib_reg } => {
-                out.push(0x0A);
-                out.push(dir_reg);
-                out.push(sib_reg);
-            }
-            KvFinal => {
-                out.push(0x0B);
             }
             End => {
                 out.push(0x0C);
@@ -461,6 +460,16 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
                 out.push(dst_lo);
                 out.push(a);
                 out.push(b);
+            }
+            Load { dst, addr } => {
+                out.push(0x1B);
+                out.push(dst);
+                out.push(addr);
+            }
+            Store { addr, src } => {
+                out.push(0x1C);
+                out.push(addr);
+                out.push(src);
             }
         }
     }

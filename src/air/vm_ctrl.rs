@@ -67,8 +67,8 @@ impl VmCtrlBlock {
             vec![STEPS_PER_LEVEL_P2],
         ));
 
-        // op_* booleans (15)
-        for _ in 0..15 {
+        // op_* booleans (17)
+        for _ in 0..17 {
             out.push(TransitionConstraintDegree::with_cycles(
                 2,
                 vec![STEPS_PER_LEVEL_P2],
@@ -82,8 +82,8 @@ impl VmCtrlBlock {
             vec![STEPS_PER_LEVEL_P2],
         ));
 
-        // ROM ↔ op one-hot equality (15)
-        for _ in 0..15 {
+        // ROM ↔ op one-hot equality
+        for _ in 0..17 {
             out.push(TransitionConstraintDegree::with_cycles(
                 2,
                 vec![STEPS_PER_LEVEL_P2],
@@ -145,6 +145,8 @@ where
         let b_divmod = cur[ctx.cols.op_divmod];
         let b_mulwide = cur[ctx.cols.op_mulwide];
         let b_div128 = cur[ctx.cols.op_div128];
+        let b_load = cur[ctx.cols.op_load];
+        let b_store = cur[ctx.cols.op_store];
 
         let mut sum_dst0 = E::ZERO;
         let mut sum_a = E::ZERO;
@@ -179,9 +181,20 @@ where
 
         // role usage gates: which roles
         // must select exactly one src.
-        let uses_a =
-            b_mov + b_add + b_sub + b_mul + b_neg + b_eq + b_sel + b_divmod + b_div128 + b_mulwide;
-        let uses_b = b_add + b_sub + b_mul + b_eq + b_sel + b_divmod + b_div128 + b_mulwide;
+        let uses_a = b_mov
+            + b_add
+            + b_sub
+            + b_mul
+            + b_neg
+            + b_eq
+            + b_sel
+            + b_divmod
+            + b_div128
+            + b_mulwide
+            + b_load
+            + b_store;
+        let uses_b =
+            b_add + b_sub + b_mul + b_eq + b_sel + b_divmod + b_div128 + b_mulwide + b_store;
         let uses_c = b_sel + b_assert + b_assert_bit + b_assert_range;
         let op_any = b_const
             + b_mov
@@ -200,7 +213,7 @@ where
         // dst0 required for all
         // write ops except sponge
         // (1 for most, 1 for divmod as well)
-        let uses_dst0 = op_any - b_sponge;
+        let uses_dst0 = op_any - b_sponge + b_load;
 
         // dst1 required for two-dest ops
         let uses_dst1 = b_divmod + b_div128 + b_mulwide;
@@ -283,6 +296,8 @@ where
             b_divmod,
             b_div128,
             b_mulwide,
+            b_load,
+            b_store,
         ] {
             result[*ix] = p_map * b * (b - E::ONE) + s_high;
             *ix += 1;
@@ -302,7 +317,9 @@ where
             + b_assert_range
             + b_divmod
             + b_div128
-            + b_mulwide;
+            + b_mulwide
+            + b_load
+            + b_store;
         result[*ix] = p_map * op_sum * (op_sum - E::ONE) + s_high;
         *ix += 1;
 
@@ -330,6 +347,8 @@ where
             b_divmod,
             b_div128,
             b_mulwide,
+            b_load,
+            b_store,
         ]
         .iter()
         .enumerate()

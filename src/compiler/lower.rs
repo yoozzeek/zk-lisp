@@ -139,13 +139,6 @@ impl<'a> LowerCtx<'a> {
             .ok_or_else(|| Error::UnknownSymbol(name.to_string()))
     }
 
-    fn get_reg_opt(&self, name: &str) -> Option<u8> {
-        match self.env.vars.get(name) {
-            Some(Binding::Reg(r)) => Some(*r),
-            _ => None,
-        }
-    }
-
     fn define_fun(&mut self, name: &str, params: Vec<String>, body: Ast) {
         self.env.funs.insert(name.to_string(), (params, body));
     }
@@ -228,10 +221,8 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "mulwide-lo" => lower_mulwide_lo(cx, tail),
                     "muldiv" => lower_muldiv_floor(cx, tail),
                     "in-set" => lower_in_set(cx, tail),
-                    "kv-step" => lower_kv_step(cx, tail)
-                        .map(|_| RVal::Borrowed(cx.get_reg_opt("_kv_last").unwrap_or(0))),
-                    "kv-final" => lower_kv_final(cx, tail)
-                        .map(|_| RVal::Borrowed(cx.get_reg_opt("_kv_last").unwrap_or(0))),
+                    "load" => lower_load(cx, tail),
+                    "store" => lower_store(cx, tail).map(|_| RVal::Imm(0)),
                     "hex-to-bytes32" => lower_hex_to_bytes32(cx, tail),
                     "seq" => lower_seq(cx, tail),
                     _ => lower_call(cx, s, tail),
@@ -1149,46 +1140,6 @@ fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     Ok(RVal::Owned(r_out))
 }
 
-fn lower_kv_step(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("kv-step".into()));
-    }
-
-    let dir_v = lower_expr(cx, rest[0].clone())?;
-    let dir_v = dir_v.into_owned(cx)?;
-    let dir_r = dir_v.reg();
-
-    let sib_v = lower_expr(cx, rest[1].clone())?;
-    let sib_v = sib_v.into_owned(cx)?;
-    let sib_r = sib_v.reg();
-
-    cx.b.push(Op::KvMap {
-        dir_reg: dir_r,
-        sib_reg: sib_r,
-    });
-
-    // remember last sib reg
-    // for potential chaining
-    cx.map_var("_kv_last", Binding::Reg(sib_r));
-
-    free_if_owned(cx, dir_v);
-    // do not free sib_v here
-
-    Ok(sib_r)
-}
-
-fn lower_kv_final(cx: &mut LowerCtx, rest: &[Ast]) -> Result<u8, Error> {
-    if !rest.is_empty() {
-        return Err(Error::InvalidForm("kv-final".into()));
-    }
-
-    cx.b.push(Op::KvFinal);
-
-    // returns dummy reg 0 if not present;
-    // the op itself writes KV columns
-    Ok(cx.get_reg_opt("_kv_last").unwrap_or(0))
-}
-
 fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     if rest.len() != 2 {
         return Err(Error::InvalidForm("merkle-verify".into()));
@@ -2031,6 +1982,62 @@ fn lower_muldiv_floor(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     Ok(RVal::Owned(rq))
 }
 
+fn lower_seq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("seq".into()));
+    }
+
+    let a = lower_expr(cx, rest[0].clone())?;
+
+    free_if_owned(cx, a);
+
+    let b = lower_expr(cx, rest[1].clone())?;
+
+    Ok(b)
+}
+
+fn lower_load(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 1 {
+        return Err(Error::InvalidForm("load".into()));
+    }
+
+    let addr = lower_expr(cx, rest[0].clone())?;
+    let addr = addr.into_owned(cx)?;
+    let dst = cx.alloc()?;
+
+    cx.b.push(Op::Load {
+        dst,
+        addr: addr.reg(),
+    });
+
+    // free temp address
+    free_if_owned(cx, addr);
+
+    Ok(RVal::Owned(dst))
+}
+
+fn lower_store(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("store".into()));
+    }
+
+    let addr = lower_expr(cx, rest[0].clone())?;
+    let val = lower_expr(cx, rest[1].clone())?;
+
+    let addr = addr.into_owned(cx)?;
+    let val = val.into_owned(cx)?;
+
+    cx.b.push(Op::Store {
+        addr: addr.reg(),
+        src: val.reg(),
+    });
+
+    free_if_owned(cx, addr);
+    free_if_owned(cx, val);
+
+    Ok(())
+}
+
 // find the quoted (member ...)
 // list at rest[1] or rest[2]
 // Returns the quoted (member ...)
@@ -2060,20 +2067,6 @@ fn extract_member_from_quote(ast: &Ast) -> Option<&Ast> {
     }
 
     Some(&items[1])
-}
-
-fn lower_seq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("seq".into()));
-    }
-
-    let a = lower_expr(cx, rest[0].clone())?;
-
-    free_if_owned(cx, a);
-
-    let b = lower_expr(cx, rest[1].clone())?;
-
-    Ok(b)
 }
 
 fn u64_pair_from_le_16(b16: &[u8]) -> (u64, u64) {

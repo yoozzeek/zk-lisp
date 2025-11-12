@@ -36,6 +36,11 @@ impl TraceBuilder {
         // gather up to 10.
         let mut pending_regs: ArrayVec<u8, 10> = ArrayVec::new();
 
+        // RAM shadow state with single
+        // active address and its value.
+        let mut mem_active_addr = BE::ZERO;
+        let mut mem_shadow = BE::ZERO;
+
         for (lvl, op) in p.ops.iter().enumerate() {
             // snapshot current regs and
             // compute next_regs for writes at final.
@@ -84,6 +89,13 @@ impl TraceBuilder {
             trace.set(cols.imm, row_map, BE::ZERO);
             trace.set(cols.eq_inv, row_map, BE::ZERO);
 
+            // carry RAM shadow/active
+            // across this level by default
+            for r in base..(base + steps) {
+                trace.set(cols.mem_shadow, r, mem_shadow);
+                trace.set(cols.mem_active_addr, r, mem_active_addr);
+            }
+
             // clear op bits
             let ops = [
                 cols.op_const,
@@ -101,6 +113,8 @@ impl TraceBuilder {
                 cols.op_divmod,
                 cols.op_div128,
                 cols.op_mulwide,
+                cols.op_load,
+                cols.op_store,
             ];
 
             for &c in &ops {
@@ -524,64 +538,6 @@ impl TraceBuilder {
                     // No permutation at absorb rows
                     pose_active = BE::ZERO;
                 }
-                Op::KvMap { dir_reg, sib_reg } => {
-                    // KV map+final in one level
-                    pose_active = BE::ONE;
-
-                    trace.set(cols.kv_g_map, row_map, BE::ONE);
-
-                    let d = regs[dir_reg as usize];
-                    trace.set(cols.kv_dir, row_map, d);
-
-                    let sib = regs[sib_reg as usize];
-                    trace.set(cols.kv_sib, row_map, sib);
-
-                    // Select lanes and apply poseidon
-                    let acc_cur = trace.get(cols.kv_acc, row_map);
-                    let left = (BE::ONE - d) * acc_cur + d * sib;
-                    let right = (BE::ONE - d) * sib + d * acc_cur;
-
-                    poseidon::apply_level_absorb(&mut trace, &p.commitment, lvl, &[left, right]);
-
-                    // Mark final and set acc at/after final
-                    trace.set(cols.kv_g_final, row_final, BE::ONE);
-
-                    let out = trace.get(cols.lane_l, row_final);
-                    for r in row_final..(base + steps) {
-                        trace.set(cols.kv_acc, r, out);
-                    }
-
-                    // Set prev_acc at row after final
-                    let row_next = row_final + 1;
-                    if row_next < base + steps {
-                        trace.set(cols.kv_prev_acc, row_next, out);
-                    }
-
-                    // Version: hold before/at final,
-                    // bump after final
-                    let ver = trace.get(cols.kv_version, row_map);
-
-                    for r in base..=row_final {
-                        trace.set(cols.kv_version, r, ver);
-                    }
-
-                    for r in (row_final + 1)..(base + steps) {
-                        trace.set(cols.kv_version, r, ver + BE::ONE);
-                    }
-                }
-                Op::KvFinal => {
-                    // Only bump version at final
-                    trace.set(cols.kv_g_final, row_final, BE::ONE);
-
-                    let ver = trace.get(cols.kv_version, row_map);
-                    for r in base..=row_final {
-                        trace.set(cols.kv_version, r, ver)
-                    }
-
-                    for r in (row_final + 1)..(base + steps) {
-                        trace.set(cols.kv_version, r, ver + BE::ONE);
-                    }
-                }
                 Op::MerkleStepFirst {
                     leaf_reg,
                     dir_reg,
@@ -710,6 +666,49 @@ impl TraceBuilder {
                         trace.set(cols.merkle_acc, r, out);
                     }
                 }
+                Op::Load { dst, addr } => {
+                    trace.set(cols.op_load, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_dst0_start, dst);
+                    set_sel(&mut trace, row_map, cols.sel_a_start, addr);
+
+                    trace.set(cols.op_load, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, addr);
+
+                    // load only from active address
+                    let addr_v = regs[addr as usize];
+                    if addr_v != mem_active_addr {
+                        return Err(crate::error::Error::InvalidInput(
+                            "load address must equal active addr (store first)",
+                        ));
+                    }
+
+                    // write into dst after final
+                    next_regs[dst as usize] = mem_shadow;
+                }
+                Op::Store { addr, src } => {
+                    trace.set(cols.op_store, row_map, BE::ONE);
+                    set_sel(&mut trace, row_map, cols.sel_a_start, addr);
+                    set_sel(&mut trace, row_map, cols.sel_b_start, src);
+
+                    trace.set(cols.op_store, row_final, BE::ONE);
+                    set_sel(&mut trace, row_final, cols.sel_a_start, addr);
+                    set_sel(&mut trace, row_final, cols.sel_b_start, src);
+
+                    let addr_v = regs[addr as usize];
+                    let src_v = regs[src as usize];
+
+                    // After final, update shadow/active
+                    // for this and subsequent rows in level.
+                    for r in (row_final + 1)..(base + steps) {
+                        trace.set(cols.mem_shadow, r, src_v);
+                        trace.set(cols.mem_active_addr, r, addr_v);
+                    }
+
+                    // Commit for next level
+                    mem_shadow = src_v;
+                    mem_active_addr = addr_v;
+                }
                 Op::End => {}
             }
 
@@ -765,13 +764,15 @@ impl TraceBuilder {
     }
 }
 
-fn op_to_one_hot(op: &Op) -> [BE; 15] {
+fn op_to_one_hot(op: &Op) -> [BE; 17] {
+    use ir::Op::*;
+
     // Order matches Columns.op_* sequence
     // [const, mov, add, sub, mul, neg, eq,
     //  select, sponge, assert, assert_bit,
-    //  assert_range, divmod, div128, mulwide]
-    let mut v = [BE::ZERO; 15];
-    use ir::Op::*;
+    //  assert_range, divmod, div128,
+    //  mulwide, load, store]
+    let mut v = [BE::ZERO; 17];
     match op {
         Const { .. } => v[0] = BE::ONE,
         Mov { .. } => v[1] = BE::ONE,
@@ -788,12 +789,9 @@ fn op_to_one_hot(op: &Op) -> [BE; 15] {
         DivMod { .. } => v[12] = BE::ONE,
         DivMod128 { .. } => v[13] = BE::ONE,
         MulWide { .. } => v[14] = BE::ONE,
-        KvMap { .. }
-        | KvFinal
-        | MerkleStepFirst { .. }
-        | MerkleStep { .. }
-        | MerkleStepLast { .. }
-        | End => {
+        Load { .. } => v[15] = BE::ONE,
+        Store { .. } => v[16] = BE::ONE,
+        MerkleStepFirst { .. } | MerkleStep { .. } | MerkleStepLast { .. } | End => {
             // Non-ALU ops: leave all zeros
         }
     }

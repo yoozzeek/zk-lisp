@@ -223,6 +223,7 @@ fn build_pi_for_program(
     args: &[u64],
 ) -> zk_lisp::pi::PublicInputs {
     use zk_lisp::compiler::ir::Op;
+
     let mut mask: u64 = 0;
 
     // VM is used by any ALU/select/eq/sponge op
@@ -245,6 +246,8 @@ fn build_pi_for_program(
                 | Op::DivMod { .. }
                 | Op::DivMod128 { .. }
                 | Op::MulWide { .. }
+                | Op::Load { .. }
+                | Op::Store { .. }
                 | Op::SAbsorbN { .. }
                 | Op::SSqueeze { .. }
         )
@@ -252,13 +255,12 @@ fn build_pi_for_program(
         mask |= zk_lisp::pi::FM_VM;
     }
 
-    // Poseidon when sponge ops or KV appear
-    if program.ops.iter().any(|op| {
-        matches!(
-            op,
-            Op::SAbsorbN { .. } | Op::SSqueeze { .. } | Op::KvMap { .. } | Op::KvFinal
-        )
-    }) {
+    // Poseidon when sponge ops appear
+    if program
+        .ops
+        .iter()
+        .any(|op| matches!(op, Op::SAbsorbN { .. } | Op::SSqueeze { .. }))
+    {
         mask |= zk_lisp::pi::FM_POSEIDON;
     }
 
@@ -270,15 +272,6 @@ fn build_pi_for_program(
         .any(|op| matches!(op, Op::SAbsorbN { .. } | Op::SSqueeze { .. }))
     {
         mask |= zk_lisp::pi::FM_SPONGE;
-    }
-
-    // KV when kv ops appear
-    if program
-        .ops
-        .iter()
-        .any(|op| matches!(op, Op::KvMap { .. } | Op::KvFinal))
-    {
-        mask |= zk_lisp::pi::FM_KV;
     }
 
     zk_lisp::pi::PublicInputs {
@@ -349,11 +342,6 @@ fn cmd_prove(
 
     let mut pi = build_pi_for_program(&program, &args.args);
     let trace = prove::build_trace_with_pi(&program, &pi)?;
-
-    // Fill dynamic PI parts (kv mask)
-    if (pi.feature_mask & zk_lisp::pi::FM_KV) != 0 {
-        pi.kv_levels_mask = prove::compute_kv_levels_mask(&trace);
-    }
 
     // VM output position
     let (out_reg, out_row) = prove::compute_vm_output(&trace);
@@ -432,10 +420,6 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliE
     // Rebuild PI similarly to Prove
     let mut pi = build_pi_for_program(&program, &args.args);
     let trace = prove::build_trace_with_pi(&program, &pi)?;
-
-    if (pi.feature_mask & zk_lisp::pi::FM_KV) != 0 {
-        pi.kv_levels_mask = prove::compute_kv_levels_mask(&trace);
-    }
 
     // VM output location
     let (out_reg, out_row) = prove::compute_vm_output(&trace);
@@ -671,33 +655,19 @@ fn cmd_repl() -> Result<(), CliError> {
                 Err(e) => println!("error: compile: {e}"),
                 Ok(program) => {
                     // Build PI and trace
-                    let mut pi = build_pi_for_program(&program, &[]);
+                    let pi = build_pi_for_program(&program, &[]);
                     match prove::build_trace_with_pi(&program, &pi) {
                         Err(e) => println!("error: build trace: {e}"),
                         Ok(trace) => {
-                            // dynamic PI: kv mask
-                            if (pi.feature_mask & zk_lisp::pi::FM_KV) != 0 {
-                                pi.kv_levels_mask = prove::compute_kv_levels_mask(&trace);
-                            }
-
                             // cost metrics
                             let rows = trace.length();
                             let cost = compute_cost(&program);
                             println!(
-                                "
-cost: 
-rows={rows},
-ops={},
-sponge_absorb_calls={},
-sponge_absorb_elems={},
-squeeze_calls={},
-kv_steps={},
-merkle_steps={}",
+                                "cost: rows={rows}, ops={}, sponge_absorb_calls={}, sponge_absorb_elems={}, squeeze_calls={}, merkle_steps={}",
                                 cost.ops,
                                 cost.sponge_absorb_calls,
                                 cost.sponge_absorb_elems,
                                 cost.squeeze_calls,
-                                cost.kv_steps,
                                 cost.merkle_steps
                             );
 
@@ -804,10 +774,6 @@ merkle_steps={}",
                     continue;
                 }
             };
-
-            if (pi.feature_mask & zk_lisp::pi::FM_KV) != 0 {
-                pi.kv_levels_mask = prove::compute_kv_levels_mask(&trace);
-            }
 
             let (out_reg, out_row) = prove::compute_vm_output(&trace);
             pi.vm_out_reg = out_reg;
@@ -1091,7 +1057,6 @@ struct Cost {
     sponge_absorb_calls: usize,
     sponge_absorb_elems: usize,
     squeeze_calls: usize,
-    kv_steps: usize,
     merkle_steps: usize,
 }
 
@@ -1110,7 +1075,6 @@ fn compute_cost(program: &compiler::ir::Program) -> Cost {
                 c.sponge_absorb_elems += regs.len();
             }
             SSqueeze { .. } => c.squeeze_calls += 1,
-            KvMap { .. } | KvFinal => c.kv_steps += 1,
             MerkleStepFirst { .. } | MerkleStep { .. } | MerkleStepLast { .. } => {
                 c.merkle_steps += 1
             }
