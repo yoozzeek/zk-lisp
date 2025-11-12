@@ -219,67 +219,15 @@ fn read_program(path: impl AsRef<std::path::Path>, max_bytes: usize) -> Result<S
 }
 
 fn build_pi_for_program(
-    program: &zk_lisp::compiler::ir::Program,
+    program: &compiler::ir::Program,
     args: &[u64],
 ) -> zk_lisp::pi::PublicInputs {
-    use zk_lisp::compiler::ir::Op;
-
-    let mut mask: u64 = 0;
-
-    // VM is used by any ALU/select/eq/sponge op
-    if program.ops.iter().any(|op| {
-        matches!(
-            op,
-            Op::Const { .. }
-                | Op::Mov { .. }
-                | Op::Add { .. }
-                | Op::Sub { .. }
-                | Op::Mul { .. }
-                | Op::Neg { .. }
-                | Op::Eq { .. }
-                | Op::Select { .. }
-                | Op::Assert { .. }
-                | Op::AssertBit { .. }
-                | Op::AssertRange { .. }
-                | Op::AssertRangeLo { .. }
-                | Op::AssertRangeHi { .. }
-                | Op::DivMod { .. }
-                | Op::DivMod128 { .. }
-                | Op::MulWide { .. }
-                | Op::Load { .. }
-                | Op::Store { .. }
-                | Op::SAbsorbN { .. }
-                | Op::SSqueeze { .. }
-        )
-    }) {
-        mask |= zk_lisp::pi::FM_VM;
-    }
-
-    // Poseidon when sponge ops appear
-    if program
-        .ops
-        .iter()
-        .any(|op| matches!(op, Op::SAbsorbN { .. } | Op::SSqueeze { .. }))
-    {
-        mask |= zk_lisp::pi::FM_POSEIDON;
-    }
-
-    // Sponge feature when
-    // SAbsorbN/SSqueeze appear.
-    if program
-        .ops
-        .iter()
-        .any(|op| matches!(op, Op::SAbsorbN { .. } | Op::SSqueeze { .. }))
-    {
-        mask |= zk_lisp::pi::FM_SPONGE;
-    }
-
-    zk_lisp::pi::PublicInputs {
-        feature_mask: mask,
-        program_commitment: program.commitment,
-        vm_args: args.to_vec(),
-        ..Default::default()
-    }
+    // Build features from program ops and bind VM args.
+    // Ensures Merkle/RAM/VM/POSEIDON/SPONGE flags are correct.
+    zk_lisp::pi::PublicInputsBuilder::for_program(program)
+        .vm_args(args)
+        .build()
+        .expect("PI build")
 }
 
 fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: PreflightArg) -> Result<(), CliError> {
@@ -376,7 +324,15 @@ fn cmd_prove(
                 })
             );
         } else {
-            println!("proof(hex): {proof_hex}");
+            // Print a short preview by
+            // default to avoid huge stdout
+            let preview = if proof_hex.len() > 64 {
+                format!("{}... (len={} bytes)", &proof_hex[..64], proof_bytes.len())
+            } else {
+                format!("{} (len={} bytes)", proof_hex, proof_bytes.len())
+            };
+
+            println!("proof(hex): {preview}");
         }
     }
 
@@ -733,6 +689,13 @@ fn cmd_repl() -> Result<(), CliError> {
                     }
                 }
             } else {
+                // Bound base64 size before decoding
+                let approx = (arg.len() / 4) * 3;
+                if approx > REPL_MAX_BYTES {
+                    println!("error: proof base64 too large: limit {REPL_MAX_BYTES} bytes");
+                    continue;
+                }
+
                 match base64::engine::general_purpose::STANDARD.decode(arg) {
                     Ok(b) => b,
                     Err(e) => {
@@ -887,23 +850,15 @@ fn resolve_preflight_mode(p: PreflightArg) -> PreflightMode {
 }
 
 // Helpers for UX
-fn is_sym_start(c: char) -> bool {
-    matches!(c, 'a'..='z' | 'A'..='Z' | '_' | '+' | '-' | '*' | '=' | '<' | '>')
-}
-
-fn is_sym_continue(c: char) -> bool {
-    is_sym_start(c) || matches!(c, '0'..='9' | '/' | ':' | '?')
-}
-
 fn is_bare_symbol(s: &str) -> bool {
     let mut it = s.chars();
     match it.next() {
-        Some(c0) if is_sym_start(c0) => {}
+        Some(c0) if compiler::is_sym_start(c0) => {}
         _ => return false,
     }
 
     for c in it {
-        if !is_sym_continue(c) {
+        if !compiler::is_sym_continue(c) {
             return false;
         }
     }

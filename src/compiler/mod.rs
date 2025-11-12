@@ -72,10 +72,13 @@ pub fn compile_str(src: &str) -> Result<Program, Error> {
 
     cx.b.push(Op::End);
 
+    let peak_live = cx.peak_live();
     let program = cx.b.finalize();
+
     debug!(
         ops = program.ops.len(),
         reg_count = program.reg_count,
+        peak_live = peak_live,
         "lowered"
     );
 
@@ -156,6 +159,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     // Finalize program
     cx.b.push(Op::End);
 
+    let peak_live = cx.peak_live();
     let mut program = cx.b.finalize();
 
     // Compute ProgramMeta from last write into r0
@@ -185,11 +189,13 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
 
     program.meta.out_reg = 0;
     program.meta.out_row = (last_lvl * steps + pos_fin + 1) as u32;
+    program.meta.peak_live = peak_live.min(u16::MAX as usize) as u16;
 
     debug!(
         ops = program.ops.len(),
         reg_count = program.reg_count,
         out_row = program.meta.out_row,
+        peak_live = peak_live,
         "entry lowered",
     );
 
@@ -356,11 +362,11 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
     Ok(out)
 }
 
-fn is_sym_start(c: char) -> bool {
+pub fn is_sym_start(c: char) -> bool {
     matches!(c, 'a'..='z' | 'A'..='Z' | '_' | '+' | '-' | '*' | '=' | '<' | '>' )
 }
 
-fn is_sym_continue(c: char) -> bool {
+pub fn is_sym_continue(c: char) -> bool {
     is_sym_start(c) || matches!(c, '0'..='9' | '/' | ':' | '?')
 }
 

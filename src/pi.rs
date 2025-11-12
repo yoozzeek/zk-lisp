@@ -40,6 +40,10 @@ pub struct PublicInputs {
     pub vm_out_reg: u8,
     pub vm_out_row: u32,
     pub vm_expected_bytes: [u8; 32],
+
+    // Compiler metrics; not part
+    // of cryptographic PI encoding
+    pub compiler_peak_live: u16,
 }
 
 pub struct PublicInputsBuilder {
@@ -53,8 +57,13 @@ impl PublicInputsBuilder {
         };
 
         b.pi.program_commitment = program.commitment;
+
         // infer features from program ops
         b.infer_features(program);
+
+        // carry compiler metrics
+        // for observability.
+        b.pi.compiler_peak_live = program.meta.peak_live;
 
         b
     }

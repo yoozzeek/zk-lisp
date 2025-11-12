@@ -35,6 +35,7 @@ pub(crate) struct PreflightReport {
     pub lanes_exp: Option<(String, String, String, String)>,
     pub ram: Option<RamSnap>,
     pub vm: Option<VmSnap>,
+    pub peak_live: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -335,6 +336,7 @@ pub(crate) fn run(
                 lanes_exp,
                 ram: ram_snap,
                 vm: vm_snap,
+                peak_live: Some(pub_inputs.compiler_peak_live),
             };
 
             match mode {
@@ -360,10 +362,12 @@ pub(crate) fn run(
 
     match mode {
         PreflightMode::Console => {
+            let peak = pub_inputs.compiler_peak_live;
             println!(
-                "preflight: OK (rows={}, constraints={})",
+                "preflight: OK (rows={}, constraints={}, peak_live={})",
                 trace.length(),
-                res_len
+                res_len,
+                peak
             );
         }
         PreflightMode::Json => {
@@ -372,7 +376,8 @@ pub(crate) fn run(
                 serde_json::json!({
                     "ok": true,
                     "rows": trace.length(),
-                    "constraints": res_len
+                    "constraints": res_len,
+                    "peak_live": pub_inputs.compiler_peak_live
                 })
             );
         }

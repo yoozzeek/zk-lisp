@@ -87,7 +87,7 @@ fn store_then_load_different_addr_errors() {
     let p = compile_entry(src, &[]).expect("compile");
     let err = prove::build_trace(&p).expect_err("load must read from active addr");
     let msg = format!("{err:?}").to_lowercase();
-    
+
     assert!(msg.contains("load address must equal active addr"));
 }
 
@@ -121,7 +121,7 @@ fn switch_addr_then_load_old_addr_errors() {
     let p = compile_entry(src, &[]).expect("compile");
     let err = prove::build_trace(&p).expect_err("load must read from new active addr");
     let msg = format!("{err:?}").to_lowercase();
-    
+
     assert!(msg.contains("load address must equal active addr"));
 }
 

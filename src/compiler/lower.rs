@@ -98,6 +98,10 @@ pub struct LowerCtx<'a> {
     env: Env,
     free: Vec<u8>,
     call_stack: Vec<String>,
+    // Live-set tracking
+    // for spillless metrics.
+    cur_live: usize,
+    peak_live: usize,
     _m: core::marker::PhantomData<&'a ()>,
 }
 
@@ -112,19 +116,40 @@ impl<'a> LowerCtx<'a> {
             free,
             env: Env::default(),
             call_stack: Vec::new(),
+            cur_live: 0,
+            peak_live: 0,
             _m: core::marker::PhantomData,
         }
     }
 
+    #[inline]
+    pub fn peak_live(&self) -> usize {
+        self.peak_live
+    }
+
     fn alloc(&mut self) -> Result<u8, Error> {
         match self.free.pop() {
-            Some(r) => Ok(r),
+            Some(r) => {
+                // track live-set size
+                self.cur_live += 1;
+
+                if self.cur_live > self.peak_live {
+                    self.peak_live = self.cur_live;
+                }
+
+                Ok(r)
+            }
             None => Err(Error::RegOverflow { need: 1, have: 0 }),
         }
     }
 
     fn free_reg(&mut self, r: u8) {
+        // free and reduce current live-set
         self.free.push(r);
+
+        if self.cur_live > 0 {
+            self.cur_live -= 1;
+        }
     }
 
     fn map_var(&mut self, name: &str, b: Binding) {
@@ -197,9 +222,23 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
             [Ast::Atom(Atom::Sym(s)), rest @ ..] => {
                 let tail = rest;
                 match s.as_str() {
-                    "+" => lower_bin(cx, tail, BinOp::Add),
+                    "+" => {
+                        if tail.len() != 2 {
+                            let balanced = balance_chain("+", tail);
+                            return lower_expr(cx, balanced);
+                        }
+
+                        lower_bin(cx, tail, BinOp::Add)
+                    }
                     "-" => lower_bin(cx, tail, BinOp::Sub),
-                    "*" => lower_bin(cx, tail, BinOp::Mul),
+                    "*" => {
+                        if tail.len() != 2 {
+                            let balanced = balance_chain("*", tail);
+                            return lower_expr(cx, balanced);
+                        }
+
+                        lower_bin(cx, tail, BinOp::Mul)
+                    }
                     "=" => lower_eq(cx, tail),
                     "if" => lower_if(cx, tail),
                     "let" => lower_let(cx, tail),
@@ -407,52 +446,128 @@ fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<RVal, Error> 
         return Err(Error::InvalidForm("bin".into()));
     }
 
-    let a = lower_expr(cx, rest[0].clone())?;
-    let b = lower_expr(cx, rest[1].clone())?;
+    // Compute SU numbers to decide evaluation order
+    let su_l = su_number(&rest[0]);
+    let su_r = su_number(&rest[1]);
+    let size_l = ast_size(&rest[0]);
+    let size_r = ast_size(&rest[1]);
+
+    // preserve left-to-right
+    let both_pure = is_pure_arith(&rest[0]) && is_pure_arith(&rest[1]);
+
+    // heavier-first policy
+    let eval_left_first = if !both_pure {
+        true
+    } else if su_l != su_r {
+        su_l > su_r
+    } else {
+        // tie-break on subtree size
+        size_l >= size_r
+    };
+
+    // Evaluate in chosen order
+    // but preserve operand roles
+    let (aval, bval) = if eval_left_first {
+        (
+            lower_expr(cx, rest[0].clone())?,
+            lower_expr(cx, rest[1].clone())?,
+        )
+    } else {
+        (
+            lower_expr(cx, rest[1].clone())?,
+            lower_expr(cx, rest[0].clone())?,
+        )
+    };
 
     // Constant folding for Imm+Imm
     // when representable as u64
-    if let (Some(ai), Some(bi)) = (a.as_imm(), b.as_imm()) {
+    if let (Some(ai), Some(bi)) = (
+        if eval_left_first {
+            aval.as_imm()
+        } else {
+            bval.as_imm()
+        },
+        if eval_left_first {
+            bval.as_imm()
+        } else {
+            aval.as_imm()
+        },
+    ) {
         let ra = BE::from(ai);
         let rb = BE::from(bi);
-
         let r = match op {
             BinOp::Add => ra + rb,
             BinOp::Sub => ra - rb,
             BinOp::Mul => ra * rb,
         };
-
         let r128: u128 = r.as_int();
         if r128 <= u64::MAX as u128 {
             return Ok(RVal::Imm(r128 as u64));
         }
     }
 
-    let a = a.into_owned(cx)?;
-    let b = b.into_owned(cx)?;
+    // Materialize as needed
+    let aval = aval.into_owned(cx)?;
+    let bval = bval.into_owned(cx)?;
 
-    let dst = cx.alloc()?;
+    // Remap to (a,b) respecting original semantics
+    let (a_val, b_val) = if eval_left_first {
+        (aval, bval)
+    } else {
+        // we evaluated right first => (a,b) are (bval, aval) in order
+        (bval, aval)
+    };
 
+    // Choose destination register
+    // For commutative ops prefer
+    // reusing an Owned operand's register
+    let (dst, reused): (u8, bool) = match op {
+        BinOp::Add | BinOp::Mul => match a_val {
+            RVal::Owned(r) => (r, true),
+            _ => match b_val {
+                RVal::Owned(r) => (r, true),
+                _ => (cx.alloc()?, false),
+            },
+        },
+        BinOp::Sub => match a_val {
+            RVal::Owned(r) => (r, true),
+            _ => (cx.alloc()?, false),
+        },
+    };
+
+    // Emit op using semantic (a,b)
     match op {
         BinOp::Add => cx.b.push(Op::Add {
             dst,
-            a: a.reg(),
-            b: b.reg(),
+            a: a_val.reg(),
+            b: b_val.reg(),
         }),
         BinOp::Sub => cx.b.push(Op::Sub {
             dst,
-            a: a.reg(),
-            b: b.reg(),
+            a: a_val.reg(),
+            b: b_val.reg(),
         }),
         BinOp::Mul => cx.b.push(Op::Mul {
             dst,
-            a: a.reg(),
-            b: b.reg(),
+            a: a_val.reg(),
+            b: b_val.reg(),
         }),
     }
 
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
+    // Free temps
+    if reused {
+        // If dst == a, free b;
+        // if dst == b, free a (only when Owned)
+        if dst == a_val.reg() {
+            free_if_owned(cx, b_val);
+        } else {
+            free_if_owned(cx, a_val);
+        }
+    } else {
+        // Both were temps; free both
+        free_if_owned(cx, a_val);
+        free_if_owned(cx, b_val);
+    }
 
     Ok(RVal::Owned(dst))
 }
@@ -474,10 +589,22 @@ fn lower_neg(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     }
 
     let a = a.into_owned(cx)?;
-    let dst = cx.alloc()?;
+
+    // Safe reuse
+    let dst = match a {
+        RVal::Owned(r) => r,
+        _ => cx.alloc()?,
+    };
 
     cx.b.push(Op::Neg { dst, a: a.reg() });
-    free_if_owned(cx, a);
+
+    // reused 'a' remains
+    // owned as result
+    if let RVal::Owned(_) = a {
+        // keep
+    } else {
+        free_if_owned(cx, a);
+    }
 
     Ok(RVal::Owned(dst))
 }
@@ -2038,6 +2165,76 @@ fn lower_store(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     Ok(())
 }
 
+// Determine if subtree is pure arithmetic
+fn is_pure_arith(ast: &Ast) -> bool {
+    match ast {
+        Ast::Atom(Atom::Int(_)) | Ast::Atom(Atom::Sym(_)) => true,
+        Ast::Atom(Atom::Str(_)) => false,
+        Ast::List(items) if !items.is_empty() => {
+            let head = match &items[0] {
+                Ast::Atom(Atom::Sym(s)) => s.as_str(),
+                _ => return false,
+            };
+            match head {
+                "+" | "-" | "*" | "neg" | "=" | "select" | "if" => {
+                    items[1..].iter().all(is_pure_arith)
+                }
+                "let" => items[1..].iter().all(is_pure_arith),
+                _ => false,
+            }
+        }
+        Ast::List(_) => false,
+    }
+}
+
+// Sethi–Ullman number for an AST node
+// (binary arithmetic only). Returns
+// minimal registers needed to evaluate
+// the subtree without spilling.
+fn su_number(ast: &Ast) -> u32 {
+    match ast {
+        Ast::Atom(_) => 1,
+        Ast::List(items) if !items.is_empty() => {
+            let op_sym = match &items[0] {
+                Ast::Atom(Atom::Sym(s)) => s.as_str(),
+                _ => return 1,
+            };
+
+            // only consider binary
+            // ops with two args
+            let (l, r) = match (items.get(1), items.get(2)) {
+                (Some(a), Some(b)) => (a, b),
+                _ => return 1,
+            };
+
+            let sl = su_number(l);
+            let sr = su_number(r);
+
+            match op_sym {
+                "+" | "-" | "*" => {
+                    if sl == sr {
+                        sl + 1
+                    } else {
+                        sl.max(sr)
+                    }
+                }
+                _ => 1,
+            }
+        }
+        _ => 1,
+    }
+}
+
+// Rough subtree size (node count)
+// used for tie-breaking when su
+// numbers are equal.
+fn ast_size(ast: &Ast) -> u32 {
+    match ast {
+        Ast::Atom(_) => 1,
+        Ast::List(items) => 1 + items.iter().map(ast_size).sum::<u32>(),
+    }
+}
+
 // find the quoted (member ...)
 // list at rest[1] or rest[2]
 // Returns the quoted (member ...)
@@ -2067,6 +2264,44 @@ fn extract_member_from_quote(ast: &Ast) -> Option<&Ast> {
     }
 
     Some(&items[1])
+}
+
+// Build a balanced binary
+// tree for +/* chains.
+fn balance_chain(op: &str, items: &[Ast]) -> Ast {
+    fn flatten(op: &str, nodes: &[Ast], out: &mut Vec<Ast>) {
+        for n in nodes {
+            if let Ast::List(ls) = n {
+                if !ls.is_empty() {
+                    if let Ast::Atom(Atom::Sym(h)) = &ls[0] {
+                        if h == op && ls.len() >= 3 {
+                            flatten(op, &ls[1..], out);
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            out.push(n.clone());
+        }
+    }
+
+    fn build(op: &str, v: &[Ast]) -> Ast {
+        if v.len() == 1 {
+            return v[0].clone();
+        }
+
+        let mid = v.len() / 2;
+        let left = build(op, &v[..mid]);
+        let right = build(op, &v[mid..]);
+
+        Ast::List(vec![Ast::Atom(Atom::Sym(op.to_string())), left, right])
+    }
+
+    let mut flat = Vec::new();
+    flatten(op, items, &mut flat);
+
+    build(op, &flat)
 }
 
 fn u64_pair_from_le_16(b16: &[u8]) -> (u64, u64) {

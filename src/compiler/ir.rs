@@ -144,6 +144,7 @@ pub enum Op {
 pub struct ProgramMeta {
     pub out_reg: u8,
     pub out_row: u32,
+    pub peak_live: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -181,6 +182,11 @@ impl ProgramBuilder {
         match op {
             Const { dst, .. } => self.touch_reg(dst),
             Mov { dst, src } => {
+                if dst == src {
+                    // Avoid redundant move
+                    return;
+                }
+
                 self.touch_reg(dst);
                 self.touch_reg(src);
             }
@@ -306,6 +312,7 @@ impl ProgramBuilder {
         let meta = ProgramMeta {
             out_reg: 0,
             out_row: 0,
+            peak_live: 0,
         };
 
         Program::new(self.ops, reg_count, commitment, meta)
