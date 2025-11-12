@@ -587,7 +587,6 @@ fn cmd_repl() -> Result<(), CliError> {
   :help              - this help
   :quit, :q          - exit
   :load PATH         - load file into session (base)
-  :playground        - load playground into session
   :reset             - clear session
   :docs               - list defined functions (best-effort)
   :prove [EXPR]      - build proof for EXPR (or last expr)
@@ -601,19 +600,6 @@ fn cmd_repl() -> Result<(), CliError> {
 
         if let Some(rest) = s.strip_prefix(":load ") {
             let path = std::path::PathBuf::from(rest.trim());
-            match read_program(&path, REPL_MAX_BYTES) {
-                Ok(src) => {
-                    session.base_src = src;
-                    println!("OK loaded {}", path.display());
-                }
-                Err(e) => println!("error: load failed: {e}"),
-            }
-
-            continue;
-        }
-
-        if s == ":playground" {
-            let path = std::path::PathBuf::from("./examples/playground.zlisp");
             match read_program(&path, REPL_MAX_BYTES) {
                 Ok(src) => {
                     session.base_src = src;

@@ -14,6 +14,9 @@ use std::collections::{BTreeMap, VecDeque};
 use thiserror::Error;
 use tracing::{debug, instrument};
 
+const MAX_TOKENS: usize = 200_000;
+const MAX_PARSE_DEPTH: usize = 1_024;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("lex: invalid char '{0}' at {1}")]
@@ -34,6 +37,8 @@ pub enum Error {
     InvalidDir(u64),
     #[error("lower: recursion detected in call '{0}'")]
     Recursion(String),
+    #[error("limit: {0}")]
+    Limit(&'static str),
 }
 
 // register or immediate
@@ -344,6 +349,10 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
         }
     }
 
+    if out.len() > MAX_TOKENS {
+        return Err(Error::Limit("too many tokens"));
+    }
+
     out.push(Tok::Eof);
 
     Ok(out)
@@ -365,14 +374,18 @@ fn parse(tokens: &[Tok]) -> Result<Vec<Ast>, Error> {
     while let Some(t) = q.front() {
         match t {
             Tok::Eof => break,
-            _ => forms.push(parse_one(&mut q)?),
+            _ => forms.push(parse_one_limited(&mut q, 0)?),
         }
     }
 
     Ok(forms)
 }
 
-fn parse_one(q: &mut VecDeque<Tok>) -> Result<Ast, Error> {
+fn parse_one_limited(q: &mut VecDeque<Tok>, depth: usize) -> Result<Ast, Error> {
+    if depth > MAX_PARSE_DEPTH {
+        return Err(Error::Limit("parse depth exceeded"));
+    }
+
     let t = q.pop_front().ok_or(Error::Eof)?;
     match t {
         Tok::LParen => {
@@ -384,7 +397,7 @@ fn parse_one(q: &mut VecDeque<Tok>) -> Result<Ast, Error> {
                         break;
                     }
                     Some(Tok::Eof) => return Err(Error::Eof),
-                    _ => items.push(parse_one(q)?),
+                    _ => items.push(parse_one_limited(q, depth + 1)?),
                 }
             }
 
@@ -392,7 +405,7 @@ fn parse_one(q: &mut VecDeque<Tok>) -> Result<Ast, Error> {
         }
         Tok::Quote => {
             // 'X  => (quote X)
-            let quoted = parse_one(q)?;
+            let quoted = parse_one_limited(q, depth + 1)?;
             Ok(Ast::List(vec![
                 Ast::Atom(Atom::Sym("quote".to_string())),
                 quoted,

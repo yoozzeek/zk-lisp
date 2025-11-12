@@ -487,7 +487,7 @@ impl TraceBuilder {
                     trace.set(cols.op_sponge, row_final, BE::ONE);
                     set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
 
-                    let mut inputs: Vec<BE> = Vec::with_capacity(pending_regs.len());
+                    let mut inputs: ArrayVec<BE, 10> = ArrayVec::new();
                     for &r in &pending_regs {
                         inputs.push(regs[r as usize]);
                     }
