@@ -78,7 +78,7 @@ impl RVal {
             RVal::Owned(r) => Ok(RVal::Owned(r)),
             RVal::Borrowed(s) => {
                 let dst = cx.alloc()?;
-                cx.b.push(Op::Mov { dst, src: s });
+                cx.emit_mov(dst, s);
 
                 Ok(RVal::Owned(dst))
             }
@@ -92,9 +92,18 @@ impl RVal {
     }
 }
 
+#[derive(Default, Debug, Clone)]
+pub struct CompileStats {
+    pub reuse_dst: u32,
+    pub su_reorders: u32,
+    pub balanced_chains: u32,
+    pub mov_elided: u32,
+}
+
 #[derive(Debug)]
 pub struct LowerCtx<'a> {
     pub b: ProgramBuilder,
+    pub stats: CompileStats,
     env: Env,
     free: Vec<u8>,
     call_stack: Vec<String>,
@@ -118,6 +127,7 @@ impl<'a> LowerCtx<'a> {
             call_stack: Vec::new(),
             cur_live: 0,
             peak_live: 0,
+            stats: CompileStats::default(),
             _m: core::marker::PhantomData,
         }
     }
@@ -170,6 +180,16 @@ impl<'a> LowerCtx<'a> {
 
     fn get_fun(&self, name: &str) -> Option<&(Vec<String>, Ast)> {
         self.env.funs.get(name)
+    }
+
+    #[inline]
+    pub fn emit_mov(&mut self, dst: u8, src: u8) {
+        if dst == src {
+            self.stats.mov_elided += 1;
+            return;
+        }
+
+        self.b.push(Op::Mov { dst, src });
     }
 }
 
@@ -225,18 +245,22 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "+" => {
                         if tail.len() != 2 {
                             let balanced = balance_chain("+", tail);
+
+                            cx.stats.balanced_chains += 1;
+
                             return lower_expr(cx, balanced);
                         }
-
                         lower_bin(cx, tail, BinOp::Add)
                     }
                     "-" => lower_bin(cx, tail, BinOp::Sub),
                     "*" => {
                         if tail.len() != 2 {
                             let balanced = balance_chain("*", tail);
+
+                            cx.stats.balanced_chains += 1;
+
                             return lower_expr(cx, balanced);
                         }
-
                         lower_bin(cx, tail, BinOp::Mul)
                     }
                     "=" => lower_eq(cx, tail),
@@ -465,6 +489,10 @@ fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<RVal, Error> 
         size_l >= size_r
     };
 
+    if both_pure && !eval_left_first {
+        cx.stats.su_reorders += 1;
+    }
+
     // Evaluate in chosen order
     // but preserve operand roles
     let (aval, bval) = if eval_left_first {
@@ -556,6 +584,8 @@ fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<RVal, Error> 
 
     // Free temps
     if reused {
+        cx.stats.reuse_dst += 1;
+
         // If dst == a, free b;
         // if dst == b, free a (only when Owned)
         if dst == a_val.reg() {

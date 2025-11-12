@@ -364,10 +364,14 @@ pub(crate) fn run(
         PreflightMode::Console => {
             let peak = pub_inputs.compiler_peak_live;
             println!(
-                "preflight: OK (rows={}, constraints={}, peak_live={})",
+                "preflight: OK (rows={}, constraints={}, peak_live={}, reuse_dst={}, su_reorders={}, balanced_chains={}, mov_elided={})",
                 trace.length(),
                 res_len,
-                peak
+                peak,
+                pub_inputs.compiler_reuse_dst,
+                pub_inputs.compiler_su_reorders,
+                pub_inputs.compiler_balanced_chains,
+                pub_inputs.compiler_mov_elided,
             );
         }
         PreflightMode::Json => {
@@ -377,7 +381,11 @@ pub(crate) fn run(
                     "ok": true,
                     "rows": trace.length(),
                     "constraints": res_len,
-                    "peak_live": pub_inputs.compiler_peak_live
+                    "peak_live": pub_inputs.compiler_peak_live,
+                    "reuse_dst": pub_inputs.compiler_reuse_dst,
+                    "su_reorders": pub_inputs.compiler_su_reorders,
+                    "balanced_chains": pub_inputs.compiler_balanced_chains,
+                    "mov_elided": pub_inputs.compiler_mov_elided
                 })
             );
         }

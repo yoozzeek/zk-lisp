@@ -44,6 +44,10 @@ pub struct PublicInputs {
     // Compiler metrics; not part
     // of cryptographic PI encoding
     pub compiler_peak_live: u16,
+    pub compiler_reuse_dst: u32,
+    pub compiler_su_reorders: u32,
+    pub compiler_balanced_chains: u32,
+    pub compiler_mov_elided: u32,
 }
 
 pub struct PublicInputsBuilder {
@@ -64,6 +68,10 @@ impl PublicInputsBuilder {
         // carry compiler metrics
         // for observability.
         b.pi.compiler_peak_live = program.meta.peak_live;
+        b.pi.compiler_reuse_dst = program.meta.reuse_dst_count;
+        b.pi.compiler_su_reorders = program.meta.su_reorders_count;
+        b.pi.compiler_balanced_chains = program.meta.balanced_chains_count;
+        b.pi.compiler_mov_elided = program.meta.mov_elided_count;
 
         b
     }

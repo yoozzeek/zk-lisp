@@ -261,12 +261,28 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: PreflightArg) -> Res
                 "out_reg": out_reg,
                 "out_row": out_row,
                 "trace_len": trace.length(),
+                "compile_stats": {
+                    "peak_live": program.meta.peak_live,
+                    "reuse_dst": program.meta.reuse_dst_count,
+                    "su_reorders": program.meta.su_reorders_count,
+                    "balanced_chains": program.meta.balanced_chains_count,
+                    "mov_elided": program.meta.mov_elided_count
+                }
             })
         );
     } else {
         let rows = trace.length();
         println!(
             "result: {val_u128} (0x{val_u128:032x}), out_reg={out_reg}, out_row={out_row}, rows={rows}"
+        );
+
+        println!(
+            "stats: peak_live={} reuse_dst={} su_reorders={} balanced_chains={} mov_elided={}",
+            program.meta.peak_live,
+            program.meta.reuse_dst_count,
+            program.meta.su_reorders_count,
+            program.meta.balanced_chains_count,
+            program.meta.mov_elided_count
         );
     }
 
@@ -618,6 +634,7 @@ fn cmd_repl() -> Result<(), CliError> {
                             // cost metrics
                             let rows = trace.length();
                             let cost = compute_cost(&program);
+
                             println!(
                                 "cost: rows={rows}, ops={}, sponge_absorb_calls={}, sponge_absorb_elems={}, squeeze_calls={}, merkle_steps={}",
                                 cost.ops,
@@ -625,6 +642,15 @@ fn cmd_repl() -> Result<(), CliError> {
                                 cost.sponge_absorb_elems,
                                 cost.squeeze_calls,
                                 cost.merkle_steps
+                            );
+
+                            println!(
+                                "stats: peak_live={} reuse_dst={} su_reorders={} balanced_chains={} mov_elided={}",
+                                program.meta.peak_live,
+                                program.meta.reuse_dst_count,
+                                program.meta.su_reorders_count,
+                                program.meta.balanced_chains_count,
+                                program.meta.mov_elided_count
                             );
 
                             let opts = proof_opts(1, 8, 0);

@@ -145,6 +145,10 @@ pub struct ProgramMeta {
     pub out_reg: u8,
     pub out_row: u32,
     pub peak_live: u16,
+    pub reuse_dst_count: u32,
+    pub su_reorders_count: u32,
+    pub balanced_chains_count: u32,
+    pub mov_elided_count: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -313,6 +317,10 @@ impl ProgramBuilder {
             out_reg: 0,
             out_row: 0,
             peak_live: 0,
+            reuse_dst_count: 0,
+            su_reorders_count: 0,
+            balanced_chains_count: 0,
+            mov_elided_count: 0,
         };
 
         Program::new(self.ops, reg_count, commitment, meta)

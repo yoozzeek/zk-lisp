@@ -150,10 +150,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
 
     // Normalize main return into r0
     if res_reg != 0 {
-        cx.b.push(Op::Mov {
-            dst: 0,
-            src: res_reg,
-        });
+        cx.emit_mov(0, res_reg);
     }
 
     // Finalize program
@@ -190,6 +187,10 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     program.meta.out_reg = 0;
     program.meta.out_row = (last_lvl * steps + pos_fin + 1) as u32;
     program.meta.peak_live = peak_live.min(u16::MAX as usize) as u16;
+    program.meta.reuse_dst_count = cx.stats.reuse_dst;
+    program.meta.su_reorders_count = cx.stats.su_reorders;
+    program.meta.balanced_chains_count = cx.stats.balanced_chains;
+    program.meta.mov_elided_count = cx.stats.mov_elided;
 
     debug!(
         ops = program.ops.len(),
