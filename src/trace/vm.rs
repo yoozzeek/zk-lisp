@@ -121,7 +121,8 @@ impl TraceBuilder {
                 trace.set(c, row_map, BE::ZERO);
             }
 
-            // Track per-level poseidon activity
+            // Track per-level poseidon
+            // activity (sponge/merkle only)
             let mut pose_active = BE::ZERO;
 
             match *op {
@@ -528,11 +529,39 @@ impl TraceBuilder {
                             return Err(crate::error::Error::InvalidInput("sponge rate overflow"));
                         }
 
-                        trace.set(cols.sel_s_index(i, r as usize), row_map, BE::ONE);
-                        trace.set(cols.sel_s_index(i, r as usize), row_final, BE::ONE);
+                        // Set packed bits and
+                        // active for this lane
+                        let idx = r as usize; // 0..7
+                        let b0 = BE::from((idx & 1) as u64);
+                        let b1 = BE::from(((idx >> 1) & 1) as u64);
+                        let b2 = BE::from(((idx >> 2) & 1) as u64);
+                        let one = BE::ONE;
 
-                        // Strictly enforce total pending inputs <= 10
+                        trace.set(cols.sel_s_b_index(i, 0), row_map, b0);
+                        trace.set(cols.sel_s_b_index(i, 1), row_map, b1);
+                        trace.set(cols.sel_s_b_index(i, 2), row_map, b2);
+                        trace.set(cols.sel_s_active_index(i), row_map, one);
+
+                        trace.set(cols.sel_s_b_index(i, 0), row_final, b0);
+                        trace.set(cols.sel_s_b_index(i, 1), row_final, b1);
+                        trace.set(cols.sel_s_b_index(i, 2), row_final, b2);
+                        trace.set(cols.sel_s_active_index(i), row_final, one);
+
+                        // Strictly enforce total
+                        // pending inputs <= 10
                         push_absorb(&mut pending_regs, r)?;
+                    }
+
+                    // For remaining unused lanes
+                    // clear active and bits.
+                    for lane in rr.len()..10 {
+                        trace.set(cols.sel_s_active_index(lane), row_map, BE::ZERO);
+                        trace.set(cols.sel_s_active_index(lane), row_final, BE::ZERO);
+
+                        for b in 0..crate::layout::SPONGE_IDX_BITS {
+                            trace.set(cols.sel_s_b_index(lane, b), row_map, BE::ZERO);
+                            trace.set(cols.sel_s_b_index(lane, b), row_final, BE::ZERO);
+                        }
                     }
 
                     // No permutation at absorb rows

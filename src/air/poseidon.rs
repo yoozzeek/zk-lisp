@@ -7,7 +7,7 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use super::{AirBlock, BlockCtx};
-use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
 pub struct PoseidonBlock;
 
@@ -110,12 +110,34 @@ where
             let pa = cur[ctx.cols.pose_active];
 
             for lane in 0..10 {
-                let mut sel_val = E::ZERO;
-                for r in 0..NR {
-                    sel_val += cur[ctx.cols.sel_s_index(lane, r)] * cur[ctx.cols.r_index(r)];
-                }
+                // Packed bits b0..b2 and active
+                let b0 = cur[ctx.cols.sel_s_b_index(lane, 0)];
+                let b1 = cur[ctx.cols.sel_s_b_index(lane, 1)];
+                let b2 = cur[ctx.cols.sel_s_b_index(lane, 2)];
+                let act = cur[ctx.cols.sel_s_active_index(lane)];
 
-                result[*ix] = p_map * pa * b_sponge * (cur[ctx.cols.lane_index(lane)] - sel_val);
+                // Mux over 8 registers using 3 bits
+                let r0 = cur[ctx.cols.r_index(0)];
+                let r1 = cur[ctx.cols.r_index(1)];
+                let r2 = cur[ctx.cols.r_index(2)];
+                let r3 = cur[ctx.cols.r_index(3)];
+                let r4 = cur[ctx.cols.r_index(4)];
+                let r5 = cur[ctx.cols.r_index(5)];
+                let r6 = cur[ctx.cols.r_index(6)];
+                let r7 = cur[ctx.cols.r_index(7)];
+
+                let s0 = b0 * r1 + (E::ONE - b0) * r0;
+                let s1 = b0 * r3 + (E::ONE - b0) * r2;
+                let s2 = b0 * r5 + (E::ONE - b0) * r4;
+                let s3 = b0 * r7 + (E::ONE - b0) * r6;
+                let t0 = b1 * s1 + (E::ONE - b1) * s0;
+                let t1 = b1 * s3 + (E::ONE - b1) * s2;
+
+                let sel_val = b2 * t1 + (E::ONE - b2) * t0;
+                let lane_expect = act * sel_val;
+
+                result[*ix] =
+                    p_map * pa * b_sponge * (cur[ctx.cols.lane_index(lane)] - lane_expect);
                 *ix += 1;
             }
         }

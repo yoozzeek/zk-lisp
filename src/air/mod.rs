@@ -108,7 +108,7 @@ impl Air for ZkLispAir {
             <VmAluBlock as AirBlock<BE>>::push_degrees(&mut degrees);
 
             if features.ram {
-                vm_alu::VmAluBlock::push_degrees_ram(&mut degrees);
+                VmAluBlock::push_degrees_ram(&mut degrees);
             }
         }
         if features.merkle {
@@ -209,11 +209,11 @@ impl Air for ZkLispAir {
             PoseidonBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
         }
         if self.features.vm {
-            vm_ctrl::VmCtrlBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
-            vm_alu::VmAluBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+            VmCtrlBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+            VmAluBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
         }
         if self.features.merkle {
-            merkle::MerkleBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+            MerkleBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
         }
 
         debug_assert_eq!(ix, result.len());

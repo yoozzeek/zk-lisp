@@ -13,6 +13,10 @@ pub const STEPS_PER_LEVEL_P2: usize = 32;
 
 pub const NR: usize = 8;
 
+/// Number of index bits for SPONGE
+/// lane register selection (NR=8 -> 3 bits)
+pub const SPONGE_IDX_BITS: usize = 3;
+
 #[derive(Clone, Debug)]
 pub struct Columns {
     // Poseidon lanes (t=12: r=10, c=2)
@@ -61,10 +65,15 @@ pub struct Columns {
     pub sel_c_start: usize,
     pub sel_dst1_start: usize,
 
-    // Sponge lane selectors:
-    // for each rate lane i in 0..10.
-    // layout: [ lane0[NR], lane1[NR], ..., lane9[NR] ] (10*NR)
-    pub sel_s_start: usize,
+    // Packed sponge lane selectors:
+    // For each lane i in 0..10,
+    // store SPONGE_IDX_BITS boolean bits (b0..bN)
+    // selecting a register index in [0..NR),
+    // and one boolean "active" bit.
+    // Layout: bits[10 * SPONGE_IDX_BITS]
+    // followed by active[10].
+    pub sel_s_bits_start: usize,
+    pub sel_s_active_start: usize,
 
     // Immediate for Const
     pub imm: usize,
@@ -144,11 +153,13 @@ impl Columns {
         let sel_dst1_start = sel_c_start + NR; // 8 cols
 
         // Sponge lane selectors
-        // block (10 * NR)
-        let sel_s_start = sel_dst1_start + NR;
+        // bits: 10 * SPONGE_IDX_BITS;
+        // active: 10
+        let sel_s_bits_start = sel_dst1_start + NR;
+        let sel_s_active_start = sel_s_bits_start + (10 * SPONGE_IDX_BITS);
 
         // Immediate and aux
-        let imm = sel_s_start + (10 * NR); // 1 col after sponge selectors
+        let imm = sel_s_active_start + 10; // after active flags
         let eq_inv = imm + 1; // 1 col
 
         // RAM columns
@@ -179,6 +190,8 @@ impl Columns {
 
         // Gadget: 32 reusable bit witnesses
         let gadget_b_start = pose_active + 1;
+
+        // Final width after gadget bits
         let width = gadget_b_start + 32;
 
         Self {
@@ -214,7 +227,8 @@ impl Columns {
             sel_b_start,
             sel_c_start,
             sel_dst1_start,
-            sel_s_start,
+            sel_s_bits_start,
+            sel_s_active_start,
             imm,
             eq_inv,
             mem_shadow,
@@ -277,11 +291,17 @@ impl Columns {
         self.sel_c_start + i
     }
 
-    pub fn sel_s_index(&self, lane: usize, reg: usize) -> usize {
+    pub fn sel_s_b_index(&self, lane: usize, bit: usize) -> usize {
         debug_assert!(lane < 10);
-        debug_assert!(reg < NR);
+        debug_assert!(bit < SPONGE_IDX_BITS);
 
-        self.sel_s_start + lane * NR + reg
+        self.sel_s_bits_start + lane * SPONGE_IDX_BITS + bit
+    }
+
+    pub fn sel_s_active_index(&self, lane: usize) -> usize {
+        debug_assert!(lane < 10);
+
+        self.sel_s_active_start + lane
     }
 
     pub fn gadget_b_index(&self, i: usize) -> usize {

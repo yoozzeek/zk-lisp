@@ -248,19 +248,14 @@ where
         // (only when sponge feature is enabled).
         if ctx.pub_inputs.get_features().sponge {
             for lane in 0..10 {
-                let mut sum = E::ZERO;
-                for i in 0..NR {
-                    let sel = cur[ctx.cols.sel_s_index(lane, i)];
-
-                    // booleanity for each sel bit
-                    result[*ix] = p_map * b_sponge * sel * (sel - E::ONE) + s_high;
+                // Booleanity for packed bits and active at map
+                for b in 0..crate::layout::SPONGE_IDX_BITS {
+                    let bitv = cur[ctx.cols.sel_s_b_index(lane, b)];
+                    result[*ix] = p_map * b_sponge * bitv * (bitv - E::ONE) + s_high;
                     *ix += 1;
-
-                    sum += sel;
                 }
-
-                // sum is boolean (0 or 1)
-                result[*ix] = p_map * b_sponge * sum * (sum - E::ONE) + s_high;
+                let act = cur[ctx.cols.sel_s_active_index(lane)];
+                result[*ix] = p_map * b_sponge * act * (act - E::ONE) + s_high;
                 *ix += 1;
             }
         }
@@ -405,8 +400,10 @@ mod tests {
 
         // differ only in sel_s for lane0, reg0
         // frame_a: sel=2 (invalid); frame_b: sel=1 (valid)
-        frame_a.current_mut()[cols.sel_s_index(0, 0)] = BE::from(2u64);
-        frame_b.current_mut()[cols.sel_s_index(0, 0)] = BE::from(1u64);
+        frame_a.current_mut()[cols.sel_s_b_index(0, 0)] = BE::from(2u64);
+        frame_b.current_mut()[cols.sel_s_b_index(0, 0)] = BE::from(1u64);
+        frame_a.current_mut()[cols.sel_s_active_index(0)] = BE::ONE;
+        frame_b.current_mut()[cols.sel_s_active_index(0)] = BE::ONE;
 
         // Build ctx without SPONGE feature
         let pi_no_sponge = crate::pi::PublicInputs::default();
@@ -452,8 +449,10 @@ mod tests {
         frame_b.current_mut()[cols.op_sponge] = BE::ONE;
 
         // differ only in sel_s for lane0, reg0
-        frame_a.current_mut()[cols.sel_s_index(0, 0)] = BE::from(2u64); // invalid
-        frame_b.current_mut()[cols.sel_s_index(0, 0)] = BE::from(1u64); // valid
+        frame_a.current_mut()[cols.sel_s_b_index(0, 0)] = BE::from(2u64); // invalid
+        frame_b.current_mut()[cols.sel_s_b_index(0, 0)] = BE::from(1u64); // valid
+        frame_a.current_mut()[cols.sel_s_active_index(0)] = BE::ONE;
+        frame_b.current_mut()[cols.sel_s_active_index(0)] = BE::ONE;
 
         // Build ctx with SPONGE feature
         let mut pi = crate::pi::PublicInputs::default();
