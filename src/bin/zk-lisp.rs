@@ -221,20 +221,20 @@ fn read_program(path: impl AsRef<std::path::Path>, max_bytes: usize) -> Result<S
 fn build_pi_for_program(
     program: &compiler::ir::Program,
     args: &[u64],
-) -> zk_lisp::pi::PublicInputs {
+) -> Result<zk_lisp::pi::PublicInputs, CliError> {
     // Build features from program ops and bind VM args.
     // Ensures Merkle/RAM/VM/POSEIDON/SPONGE flags are correct.
     zk_lisp::pi::PublicInputsBuilder::for_program(program)
         .vm_args(args)
         .build()
-        .expect("PI build")
+        .map_err(CliError::Build)
 }
 
 fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: PreflightArg) -> Result<(), CliError> {
     let src = read_program(&args.path, max_bytes)?;
     let program = compiler::compile_entry(&src, &args.args)?;
 
-    let pi = build_pi_for_program(&program, &args.args);
+    let pi = build_pi_for_program(&program, &args.args)?;
     // Build trace with VM args
     let trace = prove::build_trace_with_pi(&program, &pi)?;
 
@@ -304,7 +304,7 @@ fn cmd_prove(
     let src = read_program(&args.path, max_bytes)?;
     let program = compiler::compile_entry(&src, &args.args)?;
 
-    let mut pi = build_pi_for_program(&program, &args.args);
+    let mut pi = build_pi_for_program(&program, &args.args)?;
     let trace = prove::build_trace_with_pi(&program, &pi)?;
 
     // VM output position
@@ -390,7 +390,7 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliE
     let program = compiler::compile_entry(&src, &args.args)?;
 
     // Rebuild PI similarly to Prove
-    let mut pi = build_pi_for_program(&program, &args.args);
+    let mut pi = build_pi_for_program(&program, &args.args)?;
     let trace = prove::build_trace_with_pi(&program, &pi)?;
 
     // VM output location
@@ -627,7 +627,13 @@ fn cmd_repl() -> Result<(), CliError> {
                 Err(e) => println!("error: compile: {e}"),
                 Ok(program) => {
                     // Build PI and trace
-                    let pi = build_pi_for_program(&program, &[]);
+                    let pi = match build_pi_for_program(&program, &[]) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            println!("error: pi: {e}");
+                            continue;
+                        }
+                    };
                     match prove::build_trace_with_pi(&program, &pi) {
                         Err(e) => println!("error: build trace: {e}"),
                         Ok(trace) => {
@@ -755,7 +761,13 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
-            let mut pi = build_pi_for_program(&program, &[]);
+            let mut pi = match build_pi_for_program(&program, &[]) {
+                Ok(p) => p,
+                Err(e) => {
+                    println!("error: pi: {e}");
+                    continue;
+                }
+            };
             let trace = match prove::build_trace_with_pi(&program, &pi) {
                 Ok(t) => t,
                 Err(e) => {
@@ -816,7 +828,13 @@ fn cmd_repl() -> Result<(), CliError> {
         match compiler::compile_entry(&wrapped, &[]) {
             Err(e) => println!("error: compile: {e}"),
             Ok(program) => {
-                let pi = build_pi_for_program(&program, &[]);
+                let pi = match build_pi_for_program(&program, &[]) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        println!("error: pi: {e}");
+                        continue;
+                    }
+                };
                 match prove::build_trace_with_pi(&program, &pi) {
                     Err(e) => println!("error: build trace: {e}"),
                     Ok(trace) => {
