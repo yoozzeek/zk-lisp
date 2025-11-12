@@ -82,7 +82,7 @@ struct ProveArgs {
     #[arg(long = "arg", value_delimiter = ',')]
     args: Vec<u64>,
     /// Number of FRI queries
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 64)]
     queries: u8,
     /// Blowup factor
     #[arg(long, default_value_t = 8)]
@@ -114,7 +114,7 @@ struct VerifyArgs {
     args: Vec<u64>,
 
     /// Number of FRI queries
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 64)]
     queries: u8,
     /// Blowup factor
     #[arg(long, default_value_t = 8)]
