@@ -837,7 +837,11 @@ impl TraceBuilder {
             for row in 0..trace.length() {
                 // Carry gp_sorted from
                 // previous row by default
-                let mut gp_sorted_cur = if row > 0 { gp_sorted_vals[row - 1] } else { BE::ZERO };
+                let mut gp_sorted_cur = if row > 0 {
+                    gp_sorted_vals[row - 1]
+                } else {
+                    BE::ZERO
+                };
 
                 // Apply previous row's
                 // sorted update into this row.
@@ -930,7 +934,11 @@ impl TraceBuilder {
 
             for row in 0..trace.length() {
                 // carry from previous row by default
-                let mut gp_uns_cur = if row > 0 { gp_uns_vals[row - 1] } else { BE::ZERO };
+                let mut gp_uns_cur = if row > 0 {
+                    gp_uns_vals[row - 1]
+                } else {
+                    BE::ZERO
+                };
 
                 // If previous row was an event (final row),
                 // apply its update into this row.

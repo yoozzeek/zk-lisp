@@ -25,8 +25,8 @@ fn proof_opts() -> ProofOptions {
 fn store_then_load_same_address() {
     let src = r"
 (def (main)
-  (seq (store 42 7)
-       (load 42)))
+  (begin (store 42 7)
+         (load 42)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
     let trace = prove::build_trace(&p).expect("trace");
@@ -42,9 +42,9 @@ fn store_then_load_same_address() {
 fn double_load_after_single_store_ok() {
     let src = r"
 (def (main)
-  (seq (store 7 11)
-       (seq (load 7)
-            (load 7))))
+  (begin (store 7 11)
+         (load 7)
+         (load 7)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
     let trace = prove::build_trace(&p).expect("trace");
@@ -60,9 +60,9 @@ fn double_load_after_single_store_ok() {
 fn store_same_addr_updates_value() {
     let src = r"
 (def (main)
-  (seq (store 7 11)
-       (seq (store 7 13)
-            (load 7))))
+  (begin (store 7 11)
+         (store 7 13)
+         (load 7)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
     let trace = prove::build_trace(&p).expect("trace");
@@ -78,9 +78,9 @@ fn store_same_addr_updates_value() {
 fn switch_addr_then_load_new_ok() {
     let src = r"
 (def (main)
-  (seq (store 1 5)
-       (seq (store 2 7)
-            (load 2))))
+  (begin (store 1 5)
+         (store 2 7)
+         (load 2)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
     let trace = prove::build_trace(&p).expect("trace");
@@ -96,8 +96,8 @@ fn switch_addr_then_load_new_ok() {
 fn store_then_load_different_addr_reads_zero_without_prior_store() {
     let src = r"
 (def (main)
-  (seq (store 1 5)
-       (load 2)))
+  (begin (store 1 5)
+         (load 2)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
     let trace = prove::build_trace(&p).expect("trace");
@@ -113,8 +113,8 @@ fn store_then_load_different_addr_reads_zero_without_prior_store() {
 fn ram_perm_store_then_load_preflight_ok() {
     let src = r"
 (def (main)
-  (seq (store 10 77)
-       (load 10)))
+  (begin (store 10 77)
+         (load 10)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
 
@@ -132,13 +132,13 @@ fn ram_perm_many_addresses_preflight_ok() {
     // Write 5 addresses, then read them back
     let src = r"
 (def (main)
-  (seq (store 1 11)
-       (seq (store 2 22)
-            (seq (store 3 33)
-                 (seq (store 4 44)
-                      (seq (store 5 55)
-                           (seq (load 3)
-                                (load 5))))))))
+  (begin (store 1 11)
+         (store 2 22)
+         (store 3 33)
+         (store 4 44)
+         (store 5 55)
+         (load 3)
+         (load 5)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
 
@@ -155,10 +155,10 @@ fn ram_perm_many_addresses_preflight_ok() {
 fn ram_perm_interleaved_preflight_ok() {
     let src = r"
 (def (main)
-  (seq (store 1 5)
-       (seq (store 2 7)
-            (seq (load 1)
-                 (load 2)))))
+  (begin (store 1 5)
+         (store 2 7)
+         (load 1)
+         (load 2)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
     let pi = pi::PublicInputsBuilder::for_program(&p)
@@ -174,9 +174,9 @@ fn ram_perm_interleaved_preflight_ok() {
 fn ram_perm_double_store_then_load_preflight_ok() {
     let src = r"
 (def (main)
-  (seq (store 9 1)
-       (seq (store 9 2)
-            (load 9))))
+  (begin (store 9 1)
+         (store 9 2)
+         (load 9)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
     let pi = pi::PublicInputsBuilder::for_program(&p)
@@ -194,8 +194,8 @@ fn computed_addr_and_value_ok() {
 (def (main)
   (let ((a (+ 40 2))
         (v (* 3 3)))
-    (seq (store a v)
-         (load a))))
+    (store a v)
+    (load a)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
     let trace = prove::build_trace(&p).expect("trace");
@@ -211,9 +211,9 @@ fn computed_addr_and_value_ok() {
 fn switch_addr_then_load_old_addr_reads_old_value() {
     let src = r"
 (def (main)
-  (seq (store 1 5)
-       (seq (store 2 7)
-            (load 1))))
+  (begin (store 1 5)
+         (store 2 7)
+         (load 1)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
     let trace = prove::build_trace(&p).expect("trace");

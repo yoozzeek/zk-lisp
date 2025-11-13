@@ -10,7 +10,7 @@ use zk_lisp::prove::{self, build_trace_with_pi};
 
 #[test]
 fn stack_push_pop_simple() {
-    let src = "(def (main) (seq (push 7) (pop)))";
+    let src = "(def (main) (begin (push 7) (pop)))";
     let program = compile_entry(src, &[]).expect("compile");
 
     let pi = pi::PublicInputsBuilder::for_program(&program)
@@ -31,9 +31,8 @@ fn stack_push_push_pop_add() {
     // then result = x + pop() => 11 + 7 = 18
     let src = r#"
 (def (main)
-  (let ((x (seq (push 7)
-                (seq (push 11)
-                     (pop)))))
+  (let ((x (begin (push* 7 11)
+                  (pop))))
     (+ x (pop))))
 "#;
 
@@ -57,15 +56,12 @@ fn stack_fill_empty_sum() {
     // 5 times and sum => 15
     let src = r#"
 (def (main)
-  (seq (push 1)
-    (seq (push 2)
-      (seq (push 3)
-        (seq (push 4)
-          (seq (push 5)
-            (+ (pop)
-               (+ (pop)
-                  (+ (pop)
-                     (+ (pop) (pop)))))))))))
+  (begin
+    (push* 1 2 3 4 5)
+    (+ (pop)
+       (+ (pop)
+          (+ (pop)
+             (+ (pop) (pop)))))))
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");
@@ -92,10 +88,11 @@ fn stack_with_load_store_interop() {
     let src = r#"
 (def (main)
   (let ((addr 1000000))
-    (seq (push 7)
+    (begin
+      (push 7)
       (+ (load addr)
-         (seq (store addr 9)
-              (pop))))))
+         (begin (store addr 9)
+                (pop))))))
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");

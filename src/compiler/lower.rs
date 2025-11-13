@@ -285,8 +285,10 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "store" => lower_store(cx, tail).map(|_| RVal::Imm(0)),
                     "push" => lower_push(cx, tail),
                     "pop" => lower_pop(cx, tail),
+                    "push*" => lower_push_star(cx, tail),
+                    "pop*" => lower_pop_star(cx, tail),
                     "hex-to-bytes32" => lower_hex_to_bytes32(cx, tail),
-                    "seq" => lower_seq(cx, tail),
+                    "begin" => lower_begin(cx, tail),
                     _ => lower_call(cx, s, tail),
                 }
             }
@@ -298,8 +300,8 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
 
 fn lower_def(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     // forms:
-    // (def (f x y) body)
-    // or (def name body) -- no params
+    // (def (f x y) body...)
+    // or (def name body...)
     if rest.is_empty() {
         return Err(Error::InvalidForm("def".into()));
     }
@@ -319,18 +321,21 @@ fn lower_def(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
                 }
             }
 
-            let body = rest
-                .get(1)
-                .cloned()
-                .ok_or_else(|| Error::InvalidForm("def: body".into()))?;
+            if rest.len() < 2 {
+                return Err(Error::InvalidForm("def: body".into()));
+            }
+
+            let body = implicit_begin(&rest[1..]);
 
             (fname, ps, body)
         }
         Ast::Atom(Atom::Sym(s)) => {
-            let body = rest
-                .get(1)
-                .cloned()
-                .ok_or_else(|| Error::InvalidForm("def: body".into()))?;
+            if rest.len() < 2 {
+                return Err(Error::InvalidForm("def: body".into()));
+            }
+
+            let body = implicit_begin(&rest[1..]);
+
             (s.clone(), Vec::new(), body)
         }
         _ => return Err(Error::InvalidForm("def".into())),
@@ -342,7 +347,7 @@ fn lower_def(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
 }
 
 fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    // (let ((x expr) (y expr)) body)
+    // (let ((x expr) (y expr)) body...)
     if rest.is_empty() {
         return Err(Error::InvalidForm("let".into()));
     }
@@ -388,11 +393,13 @@ fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         }
     }
 
-    // body = last expr or (body ...)
-    let body_ast = rest
-        .get(1)
-        .cloned()
-        .ok_or_else(|| Error::InvalidForm("let: body".into()))?;
+    // body = one or more exprs;
+    // implicit begin
+    if rest.len() < 2 {
+        return Err(Error::InvalidForm("let: body".into()));
+    }
+
+    let body_ast = implicit_begin(&rest[1..]);
 
     let res_v = lower_expr(cx, body_ast)?;
     let res_reg_opt: Option<u8> = match res_v {
@@ -2183,18 +2190,20 @@ fn lower_muldiv_floor(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     Ok(RVal::Owned(rq))
 }
 
-fn lower_seq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("seq".into()));
+fn lower_begin(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    // variadic:
+    // (begin a b c ...) => evaluate in order,
+    // return last
+    if rest.is_empty() {
+        return Err(Error::InvalidForm("begin".into()));
     }
 
-    let a = lower_expr(cx, rest[0].clone())?;
+    for it in &rest[..rest.len() - 1] {
+        let v = lower_expr(cx, it.clone())?;
+        free_if_owned(cx, v);
+    }
 
-    free_if_owned(cx, a);
-
-    let b = lower_expr(cx, rest[1].clone())?;
-
-    Ok(b)
+    lower_expr(cx, rest.last().unwrap().clone())
 }
 
 fn lower_load(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
@@ -2340,6 +2349,57 @@ fn lower_pop(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(r_base);
 
     Ok(RVal::Owned(r_dst))
+}
+
+// (push* a b c ...) =>
+// (begin (push a) (push b) (push c) ...)
+fn lower_push_star(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.is_empty() {
+        return Ok(RVal::Imm(0));
+    }
+
+    for it in rest {
+        let _ = lower_push(cx, core::slice::from_ref(it))?;
+        // lower_push already returns
+        // 0 and frees its temps
+    }
+
+    Ok(RVal::Imm(0))
+}
+
+// (pop* n) => pop N times
+// return last value
+fn lower_pop_star(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 1 {
+        return Err(Error::InvalidForm("pop*".into()));
+    }
+
+    // require compile-time
+    // integer literal for N.
+    let n = match &rest[0] {
+        Ast::Atom(Atom::Int(v)) => *v as usize,
+        _ => {
+            return Err(Error::InvalidForm(
+                "pop*: count must be integer literal".into(),
+            ));
+        }
+    };
+
+    if n == 0 {
+        return Err(Error::InvalidForm("pop*: count must be >= 1".into()));
+    }
+
+    let mut last: Option<RVal> = None;
+    for _ in 0..n {
+        let v = lower_pop(cx, &[])?;
+        if let Some(prev) = last.take() {
+            free_if_owned(cx, prev);
+        }
+
+        last = Some(v);
+    }
+
+    Ok(last.unwrap())
 }
 
 // Lower (load-ca leaf ((d0 s0) (d1 s1) ...)) -> leaf value;
@@ -2661,4 +2721,18 @@ fn ensure_sp(cx: &mut LowerCtx) -> Result<u8, Error> {
     cx.sp_reg = Some(r);
 
     Ok(r)
+}
+
+// Build implicit (begin ...)
+// from one or more forms
+fn implicit_begin(forms: &[Ast]) -> Ast {
+    if forms.len() == 1 {
+        return forms[0].clone();
+    }
+
+    let mut v = Vec::with_capacity(forms.len() + 1);
+    v.push(Ast::Atom(Atom::Sym("begin".to_string())));
+    v.extend_from_slice(forms);
+
+    Ast::List(v)
 }
