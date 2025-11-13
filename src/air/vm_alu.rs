@@ -12,21 +12,6 @@ use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
 pub struct VmAluBlock;
 
-impl VmAluBlock {
-    pub fn push_degrees_ram(out: &mut Vec<TransitionConstraintDegree>) {
-        // 1. carry/update mem_shadow,
-        // 2. carry/update mem_active_addr,
-        // 3. load address check:
-        // a_val == mem_active_addr at final
-        for _ in 0..3 {
-            out.push(TransitionConstraintDegree::with_cycles(
-                5,
-                vec![STEPS_PER_LEVEL_P2],
-            ));
-        }
-    }
-}
-
 impl<E> AirBlock<E> for VmAluBlock
 where
     E: FieldElement<BaseField = BE> + From<BE>,
@@ -178,7 +163,6 @@ where
         let b_mulwide = cur[ctx.cols.op_mulwide];
         let b_div128 = cur[ctx.cols.op_div128];
         let b_load = cur[ctx.cols.op_load];
-        let b_store = cur[ctx.cols.op_store];
 
         // include Eq via dst0_next so
         // generic write can be uniform for Eq
@@ -213,8 +197,8 @@ where
             + b_eq * dst0_next
             + b_assert * E::ONE
             + b_assert_bit * E::ONE
-            // load writes mem_shadow into dst
-            + b_load * cur[ctx.cols.mem_shadow];
+            // load: write value carried in imm
+            + b_load * cur[ctx.cols.imm];
 
         // AssertRange: precompute sum
         // of 32 bits for write/equality
@@ -294,28 +278,6 @@ where
         let inv_b = cur[ctx.cols.eq_inv];
         result[*ix] = p_final * b_div128 * (b_val * inv_b - E::ONE) + s_eq;
         *ix += 1;
-
-        if ctx.pub_inputs.get_features().ram {
-            // Carry/update mem_shadow across
-            // level; update at final on store
-            let g_carry = g_carry; // reuse
-            result[*ix] = g_carry * (next[ctx.cols.mem_shadow] - cur[ctx.cols.mem_shadow])
-                + p_final * b_store * (next[ctx.cols.mem_shadow] - b_val)
-                + s_low;
-            *ix += 1;
-
-            // Carry/update active_addr
-            result[*ix] = g_carry
-                * (next[ctx.cols.mem_active_addr] - cur[ctx.cols.mem_active_addr])
-                + p_final * b_store * (next[ctx.cols.mem_active_addr] - a_val)
-                + s_low;
-            *ix += 1;
-
-            // Load must read from
-            // current active address
-            result[*ix] = p_final * b_load * (a_val - cur[ctx.cols.mem_active_addr]) + s_low;
-            *ix += 1;
-        }
 
         // assert: require c_val == 1 at final
         // and enforce c booleanity for SELECT at final

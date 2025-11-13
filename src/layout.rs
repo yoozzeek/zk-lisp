@@ -82,8 +82,14 @@ pub struct Columns {
     pub eq_inv: usize,
 
     // RAM columns
-    pub mem_shadow: usize,
-    pub mem_active_addr: usize,
+    pub ram_sorted: usize,
+    pub ram_s_addr: usize,
+    pub ram_s_clk: usize,
+    pub ram_s_val: usize,
+    pub ram_s_is_write: usize,
+    pub ram_s_last_write: usize,
+    pub ram_gp_unsorted: usize,
+    pub ram_gp_sorted: usize,
 
     // Merkle columns
     pub merkle_g: usize,
@@ -99,7 +105,8 @@ pub struct Columns {
 
     // PC/ROM tie-in
     pub pc: usize,
-    // 12 rom-op one-hot columns
+    
+    // Rom columns
     pub rom_op_start: usize,
 
     // Poseidon per-level activity gate
@@ -163,11 +170,17 @@ impl Columns {
         let eq_inv = imm + 1; // 1 col
 
         // RAM columns
-        let mem_shadow = eq_inv + 1;
-        let mem_active_addr = mem_shadow + 1;
+        let ram_sorted = eq_inv + 1;
+        let ram_s_addr = ram_sorted + 1;
+        let ram_s_clk = ram_s_addr + 1;
+        let ram_s_val = ram_s_clk + 1;
+        let ram_s_is_write = ram_s_val + 1;
+        let ram_s_last_write = ram_s_is_write + 1;
+        let ram_gp_unsorted = ram_s_last_write + 1;
+        let ram_gp_sorted = ram_gp_unsorted + 1;
 
         // Merkle block columns
-        let merkle_g = mem_active_addr + 1;
+        let merkle_g = ram_gp_sorted + 1;
         let merkle_dir = merkle_g + 1;
         let merkle_sib = merkle_dir + 1;
         let merkle_acc = merkle_sib + 1;
@@ -233,8 +246,14 @@ impl Columns {
             sel_s_active_start,
             imm,
             eq_inv,
-            mem_shadow,
-            mem_active_addr,
+            ram_sorted,
+            ram_s_addr,
+            ram_s_clk,
+            ram_s_val,
+            ram_s_is_write,
+            ram_s_last_write,
+            ram_gp_unsorted,
+            ram_gp_sorted,
             merkle_g,
             merkle_dir,
             merkle_sib,

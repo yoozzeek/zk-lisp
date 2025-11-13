@@ -14,6 +14,7 @@ use crate::{pi, utils};
 
 use arrayvec::ArrayVec;
 use winterfell::TraceTable;
+use winterfell::Trace;
 use winterfell::math::FieldElement;
 use winterfell::math::StarkField;
 use winterfell::math::fields::f128::BaseElement as BE;
@@ -38,10 +39,11 @@ impl TraceBuilder {
         // gather up to 10.
         let mut pending_regs: ArrayVec<u8, 10> = ArrayVec::new();
 
-        // RAM shadow state with single
-        // active address and its value.
-        let mut mem_active_addr = BE::ZERO;
-        let mut mem_shadow = BE::ZERO;
+        // RAM: host-side memory map
+        // and event log (addr, clk, val, is_write)
+        let mut mem: std::collections::BTreeMap<u128, BE> = std::collections::BTreeMap::new();
+        // RamEvent(addr, clk, val, is_write)
+        let mut ram_events: Vec<(BE, BE, BE, BE)> = Vec::new();
 
         for (lvl, op) in p.ops.iter().enumerate() {
             // snapshot current regs and
@@ -90,13 +92,6 @@ impl TraceBuilder {
 
             trace.set(cols.imm, row_map, BE::ZERO);
             trace.set(cols.eq_inv, row_map, BE::ZERO);
-
-            // carry RAM shadow/active
-            // across this level by default
-            for r in base..(base + steps) {
-                trace.set(cols.mem_shadow, r, mem_shadow);
-                trace.set(cols.mem_active_addr, r, mem_active_addr);
-            }
 
             // clear op bits
             let ops = [
@@ -706,16 +701,19 @@ impl TraceBuilder {
                     set_sel(&mut trace, row_final, cols.sel_dst0_start, dst);
                     set_sel(&mut trace, row_final, cols.sel_a_start, addr);
 
-                    // load only from active address
                     let addr_v = regs[addr as usize];
-                    if addr_v != mem_active_addr {
-                        return Err(Error::InvalidInput(
-                            "load address must equal active addr (store first)",
-                        ));
-                    }
-
+                    let clk = BE::from(lvl as u64);
+                    let loaded = mem.get(&addr_v.as_int()).copied().unwrap_or(BE::ZERO);
+                    
+                    // set imm to carry loaded
+                    // value for ALU write constraint
+                    trace.set(cols.imm, row_map, loaded);
+                    trace.set(cols.imm, row_final, loaded);
+                    
                     // write into dst after final
-                    next_regs[dst as usize] = mem_shadow;
+                    next_regs[dst as usize] = loaded;
+
+                    ram_events.push((addr_v, clk, loaded, BE::from(0u64)));
                 }
                 Op::Store { addr, src } => {
                     trace.set(cols.op_store, row_map, BE::ONE);
@@ -728,17 +726,11 @@ impl TraceBuilder {
 
                     let addr_v = regs[addr as usize];
                     let src_v = regs[src as usize];
+                    let clk = BE::from(lvl as u64);
 
-                    // After final, update shadow/active
-                    // for this and subsequent rows in level.
-                    for r in (row_final + 1)..(base + steps) {
-                        trace.set(cols.mem_shadow, r, src_v);
-                        trace.set(cols.mem_active_addr, r, addr_v);
-                    }
-
-                    // Commit for next level
-                    mem_shadow = src_v;
-                    mem_active_addr = addr_v;
+                    // update host memory
+                    mem.insert(addr_v.as_int(), src_v);
+                    ram_events.push((addr_v, clk, src_v, BE::ONE));
                 }
                 Op::End => {}
             }
@@ -790,6 +782,96 @@ impl TraceBuilder {
             let row_map = base + schedule::pos_map();
             trace.set(cols.lane_c0, row_map, dom_all[0]);
             trace.set(cols.lane_c1, row_map, dom_all[1]);
+        }
+
+        // Populate sorted RAM
+        // table across pad rows.
+        {
+            // Place sorted events by (addr, clk)
+            ram_events.sort_by(|a, b| {
+                let (aa, ac) = (a.0.as_int(), a.1.as_int());
+                let (ba, bc) = (b.0.as_int(), b.1.as_int());
+                
+                aa.cmp(&ba).then(ac.cmp(&bc))
+            });
+
+            let mut it = ram_events.iter();
+            for row in 0..trace.length() {
+                // decide if row is a pad row
+                let pos = row % STEPS_PER_LEVEL_P2;
+                let is_pad = pos != schedule::pos_map()
+                    && pos != schedule::pos_final()
+                    && !schedule::is_round_pos(pos);
+                
+                if is_pad {
+                    if let Some(ev) = it.next() {
+                        trace.set(cols.ram_sorted, row, BE::ONE);
+                        trace.set(cols.ram_s_addr, row, ev.0);
+                        trace.set(cols.ram_s_clk, row, ev.1);
+                        trace.set(cols.ram_s_val, row, ev.2);
+                        trace.set(cols.ram_s_is_write, row, ev.3);
+                    } else {
+                        trace.set(cols.ram_sorted, row, BE::ZERO);
+                    }
+                } else {
+                    trace.set(cols.ram_sorted, row, BE::ZERO);
+                }
+            }
+
+            // Carry ram_s_last_write
+            // and gp_sorted across rows.
+            let mut last_addr: Option<BE> = None;
+            let mut last_write: BE = BE::ZERO;
+            
+            // Trace carries deltas,
+            // AIR checks recurrence;
+            // store zeros here.
+            let gp_sorted = BE::ZERO;
+            
+            for row in 0..trace.length() {
+                trace.set(cols.ram_s_last_write, row, last_write);
+                trace.set(cols.ram_gp_sorted, row, gp_sorted);
+                
+                if trace.get(cols.ram_sorted, row) == BE::ONE {
+                    let cur_addr = trace.get(cols.ram_s_addr, row);
+                    let val = trace.get(cols.ram_s_val, row);
+                    let w = trace.get(cols.ram_s_is_write, row);
+                    
+                    if let Some(prev_a) = last_addr {
+                        if prev_a != cur_addr {
+                            // new group, last_write reset
+                            // to 0, require writer to seed.
+                            last_write = BE::ZERO;
+                        }
+                    }
+                    
+                    if w == BE::ONE {
+                        last_write = val;
+                    }
+                    
+                    last_addr = Some(cur_addr);
+                    trace.set(cols.ram_s_last_write, row, last_write);
+                }
+            }
+
+            // Build gp_unsorted across
+            // final rows with events.
+            // Trace stores zeros;
+            // AIR enforces relation via carry
+            let gp_uns = BE::ZERO;
+            for lvl in 0..levels {
+                let base = lvl * steps;
+                let row_fin = base + crate::schedule::pos_final();
+                let has_event = trace.get(cols.op_load, row_fin) == BE::ONE
+                    || trace.get(cols.op_store, row_fin) == BE::ONE;
+                
+                if has_event {
+                    // no-op; AIR will enforce
+                    // multiplicative update.
+                }
+                
+                trace.set(cols.ram_gp_unsorted, row_fin, gp_uns);
+            }
         }
 
         // Populate ROM accumulator

@@ -194,12 +194,12 @@ pub(crate) fn run(
 
             // RAM snapshot
             let cols = layout::Columns::baseline();
-            let ram_snap = if cols.mem_shadow < trace.width() {
+            let ram_snap = if cols.ram_sorted < trace.width() {
                 Some(RamSnap {
-                    shadow_cur: fe_s(frame.current()[cols.mem_shadow]),
-                    shadow_next: fe_s(frame.next()[cols.mem_shadow]),
-                    addr_cur: fe_s(frame.current()[cols.mem_active_addr]),
-                    addr_next: fe_s(frame.next()[cols.mem_active_addr]),
+                    shadow_cur: fe_s(frame.current()[cols.ram_s_last_write]),
+                    shadow_next: fe_s(frame.next()[cols.ram_s_last_write]),
+                    addr_cur: fe_s(frame.current()[cols.ram_s_addr]),
+                    addr_next: fe_s(frame.next()[cols.ram_s_addr]),
                 })
             } else {
                 None

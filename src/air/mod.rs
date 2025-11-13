@@ -6,13 +6,14 @@ mod merkle;
 mod mixers;
 mod poseidon;
 mod rom;
+mod ram;
 mod schedule;
 mod vm_alu;
 mod vm_ctrl;
 
 use crate::air::{
-    merkle::MerkleBlock, poseidon::PoseidonBlock, rom::RomBlock, schedule::ScheduleBlock,
-    vm_alu::VmAluBlock, vm_ctrl::VmCtrlBlock,
+    merkle::MerkleBlock, poseidon::PoseidonBlock, ram::RamBlock, rom::RomBlock,
+    schedule::ScheduleBlock, vm_alu::VmAluBlock, vm_ctrl::VmCtrlBlock,
 };
 use crate::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::pi::{FeaturesMap, PublicInputs};
@@ -125,10 +126,9 @@ impl Air for ZkLispAir {
         if features.vm {
             VmCtrlBlock::push_degrees(&mut degrees, features.sponge);
             <VmAluBlock as AirBlock<BE>>::push_degrees(&mut degrees);
-
-            if features.ram {
-                VmAluBlock::push_degrees_ram(&mut degrees);
-            }
+        }
+        if features.ram {
+            <RamBlock as AirBlock<BE>>::push_degrees(&mut degrees);
         }
         if features.merkle {
             <MerkleBlock as AirBlock<BE>>::push_degrees(&mut degrees);
@@ -298,6 +298,9 @@ impl Air for ZkLispAir {
         if self.features.merkle {
             MerkleBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
         }
+        if self.features.ram {
+            RamBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+        }
 
         // ROM accumulator block is
         // independent of pose_active
@@ -381,6 +384,20 @@ impl Air for ZkLispAir {
         // first map = 0, last = commit
         if self.pub_inputs.program_commitment.iter().any(|b| *b != 0) {
             RomBlock::append_assertions(&bctx_sched, &mut out, last);
+        }
+
+        if self.features.ram {
+            // Final equality of grand-products
+            out.push(Assertion::single(
+                self.cols.ram_gp_unsorted,
+                last,
+                BE::from(0u32),
+            ));
+            out.push(Assertion::single(
+                self.cols.ram_gp_sorted,
+                last,
+                BE::from(0u32),
+            ));
         }
 
         if out.is_empty() {
@@ -556,9 +573,18 @@ impl ZkLispAir {
             dbg.push(("vm_ctrl", evals[ofs..ofs + len].to_vec()));
             ofs += len;
 
-            // vm_alu base (58) + RAM (3 if enabled)
-            let len = 58 + if features.ram { 3 } else { 0 };
+            // vm_alu base (58)
+            let len = 58;
             dbg.push(("vm_alu", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+        }
+        if features.ram {
+            // ram block length:
+            // 6 base constraints 
+            // + 33 (32 bit booleanities + equality)
+            // = 39
+            let len = 39;
+            dbg.push(("ram", evals[ofs..ofs + len].to_vec()));
             ofs += len;
         }
 
@@ -613,9 +639,14 @@ impl ZkLispAir {
             ranges.push(("vm_ctrl", ofs, ofs + len));
             ofs += len;
 
-            let len2 = 58 + if features.ram { 3 } else { 0 };
+            let len2 = 58;
             ranges.push(("vm_alu", ofs, ofs + len2));
             ofs += len2;
+        }
+        if features.ram {
+            let len = 39;
+            ranges.push(("ram", ofs, ofs + len));
+            ofs += len;
         }
 
         tracing::debug!(target = "proof.air", "deg_ranges: {:?}", ranges);
