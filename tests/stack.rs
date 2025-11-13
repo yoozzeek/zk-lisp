@@ -50,3 +50,64 @@ fn stack_push_push_pop_add() {
 
     assert_eq!(v, BE::from(18u64));
 }
+
+#[test]
+fn stack_fill_empty_sum() {
+    // push 1..5, then pop
+    // 5 times and sum => 15
+    let src = r#"
+(def (main)
+  (seq (push 1)
+    (seq (push 2)
+      (seq (push 3)
+        (seq (push 4)
+          (seq (push 5)
+            (+ (pop)
+               (+ (pop)
+                  (+ (pop)
+                     (+ (pop) (pop)))))))))))
+"#;
+
+    let program = compile_entry(src, &[]).expect("compile");
+
+    let pi = pi::PublicInputsBuilder::for_program(&program)
+        .build()
+        .expect("pi");
+    let trace = build_trace_with_pi(&program, &pi).expect("trace");
+
+    let cols = Columns::baseline();
+    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
+
+    assert_eq!(v, BE::from(15u64));
+}
+
+#[test]
+fn stack_with_load_store_interop() {
+    // push 7 at base+0;
+    // load base+0 -> 7;
+    // store base+0 <- 9;
+    // pop -> 9;
+    // total = 7 + 9 = 16
+    let src = r#"
+(def (main)
+  (let ((addr 1000000))
+    (seq (push 7)
+      (+ (load addr)
+         (seq (store addr 9)
+              (pop))))))
+"#;
+
+    let program = compile_entry(src, &[]).expect("compile");
+
+    let pi = pi::PublicInputsBuilder::for_program(&program)
+        .build()
+        .expect("pi");
+    let trace = build_trace_with_pi(&program, &pi).expect("trace");
+
+    let cols = Columns::baseline();
+    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
+
+    assert_eq!(v, BE::from(16u64));
+}
