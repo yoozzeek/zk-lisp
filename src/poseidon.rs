@@ -14,7 +14,6 @@ const DOM_POSEIDON_DOM0: &str = "zkl/poseidon2/dom/c0";
 const DOM_POSEIDON_DOM1: &str = "zkl/poseidon2/dom/c1";
 const DOM_POSEIDON_MDS_X: &str = "zkl/poseidon2/mds/x";
 const DOM_POSEIDON_MDS_Y: &str = "zkl/poseidon2/mds/y";
-const DOM_POSEIDON_MDS_Y_FALLBACK: &str = "zkl/poseidon2/mds/y/fallback";
 
 // Domains for ROM t=3 parameters
 const DOM_ROM_RC: &str = "zkl/rom3/rc";
@@ -26,6 +25,12 @@ pub struct PoseidonSuite {
     pub dom: [BE; 2],
     pub mds: [[BE; 12]; 12],
     pub rc: Vec<[BE; 12]>, // length == rounds
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum PoseidonError {
+    #[error("poseidon: failed to derive valid 12x12 MDS for suite_id {0}")]
+    MdsDerivation(String),
 }
 
 static POSEIDON_CACHE: OnceLock<RwLock<HashMap<[u8; 32], PoseidonSuite>>> = OnceLock::new();
@@ -51,6 +56,117 @@ pub fn get_poseidon_suite_with_rounds(suite_id: &[u8; 32], rounds: usize) -> Pos
     }
 
     suite
+}
+
+/// Checked construction: attempt to
+/// derive MDS with bounded fallback;
+/// return Err on failure.
+pub fn validate_poseidon_suite(suite_id: &[u8; 32]) -> Result<(), PoseidonError> {
+    // Try deriving the MDS once in a checked mode;
+    // DOM tags/RC are deterministic and infallible.
+    let _ = try_derive_poseidon_mds_cauchy_12x12(suite_id)?;
+    Ok(())
+}
+
+/// Unchecked derivation used internally
+/// by suite builder; never returns Err,
+/// but logs and performs a bounded deterministic
+/// fallback search to avoid panics.
+pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
+    try_derive_poseidon_mds_cauchy_12x12(suite_id).unwrap_or_else(|e| {
+        tracing::error!(
+            target="poseidon.mds",
+            err=%e,
+            "unchecked MDS derivation failed; returning identity to fail-closed in AIR",
+        );
+
+        // Identity will make constraints
+        // inconsistent with the trace, causing failure.
+        let mut m = [[BE::ZERO; 12]; 12];
+        for (i, row) in m.iter_mut().enumerate() {
+            row[i] = BE::ONE;
+        }
+
+        m
+    })
+}
+
+/// Checked derivation that returns Err
+/// if a valid MDS could not be derived
+/// using a bounded search.
+pub fn try_derive_poseidon_mds_cauchy_12x12(
+    suite_id: &[u8; 32],
+) -> Result<[[BE; 12]; 12], PoseidonError> {
+    fn derive_points(domain: &str, suite_id: &[u8; 32], n: usize) -> Vec<BE> {
+        let mut pts = Vec::with_capacity(n);
+        let mut ctr: u32 = 0;
+
+        while pts.len() < n {
+            let idx_b = [pts.len() as u8];
+            let ctr_b = ctr.to_le_bytes();
+            let cand = ro_from_slices(domain, &[&suite_id[..], &idx_b[..], &ctr_b[..]]);
+
+            if cand != BE::ZERO && !pts.contains(&cand) {
+                pts.push(cand);
+            } else {
+                ctr = ctr.wrapping_add(1);
+            }
+        }
+
+        pts
+    }
+
+    let x = derive_points(DOM_POSEIDON_MDS_X, suite_id, 12);
+    let mut y = derive_points(DOM_POSEIDON_MDS_Y, suite_id, 12);
+
+    let mut adj_ctr: u32 = 0;
+    let mut attempts: u32 = 0;
+
+    loop {
+        let mut ok = true;
+
+        'outer: for xi in &x {
+            for yj in &y {
+                if *xi + *yj == BE::ZERO {
+                    ok = false;
+                    break 'outer;
+                }
+            }
+        }
+
+        if ok {
+            break;
+        }
+
+        for (j, yj) in y.iter_mut().enumerate() {
+            let j_b = [j as u8];
+            let adj_b = adj_ctr.to_le_bytes();
+            let cand = ro_from_slices(DOM_POSEIDON_MDS_Y, &[&suite_id[..], &j_b[..], &adj_b[..]]);
+
+            *yj = if cand == BE::ZERO {
+                BE::from(1u64)
+            } else {
+                cand
+            };
+        }
+
+        adj_ctr = adj_ctr.wrapping_add(1);
+        attempts = attempts.wrapping_add(1);
+
+        if attempts > 1_000_000 {
+            return Err(PoseidonError::MdsDerivation(format!("0x{suite_id:02x?}")));
+        }
+    }
+
+    let mut m = [[BE::ZERO; 12]; 12];
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            let denom = x[i] + y[j];
+            *cell = denom.inv();
+        }
+    }
+
+    Ok(m)
 }
 
 pub fn derive_rom_round_constants_3(suite_id: &[u8; 32], rounds: usize) -> Vec<[BE; 3]> {
@@ -114,145 +230,6 @@ pub fn derive_rom_mds_cauchy_3x3(suite_id: &[u8; 32]) -> [[BE; 3]; 3] {
         for (j, yj) in y.iter().enumerate().take(3) {
             let denom = *xi + *yj;
             m[i][j] = denom.inv();
-        }
-    }
-
-    m
-}
-
-pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
-    fn derive_points(domain: &str, suite_id: &[u8; 32], n: usize) -> Vec<BE> {
-        let mut pts = Vec::with_capacity(n);
-        let mut ctr: u32 = 0;
-
-        while pts.len() < n {
-            let idx_b = [pts.len() as u8];
-            let ctr_b = ctr.to_le_bytes();
-            let cand = ro_from_slices(domain, &[&suite_id[..], &idx_b[..], &ctr_b[..]]);
-
-            if cand != BE::ZERO && !pts.contains(&cand) {
-                pts.push(cand);
-            } else {
-                ctr = ctr.wrapping_add(1);
-            }
-        }
-
-        pts
-    }
-
-    // Choose X and Y points
-    // and ensure x_i + y_j != 0
-    let x = derive_points(DOM_POSEIDON_MDS_X, suite_id, 12);
-    let mut y = derive_points(DOM_POSEIDON_MDS_Y, suite_id, 12);
-
-    // Ensure x_i + y_j != 0 for all i,j
-    // using global deterministic adjustments
-    let mut adj_ctr: u32 = 0;
-    loop {
-        let mut ok = true;
-        'outer: for xi in &x {
-            for yj in &y {
-                if *xi + *yj == BE::ZERO {
-                    ok = false;
-                    break 'outer;
-                }
-            }
-        }
-
-        if ok {
-            break;
-        }
-
-        // Adjust whole Y set deterministically
-        for (j, yj) in y.iter_mut().enumerate() {
-            let j_b = [j as u8];
-            let adj_b = adj_ctr.to_le_bytes();
-            let cand = ro_from_slices(DOM_POSEIDON_MDS_Y, &[&suite_id[..], &j_b[..], &adj_b[..]]);
-
-            *yj = if cand == BE::ZERO {
-                BE::from(1u64)
-            } else {
-                cand
-            };
-        }
-
-        adj_ctr = adj_ctr.wrapping_add(1);
-
-        if adj_ctr > (1 << 24) {
-            // Fail-closed: derive a valid Y set via a deterministic separate domain.
-            // Continue searching until a set is found that satisfies:
-            // (1) all y_j are distinct; (2) x_i + y_j != 0 for all i,j.
-            tracing::error!(
-                target = "poseidon.mds",
-                "MDS derivation did not converge quickly; switching to exhaustive fallback search"
-            );
-
-            let mut found = false;
-            for k in 1u32..=1_000_000u32 {
-                let k_b = k.to_le_bytes();
-                let mut y2 = [BE::ZERO; 12];
-
-                for (j, yj) in y2.iter_mut().enumerate() {
-                    let j_b = [j as u8];
-                    let cand = ro_from_slices(
-                        DOM_POSEIDON_MDS_Y_FALLBACK,
-                        &[&suite_id[..], &j_b[..], &k_b[..]],
-                    );
-
-                    *yj = if cand == BE::ZERO {
-                        BE::from(1u64)
-                    } else {
-                        cand
-                    };
-                }
-
-                // require pairwise distinct y2_j
-                let mut distinct = true;
-                'd: for a in 0..12 {
-                    for b in (a + 1)..12 {
-                        if y2[a] == y2[b] {
-                            distinct = false;
-                            break 'd;
-                        }
-                    }
-                }
-                if !distinct {
-                    continue;
-                }
-
-                // check x_i + y2_j != 0
-                let mut ok2 = true;
-                'check: for xi in &x {
-                    for yj in &y2 {
-                        if *xi + *yj == BE::ZERO {
-                            ok2 = false;
-                            break 'check;
-                        }
-                    }
-                }
-
-                if ok2 {
-                    y = y2.to_vec();
-                    found = true;
-                    break;
-                }
-            }
-
-            if !found {
-                panic!("poseidon: failed to derive valid MDS Y set (x_i + y_j == 0)");
-            }
-
-            break;
-        }
-    }
-
-    // Build Cauchy matrix M[i][j] = 1 / (x_i + y_j)
-    let mut m = [[BE::ZERO; 12]; 12];
-
-    for (i, row) in m.iter_mut().enumerate() {
-        for (j, cell) in row.iter_mut().enumerate() {
-            let denom = x[i] + y[j];
-            *cell = denom.inv();
         }
     }
 

@@ -104,7 +104,7 @@ struct ProveArgs {
 
 #[derive(clap::Args, Debug, Clone)]
 struct VerifyArgs {
-    /// Proof hex string or @path to binary proof file
+    /// Proof base64 string or @path to binary proof file
     proof: String,
     /// Path to .zlisp file
     path: PathBuf,
@@ -234,6 +234,9 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: PreflightArg) -> Res
     let src = read_program(&args.path, max_bytes)?;
     let program = compiler::compile_entry(&src, &args.args)?;
 
+    zk_lisp::poseidon::validate_poseidon_suite(&program.commitment)
+        .map_err(|e| CliError::InvalidInput(format!("{e}")))?;
+
     let pi = build_pi_for_program(&program, &args.args)?;
     // Build trace with VM args
     let trace = prove::build_trace_with_pi(&program, &pi)?;
@@ -304,6 +307,9 @@ fn cmd_prove(
     let src = read_program(&args.path, max_bytes)?;
     let program = compiler::compile_entry(&src, &args.args)?;
 
+    zk_lisp::poseidon::validate_poseidon_suite(&program.commitment)
+        .map_err(|e| CliError::InvalidInput(format!("{e}")))?;
+
     let mut pi = build_pi_for_program(&program, &args.args)?;
     let trace = prove::build_trace_with_pi(&program, &pi)?;
 
@@ -352,10 +358,7 @@ fn cmd_prove(
 
 fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliError> {
     let proof_bytes = if let Some(path) = args.proof.strip_prefix('@') {
-        let meta = fs::metadata(path).map_err(|e| CliError::IoPath {
-            source: e,
-            path: PathBuf::from(path),
-        })?;
+        let meta = fs::metadata(path).map_err(|e| CliError::IoPath { source: e, path: PathBuf::from(path) })?;
         if meta.len() as usize > max_bytes {
             return Err(CliError::InvalidInput(format!(
                 "proof file too large: {} bytes (limit {})",
@@ -364,25 +367,26 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliE
             )));
         }
 
-        fs::read(path).map_err(|e| CliError::IoPath {
-            source: e,
-            path: PathBuf::from(path),
-        })?
+        fs::read(path).map_err(|e| CliError::IoPath { source: e, path: PathBuf::from(path) })?
     } else {
-        let s = args.proof.strip_prefix("0x").unwrap_or(&args.proof);
-        if s.len() / 2 > max_bytes {
+        // Base64 only
+        let approx = (args.proof.len() / 4) * 3;
+        if approx > max_bytes {
             return Err(CliError::InvalidInput(format!(
-                "proof hex too large: {} bytes (limit {})",
-                s.len() / 2,
-                max_bytes
+                "proof base64 too large: approx {approx} bytes (limit {max_bytes})"
             )));
         }
 
-        hex::decode(s)?
+        base64::engine::general_purpose::STANDARD
+            .decode(args.proof.as_bytes())
+            .map_err(|e| CliError::InvalidInput(format!("invalid base64: {e}")))?
     };
 
     let src = read_program(&args.path, max_bytes)?;
     let program = compiler::compile_entry(&src, &args.args)?;
+
+    zk_lisp::poseidon::validate_poseidon_suite(&program.commitment)
+        .map_err(|e| CliError::InvalidInput(format!("{e}")))?;
 
     // Rebuild PI similarly to Prove
     let mut pi = build_pi_for_program(&program, &args.args)?;
@@ -571,6 +575,9 @@ fn cmd_repl() -> Result<(), CliError> {
                 Err(e) => println!("error: load failed: {e}"),
             }
 
+            let _ = rl.add_history_entry(s);
+            let _ = rl.save_history(&hist_path);
+
             continue;
         }
 
@@ -578,7 +585,7 @@ fn cmd_repl() -> Result<(), CliError> {
             session.reset();
             println!("OK reset");
 
-            let _ = rl.save_history(&hist_path);
+            let _ = rl.clear_history();
 
             continue;
         }
@@ -633,6 +640,11 @@ fn cmd_repl() -> Result<(), CliError> {
             match compiler::compile_entry(&wrapped, &[]) {
                 Err(e) => println!("error: compile: {e}"),
                 Ok(program) => {
+                    if let Err(e) = zk_lisp::poseidon::validate_poseidon_suite(&program.commitment) {
+                        println!("error: {e}");
+                        continue;
+                    }
+                    
                     // Build PI and trace
                     let pi = match build_pi_for_program(&program, &[]) {
                         Ok(p) => p,
@@ -641,6 +653,7 @@ fn cmd_repl() -> Result<(), CliError> {
                             continue;
                         }
                     };
+
                     match prove::build_trace_with_pi(&program, &pi) {
                         Err(e) => println!("error: build trace: {e}"),
                         Ok(trace) => {
@@ -768,6 +781,11 @@ fn cmd_repl() -> Result<(), CliError> {
                     continue;
                 }
             };
+
+            if let Err(e) = zk_lisp::poseidon::validate_poseidon_suite(&program.commitment) {
+                println!("error: {e}");
+                continue;
+            }
 
             let mut pi = match build_pi_for_program(&program, &[]) {
                 Ok(p) => p,
