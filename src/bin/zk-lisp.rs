@@ -358,7 +358,10 @@ fn cmd_prove(
 
 fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliError> {
     let proof_bytes = if let Some(path) = args.proof.strip_prefix('@') {
-        let meta = fs::metadata(path).map_err(|e| CliError::IoPath { source: e, path: PathBuf::from(path) })?;
+        let meta = fs::metadata(path).map_err(|e| CliError::IoPath {
+            source: e,
+            path: PathBuf::from(path),
+        })?;
         if meta.len() as usize > max_bytes {
             return Err(CliError::InvalidInput(format!(
                 "proof file too large: {} bytes (limit {})",
@@ -367,7 +370,10 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliE
             )));
         }
 
-        fs::read(path).map_err(|e| CliError::IoPath { source: e, path: PathBuf::from(path) })?
+        fs::read(path).map_err(|e| CliError::IoPath {
+            source: e,
+            path: PathBuf::from(path),
+        })?
     } else {
         // Base64 only
         let approx = (args.proof.len() / 4) * 3;
@@ -640,11 +646,12 @@ fn cmd_repl() -> Result<(), CliError> {
             match compiler::compile_entry(&wrapped, &[]) {
                 Err(e) => println!("error: compile: {e}"),
                 Ok(program) => {
-                    if let Err(e) = zk_lisp::poseidon::validate_poseidon_suite(&program.commitment) {
+                    if let Err(e) = zk_lisp::poseidon::validate_poseidon_suite(&program.commitment)
+                    {
                         println!("error: {e}");
                         continue;
                     }
-                    
+
                     // Build PI and trace
                     let pi = match build_pi_for_program(&program, &[]) {
                         Ok(p) => p,

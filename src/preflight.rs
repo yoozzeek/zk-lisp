@@ -40,10 +40,19 @@ pub(crate) struct PreflightReport {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct RamSnap {
-    pub shadow_cur: String,
-    pub shadow_next: String,
+    pub sorted: bool,
     pub addr_cur: String,
     pub addr_next: String,
+    pub clk_cur: String,
+    pub clk_next: String,
+    pub val: String,
+    pub is_write: String,
+    pub last_cur: String,
+    pub last_next: String,
+    pub gp_unsorted_cur: String,
+    pub gp_unsorted_next: String,
+    pub gp_sorted_cur: String,
+    pub gp_sorted_next: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -196,10 +205,19 @@ pub(crate) fn run(
             let cols = layout::Columns::baseline();
             let ram_snap = if cols.ram_sorted < trace.width() {
                 Some(RamSnap {
-                    shadow_cur: fe_s(frame.current()[cols.ram_s_last_write]),
-                    shadow_next: fe_s(frame.next()[cols.ram_s_last_write]),
+                    sorted: frame.current()[cols.ram_sorted] == BE::ONE,
                     addr_cur: fe_s(frame.current()[cols.ram_s_addr]),
                     addr_next: fe_s(frame.next()[cols.ram_s_addr]),
+                    clk_cur: fe_s(frame.current()[cols.ram_s_clk]),
+                    clk_next: fe_s(frame.next()[cols.ram_s_clk]),
+                    val: fe_s(frame.current()[cols.ram_s_val]),
+                    is_write: fe_s(frame.current()[cols.ram_s_is_write]),
+                    last_cur: fe_s(frame.current()[cols.ram_s_last_write]),
+                    last_next: fe_s(frame.next()[cols.ram_s_last_write]),
+                    gp_unsorted_cur: fe_s(frame.current()[cols.ram_gp_unsorted]),
+                    gp_unsorted_next: fe_s(frame.next()[cols.ram_gp_unsorted]),
+                    gp_sorted_cur: fe_s(frame.current()[cols.ram_gp_sorted]),
+                    gp_sorted_next: fe_s(frame.next()[cols.ram_gp_sorted]),
                 })
             } else {
                 None
@@ -430,8 +448,20 @@ fn render_console(report: &PreflightReport) {
 
     let ram = if let Some(r) = &report.ram {
         format!(
-            "shadow {}->{} addr {}->{}",
-            r.shadow_cur, r.shadow_next, r.addr_cur, r.addr_next
+            "S={} addr {}->{} clk {}->{} val={} w={} last {}->{} gpU {}->{} gpS {}->{}",
+            if r.sorted { 1 } else { 0 },
+            r.addr_cur,
+            r.addr_next,
+            r.clk_cur,
+            r.clk_next,
+            r.val,
+            r.is_write,
+            r.last_cur,
+            r.last_next,
+            r.gp_unsorted_cur,
+            r.gp_unsorted_next,
+            r.gp_sorted_cur,
+            r.gp_sorted_next
         )
     } else {
         "-".into()

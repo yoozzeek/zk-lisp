@@ -18,33 +18,54 @@ where
     fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
         // Carry gp_unsorted across rows,
         // update at final+event
-        out.push(TransitionConstraintDegree::with_cycles(3, vec![STEPS_PER_LEVEL_P2]));
-        
+        out.push(TransitionConstraintDegree::with_cycles(
+            3,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
         // Carry gp_sorted across rows,
         // update at ram_sorted rows
-        out.push(TransitionConstraintDegree::with_cycles(3, vec![STEPS_PER_LEVEL_P2]));
-        
+        out.push(TransitionConstraintDegree::with_cycles(
+            3,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
         // last_write carry on sorted rows
-        out.push(TransitionConstraintDegree::with_cycles(3, vec![STEPS_PER_LEVEL_P2]));
-        
+        out.push(TransitionConstraintDegree::with_cycles(
+            3,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
         // read == last_write on
         // sorted rows when is_write==0
-        out.push(TransitionConstraintDegree::with_cycles(3, vec![STEPS_PER_LEVEL_P2]));
-        
+        out.push(TransitionConstraintDegree::with_cycles(
+            3,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
         // forbid new-addr read:
         // (1 - same) * (1 - is_write) == 0
-        out.push(TransitionConstraintDegree::with_cycles(3, vec![STEPS_PER_LEVEL_P2]));
-        
+        out.push(TransitionConstraintDegree::with_cycles(
+            3,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
         // same_addr boolean via inv trick:
         // s = 1 - d * inv
-        out.push(TransitionConstraintDegree::with_cycles(3, vec![STEPS_PER_LEVEL_P2]));
-        
+        out.push(TransitionConstraintDegree::with_cycles(
+            3,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
         // delta_clk in 32-bit range
         // when same_addr we gate by
         // same_addr and reuse 32-bit
         // gadget via Columns.gadget_b.
         for _ in 0..33 {
-            out.push(TransitionConstraintDegree::with_cycles(5, vec![STEPS_PER_LEVEL_P2]));
+            out.push(TransitionConstraintDegree::with_cycles(
+                5,
+                vec![STEPS_PER_LEVEL_P2],
+            ));
         }
     }
 
@@ -65,7 +86,7 @@ where
 
         let op_load = cur[ctx.cols.op_load];
         let op_store = cur[ctx.cols.op_store];
-        
+
         // event on final rows
         let event = p_final * (op_load + op_store);
 
@@ -75,16 +96,6 @@ where
         let k2 = E::from(BE::from(0x1_0000u64));
         let k3 = E::from(BE::from(0x1337u64));
 
-        // not used; placeholder to silence warnings
-        let a_uns = cur[ctx.cols.sel_a_start];
-        let _ = a_uns;
-
-        // Unsorted GP update
-        // not used; event comes from op_*;
-        // GP uses ram_s_* only in sorted.
-        let addr_ev = cur[ctx.cols.imm];
-        let _ = addr_ev;
-
         // gp_unsorted carry/update
         let comp_uns = {
             // For unsorted path no way to recompute
@@ -93,8 +104,10 @@ where
             // sequence. Here we just carry:
             E::ZERO
         };
-        
-        result[*ix] = event * comp_uns + (E::ONE - event) * (next[ctx.cols.ram_gp_unsorted] - cur[ctx.cols.ram_gp_unsorted]) + g_hold * (next[ctx.cols.ram_gp_unsorted] - cur[ctx.cols.ram_gp_unsorted]);
+
+        result[*ix] = event * comp_uns
+            + (E::ONE - event) * (next[ctx.cols.ram_gp_unsorted] - cur[ctx.cols.ram_gp_unsorted])
+            + g_hold * (next[ctx.cols.ram_gp_unsorted] - cur[ctx.cols.ram_gp_unsorted]);
         *ix += 1;
 
         // Sorted path
@@ -114,7 +127,7 @@ where
         // (reuse eq_inv column as inv witness).
         let d_addr = s_addr_n - s_addr;
         let inv = cur[ctx.cols.eq_inv];
-        
+
         // if d!=0 and inv=d^-1 => same=0;
         // if d==0 and inv=0 => same=1
         let same = E::ONE - d_addr * inv;

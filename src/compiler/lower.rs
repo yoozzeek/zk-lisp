@@ -9,6 +9,9 @@ use crate::layout::NR;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField};
 
+// stack memory base address
+const STACK_BASE: u64 = 1_000_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ast {
     Atom(Atom),
@@ -93,6 +96,8 @@ pub struct LowerCtx<'a> {
     // for spillless metrics.
     cur_live: usize,
     peak_live: usize,
+    // Internal stack pointer register
+    sp_reg: Option<u8>,
     _m: core::marker::PhantomData<&'a ()>,
 }
 
@@ -110,6 +115,7 @@ impl<'a> LowerCtx<'a> {
             cur_live: 0,
             peak_live: 0,
             stats: CompileStats::default(),
+            sp_reg: None,
             _m: core::marker::PhantomData,
         }
     }
@@ -277,6 +283,8 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "in-set" => lower_in_set(cx, tail),
                     "load" => lower_load(cx, tail),
                     "store" => lower_store(cx, tail).map(|_| RVal::Imm(0)),
+                    "push" => lower_push(cx, tail),
+                    "pop" => lower_pop(cx, tail),
                     "hex-to-bytes32" => lower_hex_to_bytes32(cx, tail),
                     "seq" => lower_seq(cx, tail),
                     _ => lower_call(cx, s, tail),
@@ -2231,6 +2239,109 @@ fn lower_store(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     Ok(())
 }
 
+// (push x): store x at [STACK_BASE + SP];
+// SP = SP + 1; returns 0
+fn lower_push(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if rest.len() != 1 {
+        return Err(Error::InvalidForm("push".into()));
+    }
+
+    let v = lower_expr(cx, rest[0].clone())?;
+    let v = v.into_owned(cx)?;
+
+    // base = STACK_BASE
+    let r_base = cx.alloc()?;
+    cx.b.push(Op::Const {
+        dst: r_base,
+        imm: STACK_BASE,
+    });
+
+    // addr = base + SP
+    let r_addr = cx.alloc()?;
+    let sp = ensure_sp(cx)?;
+
+    cx.b.push(Op::Add {
+        dst: r_addr,
+        a: r_base,
+        b: sp,
+    });
+
+    // Mem[addr] <- v
+    cx.b.push(Op::Store {
+        addr: r_addr,
+        src: cx.val_reg(&v)?,
+    });
+
+    cx.free_reg(r_addr);
+    cx.free_reg(r_base);
+
+    free_if_owned(cx, v);
+
+    // SP = SP + 1
+    let r_one = cx.alloc()?;
+    cx.b.push(Op::Const { dst: r_one, imm: 1 });
+
+    let sp = ensure_sp(cx)?;
+    cx.b.push(Op::Add {
+        dst: sp,
+        a: sp,
+        b: r_one,
+    });
+
+    cx.free_reg(r_one);
+
+    Ok(RVal::Imm(0))
+}
+
+// (pop): SP = SP - 1;
+// return Mem[STACK_BASE + SP]
+fn lower_pop(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    if !rest.is_empty() {
+        return Err(Error::InvalidForm("pop".into()));
+    }
+
+    // SP = SP - 1
+    let r_one = cx.alloc()?;
+    cx.b.push(Op::Const { dst: r_one, imm: 1 });
+
+    let sp = ensure_sp(cx)?;
+    cx.b.push(Op::Sub {
+        dst: sp,
+        a: sp,
+        b: r_one,
+    });
+
+    cx.free_reg(r_one);
+
+    // addr = STACK_BASE + SP
+    let r_base = cx.alloc()?;
+    cx.b.push(Op::Const {
+        dst: r_base,
+        imm: STACK_BASE,
+    });
+
+    let r_addr = cx.alloc()?;
+    let sp = ensure_sp(cx)?;
+
+    cx.b.push(Op::Add {
+        dst: r_addr,
+        a: r_base,
+        b: sp,
+    });
+
+    // dst <- Mem[addr]
+    let r_dst = cx.alloc()?;
+    cx.b.push(Op::Load {
+        dst: r_dst,
+        addr: r_addr,
+    });
+
+    cx.free_reg(r_addr);
+    cx.free_reg(r_base);
+
+    Ok(RVal::Owned(r_dst))
+}
+
 // Lower (load-ca leaf ((d0 s0) (d1 s1) ...)) -> leaf value;
 // Verifies membership by binding
 // last-level root to PI via MerkleStepLast.
@@ -2537,4 +2648,17 @@ fn parse_dir_sib_pair(cx: &mut LowerCtx, pair: &Ast) -> Result<(u8, u8), Error> 
     let sib = lower_expr(cx, items[1].clone())?.into_owned(cx)?;
 
     Ok((cx.val_reg(&dir)?, cx.val_reg(&sib)?))
+}
+
+// Ensure SP exists and is initialized once
+fn ensure_sp(cx: &mut LowerCtx) -> Result<u8, Error> {
+    if let Some(r) = cx.sp_reg {
+        return Ok(r);
+    }
+
+    let r = cx.alloc()?;
+    cx.b.push(Op::Const { dst: r, imm: 0 });
+    cx.sp_reg = Some(r);
+
+    Ok(r)
 }

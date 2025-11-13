@@ -105,7 +105,7 @@ pub struct Columns {
 
     // PC/ROM tie-in
     pub pc: usize,
-    
+
     // Rom columns
     pub rom_op_start: usize,
 

@@ -13,8 +13,8 @@ use crate::trace::poseidon;
 use crate::{pi, utils};
 
 use arrayvec::ArrayVec;
-use winterfell::TraceTable;
 use winterfell::Trace;
+use winterfell::TraceTable;
 use winterfell::math::FieldElement;
 use winterfell::math::StarkField;
 use winterfell::math::fields::f128::BaseElement as BE;
@@ -704,12 +704,12 @@ impl TraceBuilder {
                     let addr_v = regs[addr as usize];
                     let clk = BE::from(lvl as u64);
                     let loaded = mem.get(&addr_v.as_int()).copied().unwrap_or(BE::ZERO);
-                    
+
                     // set imm to carry loaded
                     // value for ALU write constraint
                     trace.set(cols.imm, row_map, loaded);
                     trace.set(cols.imm, row_final, loaded);
-                    
+
                     // write into dst after final
                     next_regs[dst as usize] = loaded;
 
@@ -791,7 +791,7 @@ impl TraceBuilder {
             ram_events.sort_by(|a, b| {
                 let (aa, ac) = (a.0.as_int(), a.1.as_int());
                 let (ba, bc) = (b.0.as_int(), b.1.as_int());
-                
+
                 aa.cmp(&ba).then(ac.cmp(&bc))
             });
 
@@ -802,7 +802,7 @@ impl TraceBuilder {
                 let is_pad = pos != schedule::pos_map()
                     && pos != schedule::pos_final()
                     && !schedule::is_round_pos(pos);
-                
+
                 if is_pad {
                     if let Some(ev) = it.next() {
                         trace.set(cols.ram_sorted, row, BE::ONE);
@@ -822,21 +822,21 @@ impl TraceBuilder {
             // and gp_sorted across rows.
             let mut last_addr: Option<BE> = None;
             let mut last_write: BE = BE::ZERO;
-            
+
             // Trace carries deltas,
             // AIR checks recurrence;
             // store zeros here.
             let gp_sorted = BE::ZERO;
-            
+
             for row in 0..trace.length() {
                 trace.set(cols.ram_s_last_write, row, last_write);
                 trace.set(cols.ram_gp_sorted, row, gp_sorted);
-                
+
                 if trace.get(cols.ram_sorted, row) == BE::ONE {
                     let cur_addr = trace.get(cols.ram_s_addr, row);
                     let val = trace.get(cols.ram_s_val, row);
                     let w = trace.get(cols.ram_s_is_write, row);
-                    
+
                     if let Some(prev_a) = last_addr {
                         if prev_a != cur_addr {
                             // new group, last_write reset
@@ -844,11 +844,11 @@ impl TraceBuilder {
                             last_write = BE::ZERO;
                         }
                     }
-                    
+
                     if w == BE::ONE {
                         last_write = val;
                     }
-                    
+
                     last_addr = Some(cur_addr);
                     trace.set(cols.ram_s_last_write, row, last_write);
                 }
@@ -864,12 +864,12 @@ impl TraceBuilder {
                 let row_fin = base + crate::schedule::pos_final();
                 let has_event = trace.get(cols.op_load, row_fin) == BE::ONE
                     || trace.get(cols.op_store, row_fin) == BE::ONE;
-                
+
                 if has_event {
                     // no-op; AIR will enforce
                     // multiplicative update.
                 }
-                
+
                 trace.set(cols.ram_gp_unsorted, row_fin, gp_uns);
             }
         }

@@ -5,8 +5,8 @@
 mod merkle;
 mod mixers;
 mod poseidon;
-mod rom;
 mod ram;
+mod rom;
 mod schedule;
 mod vm_alu;
 mod vm_ctrl;
@@ -580,7 +580,7 @@ impl ZkLispAir {
         }
         if features.ram {
             // ram block length:
-            // 6 base constraints 
+            // 6 base constraints
             // + 33 (32 bit booleanities + equality)
             // = 39
             let len = 39;

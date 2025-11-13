@@ -3,10 +3,10 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::math::fields::f128::BaseElement as BE;
+use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
 use zk_lisp::compiler::compile_entry;
 use zk_lisp::prove;
-use zk_lisp::{pi, PreflightMode};
-use winterfell::{ProofOptions, FieldExtension, BatchingMethod};
+use zk_lisp::{PreflightMode, pi};
 
 fn proof_opts() -> ProofOptions {
     ProofOptions::new(
@@ -119,7 +119,9 @@ fn ram_perm_store_then_load_preflight_ok() {
 ";
     let p = compile_entry(src, &[]).expect("compile");
 
-    let pi = pi::PublicInputsBuilder::for_program(&p).build().expect("pi");
+    let pi = pi::PublicInputsBuilder::for_program(&p)
+        .build()
+        .expect("pi");
     let trace = prove::build_trace_with_pi(&p, &pi).expect("trace");
 
     let opts = proof_opts();
@@ -142,7 +144,9 @@ fn ram_perm_many_addresses_preflight_ok() {
 ";
     let p = compile_entry(src, &[]).expect("compile");
 
-    let pi = pi::PublicInputsBuilder::for_program(&p).build().expect("pi");
+    let pi = pi::PublicInputsBuilder::for_program(&p)
+        .build()
+        .expect("pi");
     let trace = prove::build_trace_with_pi(&p, &pi).expect("trace");
 
     let opts = proof_opts();
@@ -160,7 +164,9 @@ fn ram_perm_interleaved_preflight_ok() {
                  (load 2)))))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let pi = pi::PublicInputsBuilder::for_program(&p).build().expect("pi");
+    let pi = pi::PublicInputsBuilder::for_program(&p)
+        .build()
+        .expect("pi");
     let trace = prove::build_trace_with_pi(&p, &pi).expect("trace");
 
     let opts = proof_opts();
@@ -177,7 +183,9 @@ fn ram_perm_double_store_then_load_preflight_ok() {
             (load 9))))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let pi = pi::PublicInputsBuilder::for_program(&p).build().expect("pi");
+    let pi = pi::PublicInputsBuilder::for_program(&p)
+        .build()
+        .expect("pi");
     let trace = prove::build_trace_with_pi(&p, &pi).expect("trace");
 
     let opts = proof_opts();
@@ -234,6 +242,6 @@ fn load_before_store_reads_zero() {
     let cols = zk_lisp::layout::Columns::baseline();
     let (out_reg, out_row) = prove::compute_vm_output(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
-    
+
     assert_eq!(v, BE::from(0u64));
 }
