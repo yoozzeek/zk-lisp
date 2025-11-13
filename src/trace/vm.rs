@@ -834,20 +834,13 @@ impl TraceBuilder {
             let mut gp_sorted_vals = vec![BE::ZERO; trace.length()];
             let mut last_write_vals = vec![BE::ZERO; trace.length()];
 
-            #[allow(unused_assignments)]
-            let mut gp_sorted = BE::ZERO;
-
             for row in 0..trace.length() {
                 // Carry gp_sorted from
-                // previous row by default.
-                gp_sorted = if row > 0 {
-                    gp_sorted_vals[row - 1]
-                } else {
-                    BE::ZERO
-                };
+                // previous row by default
+                let mut gp_sorted_cur = if row > 0 { gp_sorted_vals[row - 1] } else { BE::ZERO };
 
-                // Apply previous row sorted
-                // update into this row.
+                // Apply previous row's
+                // sorted update into this row.
                 if row > 0 && trace.get(cols.ram_sorted, row - 1) == BE::ONE {
                     let prev = row - 1;
                     let cur_addr = trace.get(cols.ram_s_addr, prev);
@@ -856,11 +849,11 @@ impl TraceBuilder {
                     let w = trace.get(cols.ram_s_is_write, prev);
 
                     let comp = cur_addr + r1 * clk + r2 * val + r3 * w;
-                    gp_sorted += comp;
+                    gp_sorted_cur += comp;
                 }
 
-                gp_sorted_vals[row] = gp_sorted;
-                trace.set(cols.ram_gp_sorted, row, gp_sorted);
+                gp_sorted_vals[row] = gp_sorted_cur;
+                trace.set(cols.ram_gp_sorted, row, gp_sorted_cur);
 
                 // Build last_write as next-state
                 // of previous sorted row.
@@ -935,16 +928,9 @@ impl TraceBuilder {
             // at final rows with events.
             let mut gp_uns_vals = vec![BE::ZERO; trace.length()];
 
-            #[allow(unused_assignments)]
-            let mut gp_uns = BE::ZERO;
-
             for row in 0..trace.length() {
                 // carry from previous row by default
-                if row > 0 {
-                    gp_uns = gp_uns_vals[row - 1];
-                } else {
-                    gp_uns = BE::ZERO;
-                }
+                let mut gp_uns_cur = if row > 0 { gp_uns_vals[row - 1] } else { BE::ZERO };
 
                 // If previous row was an event (final row),
                 // apply its update into this row.
@@ -971,13 +957,13 @@ impl TraceBuilder {
                             let addr_ev = a_ev;
 
                             let comp = addr_ev + r1 * clk_ev + r2 * val_ev + r3 * w_ev;
-                            gp_uns += comp;
+                            gp_uns_cur += comp;
                         }
                     }
                 }
 
-                gp_uns_vals[row] = gp_uns;
-                trace.set(cols.ram_gp_unsorted, row, gp_uns);
+                gp_uns_vals[row] = gp_uns_cur;
+                trace.set(cols.ram_gp_unsorted, row, gp_uns_cur);
             }
         }
 
