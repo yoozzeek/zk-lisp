@@ -2,10 +2,11 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
+use crate::commit::program_field_commitment;
 use crate::compiler::ir;
 use crate::compiler::ir::Op;
 use crate::error::Error;
-use crate::layout::{Columns, NR, STEPS_PER_LEVEL_P2};
+use crate::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::poseidon as poseidon_core;
 use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
 use crate::schedule;
@@ -818,66 +819,172 @@ impl TraceBuilder {
                 }
             }
 
-            // Carry ram_s_last_write
-            // and gp_sorted across rows.
-            let mut last_addr: Option<BE> = None;
-            let mut last_write: BE = BE::ZERO;
+            // Randomized compressor
+            // coefficients (match AIR).
+            let fc = program_field_commitment(&p.commitment);
+            let pi_be = fc[0];
+            let pi2 = pi_be * pi_be;
+            let pi3 = pi2 * pi_be;
+            let pi4 = pi2 * pi2;
+            let pi5 = pi4 * pi_be;
+            let r1 = pi2 + BE::ONE;
+            let r2 = pi3 + pi_be;
+            let r3 = pi5 + BE::from(7u64);
 
-            // Trace carries deltas,
-            // AIR checks recurrence;
-            // store zeros here.
-            let gp_sorted = BE::ZERO;
+            let mut gp_sorted_vals = vec![BE::ZERO; trace.length()];
+            let mut last_write_vals = vec![BE::ZERO; trace.length()];
+
+            #[allow(unused_assignments)]
+            let mut gp_sorted = BE::ZERO;
 
             for row in 0..trace.length() {
-                trace.set(cols.ram_s_last_write, row, last_write);
+                // Carry gp_sorted from
+                // previous row by default.
+                gp_sorted = if row > 0 {
+                    gp_sorted_vals[row - 1]
+                } else {
+                    BE::ZERO
+                };
+
+                // Apply previous row sorted
+                // update into this row.
+                if row > 0 && trace.get(cols.ram_sorted, row - 1) == BE::ONE {
+                    let prev = row - 1;
+                    let cur_addr = trace.get(cols.ram_s_addr, prev);
+                    let clk = trace.get(cols.ram_s_clk, prev);
+                    let val = trace.get(cols.ram_s_val, prev);
+                    let w = trace.get(cols.ram_s_is_write, prev);
+
+                    let comp = cur_addr + r1 * clk + r2 * val + r3 * w;
+                    gp_sorted += comp;
+                }
+
+                gp_sorted_vals[row] = gp_sorted;
                 trace.set(cols.ram_gp_sorted, row, gp_sorted);
 
-                if trace.get(cols.ram_sorted, row) == BE::ONE {
-                    let cur_addr = trace.get(cols.ram_s_addr, row);
-                    let val = trace.get(cols.ram_s_val, row);
-                    let w = trace.get(cols.ram_s_is_write, row);
+                // Build last_write as next-state
+                // of previous sorted row.
+                let mut last_cur = if row > 0 {
+                    last_write_vals[row - 1]
+                } else {
+                    BE::ZERO
+                };
 
-                    if let Some(prev_a) = last_addr {
-                        if prev_a != cur_addr {
-                            // new group, last_write reset
-                            // to 0, require writer to seed.
-                            last_write = BE::ZERO;
+                if row > 0 && trace.get(cols.ram_sorted, row - 1) == BE::ONE {
+                    let prev = row - 1;
+                    let s_addr = trace.get(cols.ram_s_addr, prev);
+                    let s_w = trace.get(cols.ram_s_is_write, prev);
+                    let s_val = trace.get(cols.ram_s_val, prev);
+                    let s_addr_n = trace.get(cols.ram_s_addr, row);
+                    let same = (s_addr_n == s_addr) as u8; // 1 if same, 0 otherwise
+
+                    if same == 1 {
+                        // same group:
+                        // (1 - w) * last + w * val
+                        last_cur = (BE::ONE - s_w) * last_cur + s_w * s_val;
+                    } else {
+                        // new addr:
+                        // must be write to seed;
+                        // last_next = w * val
+                        last_cur = s_w * s_val;
+                    }
+                }
+
+                last_write_vals[row] = last_cur;
+                trace.set(cols.ram_s_last_write, row, last_cur);
+            }
+
+            // Populate RAM delta_clk gadget
+            // bits on sorted rows for same-addr pairs.
+            for row in 0..(trace.length().saturating_sub(1)) {
+                if trace.get(cols.ram_sorted, row) == BE::ONE {
+                    let s_addr = trace.get(cols.ram_s_addr, row);
+                    let s_addr_n = trace.get(cols.ram_s_addr, row + 1);
+
+                    // Set inv witness for same_addr
+                    // check (always from next row addr).
+                    let d_addr = s_addr_n - s_addr;
+                    let inv = if d_addr != BE::ZERO {
+                        d_addr.inv()
+                    } else {
+                        BE::ZERO
+                    };
+
+                    trace.set(cols.eq_inv, row, inv);
+
+                    if trace.get(cols.ram_sorted, row + 1) == BE::ONE && s_addr_n == s_addr {
+                        // same-addr:
+                        // set gadget bits for delta_clk
+                        let clk = trace.get(cols.ram_s_clk, row).as_int();
+                        let clk_n = trace.get(cols.ram_s_clk, row + 1).as_int();
+
+                        let mut delta = clk_n.saturating_sub(clk);
+                        for i in 0..32 {
+                            let bit = (delta & 1) as u64;
+                            let v = BE::from(bit);
+
+                            trace.set(cols.gadget_b_index(i), row, v);
+                            delta >>= 1;
                         }
                     }
-
-                    if w == BE::ONE {
-                        last_write = val;
-                    }
-
-                    last_addr = Some(cur_addr);
-                    trace.set(cols.ram_s_last_write, row, last_write);
                 }
             }
 
             // Build gp_unsorted across
-            // final rows with events.
-            // Trace stores zeros;
-            // AIR enforces relation via carry
-            let gp_uns = BE::ZERO;
-            for lvl in 0..levels {
-                let base = lvl * steps;
-                let row_fin = base + crate::schedule::pos_final();
-                let has_event = trace.get(cols.op_load, row_fin) == BE::ONE
-                    || trace.get(cols.op_store, row_fin) == BE::ONE;
+            // all rows (carry), update
+            // at final rows with events.
+            let mut gp_uns_vals = vec![BE::ZERO; trace.length()];
 
-                if has_event {
-                    // no-op; AIR will enforce
-                    // multiplicative update.
+            #[allow(unused_assignments)]
+            let mut gp_uns = BE::ZERO;
+
+            for row in 0..trace.length() {
+                // carry from previous row by default
+                if row > 0 {
+                    gp_uns = gp_uns_vals[row - 1];
+                } else {
+                    gp_uns = BE::ZERO;
                 }
 
-                trace.set(cols.ram_gp_unsorted, row_fin, gp_uns);
+                // If previous row was an event (final row),
+                // apply its update into this row.
+                if row > 0 {
+                    let prev = row - 1;
+                    let pos_prev = prev % STEPS_PER_LEVEL_P2;
+                    if pos_prev == schedule::pos_final() {
+                        let is_load = trace.get(cols.op_load, prev) == BE::ONE;
+                        let is_store = trace.get(cols.op_store, prev) == BE::ONE;
+
+                        if is_load || is_store {
+                            let mut a_ev = BE::ZERO;
+                            let mut b_ev = BE::ZERO;
+
+                            for i in 0..NR {
+                                let ri = trace.get(cols.r_index(i), prev);
+                                a_ev += trace.get(cols.sel_a_index(i), prev) * ri;
+                                b_ev += trace.get(cols.sel_b_index(i), prev) * ri;
+                            }
+
+                            let w_ev = if is_store { BE::ONE } else { BE::ZERO };
+                            let val_ev = w_ev * b_ev + (BE::ONE - w_ev) * trace.get(cols.imm, prev);
+                            let clk_ev = trace.get(cols.pc, prev);
+                            let addr_ev = a_ev;
+
+                            let comp = addr_ev + r1 * clk_ev + r2 * val_ev + r3 * w_ev;
+                            gp_uns += comp;
+                        }
+                    }
+                }
+
+                gp_uns_vals[row] = gp_uns;
+                trace.set(cols.ram_gp_unsorted, row, gp_uns);
             }
         }
 
         // Populate ROM accumulator
         // t=3 across all levels.
         {
-            let rc3 = derive_rom_round_constants_3(&p.commitment, crate::layout::POSEIDON_ROUNDS);
+            let rc3 = derive_rom_round_constants_3(&p.commitment, POSEIDON_ROUNDS);
             let mds3 = derive_rom_mds_cauchy_3x3(&p.commitment);
 
             // Precompute weights
@@ -905,7 +1012,7 @@ impl TraceBuilder {
                 // Execute 27 rounds:
                 // y = MDS * s^3 + rc.
                 let mut s = [s0_prev, s1_map, s2_map];
-                for (j, rc_row) in rc3.iter().enumerate().take(crate::layout::POSEIDON_ROUNDS) {
+                for (j, rc_row) in rc3.iter().enumerate().take(POSEIDON_ROUNDS) {
                     let r = base + 1 + j; // round row index
 
                     // set current state s at round row

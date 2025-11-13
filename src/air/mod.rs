@@ -582,8 +582,9 @@ impl ZkLispAir {
             // ram block length:
             // 6 base constraints
             // + 33 (32 bit booleanities + equality)
-            // = 39
-            let len = 39;
+            // + 1 final-row GP equality
+            // = 40
+            let len = 40;
             dbg.push(("ram", evals[ofs..ofs + len].to_vec()));
             ofs += len;
         }

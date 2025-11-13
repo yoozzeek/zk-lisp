@@ -110,7 +110,6 @@ fn store_then_load_different_addr_reads_zero_without_prior_store() {
 }
 
 #[test]
-#[ignore]
 fn ram_perm_store_then_load_preflight_ok() {
     let src = r"
 (def (main)
@@ -129,7 +128,6 @@ fn ram_perm_store_then_load_preflight_ok() {
 }
 
 #[test]
-#[ignore]
 fn ram_perm_many_addresses_preflight_ok() {
     // Write 5 addresses, then read them back
     let src = r"
@@ -154,7 +152,6 @@ fn ram_perm_many_addresses_preflight_ok() {
 }
 
 #[test]
-#[ignore]
 fn ram_perm_interleaved_preflight_ok() {
     let src = r"
 (def (main)
@@ -174,7 +171,6 @@ fn ram_perm_interleaved_preflight_ok() {
 }
 
 #[test]
-#[ignore]
 fn ram_perm_double_store_then_load_preflight_ok() {
     let src = r"
 (def (main)
