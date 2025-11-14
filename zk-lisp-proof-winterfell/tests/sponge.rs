@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of zk-lisp.
-// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField};
 use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
 
-use zk_lisp::compiler::CompilerMetrics;
-use zk_lisp::compiler::builder::{Op, ProgramBuilder};
-use zk_lisp::compiler::compile_str;
-use zk_lisp::layout::{NR, STEPS_PER_LEVEL_P2};
-use zk_lisp::pi::{PublicInputs, PublicInputsBuilder};
-use zk_lisp::poseidon::get_poseidon_suite;
-use zk_lisp::prove::{self, ZkProver};
-use zk_lisp::{build_trace, pi, run_preflight};
+use zk_lisp_compiler::builder::{Op, ProgramBuilder};
+use zk_lisp_compiler::{CompilerMetrics, compile_entry, compile_str};
+use zk_lisp_proof::frontend::PreflightMode;
+use zk_lisp_proof::pi::{self, PublicInputs, PublicInputsBuilder};
+use zk_lisp_proof_winterfell::layout::{NR, STEPS_PER_LEVEL_P2};
+use zk_lisp_proof_winterfell::poseidon::get_poseidon_suite;
+use zk_lisp_proof_winterfell::preflight::run as run_preflight;
+use zk_lisp_proof_winterfell::prove::{self, ZkProver};
+use zk_lisp_proof_winterfell::trace::build_trace;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -78,8 +78,9 @@ fn sponge_basic_hash2_prove_verify() {
         ..Default::default()
     };
     let trace = build_trace(&program, &pi).expect("trace");
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
 
-    let prover = ZkProver::new(opts(), pi.clone());
+    let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
     match prove::verify_proof(proof, pi, &opts()) {
@@ -94,9 +95,10 @@ fn sponge_basic_hash2_prove_verify() {
 
 #[test]
 fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
-    // Prepare constants r0..r9 = 1..=10, then
-    // absorb across multiple levels (2 + 3 + 5 = 10)
-    // and squeeze once. Expect digest = sponge12_ref([1..=10]).
+    // Prepare constants r0..r9 = 1..=10,
+    // then absorb across multiple levels
+    // (2 + 3 + 5 = 10) and squeeze once.
+    // Expect digest = sponge12_ref([1..=10]).
     let metrics = CompilerMetrics::default();
     let mut b = ProgramBuilder::new();
 
@@ -145,7 +147,7 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
     // Row = level_of_SSqueeze * steps + pos_final + 1
     let steps = STEPS_PER_LEVEL_P2;
     let lvl_ssq = 8 /*consts*/ + 2 /*extra consts*/ + 3 /*absorbs*/; // index where SSqueeze was pushed
-    let out_row = (lvl_ssq * steps + zk_lisp::pos_final() + 1) as u32;
+    let out_row = (lvl_ssq * steps + zk_lisp_proof_winterfell::schedule::pos_final() + 1) as u32;
 
     let pi = PublicInputs {
         feature_mask: pi::FM_VM | pi::FM_POSEIDON | pi::FM_VM_EXPECT,
@@ -158,13 +160,14 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
 
     // Build trace
     let trace = build_trace(&program, &pi).expect("trace");
-    let prover = ZkProver::new(opts(), pi.clone());
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
+    let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
     match prove::verify_proof(proof, pi, &opts()) {
         Ok(()) => {}
         Err(e) => {
-            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
+            if !matches!(e, prove::Error::BackendSource(_)) {
                 panic!("verify failed: {e}");
             }
         }
@@ -187,7 +190,8 @@ fn sponge_overflow_more_than_10_inputs_errors() {
         });
     }
 
-    // 12 absorbed indices in total (will exceed rate)
+    // 12 absorbed indices
+    // in total (will exceed rate)
     b.push(Op::SAbsorbN { regs: vec![0, 1] });
     b.push(Op::SAbsorbN { regs: vec![2, 3] });
     b.push(Op::SAbsorbN { regs: vec![4, 5] });
@@ -209,9 +213,8 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
     let src_vm = r"
 (def (main)
   (let ((x 7) (y 9))
-    (+ x y)))
-";
-    let program_vm = zk_lisp::compiler::compile_entry(src_vm, &[]).expect("compile vm");
+    (+ x y)))";
+    let program_vm = compile_entry(src_vm, &[]).expect("compile vm");
     let pi_vm = PublicInputs {
         feature_mask: pi::FM_VM,
         program_commitment: program_vm.commitment,
@@ -219,8 +222,9 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
     };
 
     let trace_vm = build_trace(&program_vm, &pi_vm).expect("trace vm");
+    let rom_acc_vm = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program_vm);
 
-    let prover_vm = ZkProver::new(opts(), pi_vm.clone());
+    let prover_vm = ZkProver::new(opts(), pi_vm.clone(), rom_acc_vm);
     let proof_vm = prover_vm.prove(trace_vm).expect("prove vm");
     match prove::verify_proof(proof_vm, pi_vm, &opts()) {
         Ok(()) => {}
@@ -240,8 +244,9 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
         ..Default::default()
     };
     let trace_sp = build_trace(&program_sp, &pi_sp).expect("trace sp");
+    let rom_acc_sp = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program_sp);
 
-    let prover_sp = ZkProver::new(opts(), pi_sp.clone());
+    let prover_sp = ZkProver::new(opts(), pi_sp.clone(), rom_acc_sp);
     let proof_sp = prover_sp.prove(trace_sp).expect("prove sp");
 
     match prove::verify_proof(proof_sp, pi_sp, &opts()) {
@@ -258,14 +263,14 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
 fn schedule_preflight_ok() {
     // Simple program should pass preflight
     let src = "(def (main) (let ((x 5) (y 6)) (+ x y)))";
-    let program = zk_lisp::compiler::compile_entry(src, &[]).expect("compile");
+    let program = compile_entry(src, &[]).expect("compile");
     let pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     let trace = build_trace(&program, &pi).expect("trace");
 
     // Run preflight explicitly
-    run_preflight(zk_lisp::PreflightMode::Console, &opts(), &pi, &trace).expect("preflight ok");
+    run_preflight(PreflightMode::Console, &opts(), &pi, &trace).expect("preflight ok");
 }
 
 #[test]
@@ -288,7 +293,7 @@ fn negative_vm_expected_mismatch() {
     let correct = sponge12_ref(&expected_inputs, &program.commitment);
     let steps = STEPS_PER_LEVEL_P2;
     let lvl_ssq = 3; // const, const, absorb, SSqueeze
-    let out_row = (lvl_ssq * steps + zk_lisp::pos_final() + 1) as u32;
+    let out_row = (lvl_ssq * steps + zk_lisp_proof_winterfell::schedule::pos_final() + 1) as u32;
 
     // Build correct PI to get a valid proof
     let pi_ok = PublicInputs {
@@ -301,8 +306,9 @@ fn negative_vm_expected_mismatch() {
     };
 
     let trace = build_trace(&program, &pi_ok).expect("trace");
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
 
-    let prover = ZkProver::new(opts(), pi_ok.clone());
+    let prover = ZkProver::new(opts(), pi_ok.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove ok");
 
     // Verify with wrong expected

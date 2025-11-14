@@ -1,24 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of zk-lisp.
-// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
+// Copyright (C) 2025  Andrei Kochergin
 
 use winterfell::math::fields::f128::BaseElement as BE;
-use zk_lisp::compiler::compile_entry;
-use zk_lisp::layout::Columns;
-use zk_lisp::prove::{self};
-use zk_lisp::{build_trace, pi};
+
+use zk_lisp_compiler::compile_entry;
+use zk_lisp_proof::pi::PublicInputsBuilder;
+use zk_lisp_proof_winterfell::layout::Columns;
+use zk_lisp_proof_winterfell::trace::build_trace;
+use zk_lisp_proof_winterfell::utils::vm_output_from_trace;
 
 #[test]
 fn stack_push_pop_simple() {
     let src = "(def (main) (begin (push 7) (pop)))";
     let program = compile_entry(src, &[]).expect("compile");
 
-    let pi = pi::PublicInputsBuilder::from_program(&program)
+    let pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     let trace = build_trace(&program, &pi).expect("trace");
     let cols = Columns::baseline();
-    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
+    let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(7u64));
@@ -36,12 +38,12 @@ fn stack_push_push_pop_add() {
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");
-    let pi = pi::PublicInputsBuilder::from_program(&program)
+    let pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     let trace = build_trace(&program, &pi).expect("trace");
     let cols = Columns::baseline();
-    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
+    let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(18u64));
@@ -62,12 +64,12 @@ fn stack_fill_empty_sum() {
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");
-    let pi = pi::PublicInputsBuilder::from_program(&program)
+    let pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     let trace = build_trace(&program, &pi).expect("trace");
     let cols = Columns::baseline();
-    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
+    let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(15u64));
@@ -91,12 +93,12 @@ fn stack_with_load_store_interop() {
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");
-    let pi = pi::PublicInputsBuilder::from_program(&program)
+    let pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     let trace = build_trace(&program, &pi).expect("trace");
     let cols = Columns::baseline();
-    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
+    let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(16u64));

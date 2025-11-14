@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of zk-lisp.
-// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
+// Copyright (C) 2025  Andrei Kochergin
 
 use winterfell::math::fields::f128::BaseElement as BE;
-use zk_lisp::compiler::compile_entry;
-use zk_lisp::layout::Columns;
-use zk_lisp::prove::{self};
-use zk_lisp::{build_trace, pi};
+
+use zk_lisp_compiler::compile_entry;
+use zk_lisp_proof::pi::PublicInputsBuilder;
+use zk_lisp_proof_winterfell::layout::Columns;
+use zk_lisp_proof_winterfell::trace::build_trace;
+use zk_lisp_proof_winterfell::utils::vm_output_from_trace;
 
 #[test]
 fn begin_variadic_and_def_let_multiform() {
@@ -22,12 +24,12 @@ fn begin_variadic_and_def_let_multiform() {
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");
-    let pi = pi::PublicInputsBuilder::from_program(&program)
+    let pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     let trace = build_trace(&program, &pi).expect("trace");
     let cols = Columns::baseline();
-    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
+    let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(11u64));
@@ -46,11 +48,11 @@ fn def_multiform_body_implicit_begin() {
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");
-    let pi = pi::PublicInputsBuilder::from_program(&program)
+    let pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     let trace = build_trace(&program, &pi).expect("trace");
-    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
+    let (out_reg, out_row) = vm_output_from_trace(&trace);
     let cols = Columns::baseline();
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
@@ -67,13 +69,13 @@ fn push_star_and_pop_star_macros() {
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");
-    let pi = pi::PublicInputsBuilder::from_program(&program)
+    let pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     let trace = build_trace(&program, &pi).expect("trace");
 
     let cols = Columns::baseline();
-    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
+    let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(18u64));

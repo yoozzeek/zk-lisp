@@ -4,12 +4,14 @@
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField};
 use winterfell::{BatchingMethod, FieldExtension, ProofOptions, Trace, TraceTable};
-use zk_lisp::compiler::compile_entry;
-use zk_lisp::layout::{Columns, STEPS_PER_LEVEL_P2};
-use zk_lisp::pi::{self};
-use zk_lisp::poseidon::poseidon_hash_two_lanes;
-use zk_lisp::prove::{self, ZkProver};
-use zk_lisp::{build_trace, pos_final, pos_map};
+
+use zk_lisp_compiler::compile_entry;
+use zk_lisp_proof::pi::{self, PublicInputsBuilder};
+use zk_lisp_proof_winterfell::layout::{Columns, STEPS_PER_LEVEL_P2};
+use zk_lisp_proof_winterfell::poseidon::poseidon_hash_two_lanes;
+use zk_lisp_proof_winterfell::prove::{self, ZkProver};
+use zk_lisp_proof_winterfell::schedule::{pos_final, pos_map};
+use zk_lisp_proof_winterfell::trace::build_trace;
 
 #[derive(Clone, Debug)]
 pub struct MerkleRow {
@@ -106,8 +108,7 @@ fn merkle_two_steps_positive_prove_verify() {
     // Program with 2-step path
     let src = r#"
 (def (main leaf d0 s0 d1 s1)
-  (merkle-verify leaf ((d0 s0) (d1 s1))))
-"#;
+  (merkle-verify leaf ((d0 s0) (d1 s1))))"#;
     let leaf = 1u64;
     let d0 = 0u64;
     let s0 = 2u64;
@@ -116,12 +117,13 @@ fn merkle_two_steps_positive_prove_verify() {
 
     let program = compile_entry(src, &[leaf, d0, s0, d1, s1]).expect("compile");
 
-    // Expected root computed with program commitment
+    // Expected root computed
+    // with program commitment.
     let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
     let root = poseidon_hash_two_lanes(&program.commitment, BE::from(s1), h0);
 
     // PI: bind root only (Merkle)
-    let mut pi = pi::PublicInputsBuilder::from_program(&program)
+    let mut pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     pi.merkle_root = be_to_bytes32(root);
@@ -137,29 +139,38 @@ fn merkle_two_steps_positive_prove_verify() {
             levels.push(lvl);
         }
     }
+
     assert_eq!(levels.len(), 2, "expected 2 merkle levels");
 
-    // first level: acc at map == leaf; dir/sib set
+    // first level:
+    // acc at map == leaf; dir/sib set
     let m0 = ov.at_map(levels[0]);
     assert_eq!(m0.first, BE::ONE);
     assert_eq!(m0.dir, BE::from(d0));
     assert_eq!(m0.sib, BE::from(s0));
     assert_eq!(m0.acc, BE::from(leaf));
 
-    // final acc after level 0 matches h0
+    // final acc after
+    // level 0 matches h0.
     let acc0_fin = ov.acc_at_final(levels[0]);
     assert_eq!(acc0_fin, h0);
 
-    // second level: dir/sib set; last flag at final
+    // second level:
+    // dir/sib set;
+    // last flag at final
     let m1 = ov.at_map(levels[1]);
     assert_eq!(m1.dir, BE::from(d1));
     assert_eq!(m1.sib, BE::from(s1));
+
     let acc1_fin = ov.acc_at_final(levels[1]);
     assert_eq!(acc1_fin, root);
 
-    // Prove and verify (verify may reject on security; accept BackendSource)
-    let prover = ZkProver::new(opts(), pi.clone());
+    // Prove and verify (verify may reject
+    // on security; accept BackendSource)
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
+    let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
+
     match prove::verify_proof(proof, pi, &opts()) {
         Ok(()) => {}
         Err(e) => {
@@ -175,8 +186,7 @@ fn load_ca_positive_prove_verify() {
     // Same as merkle-verify but via load-ca
     let src = r#"
 (def (main leaf d0 s0 d1 s1)
-  (load-ca leaf ((d0 s0) (d1 s1))))
-"#;
+  (load-ca leaf ((d0 s0) (d1 s1))))"#;
     let leaf = 1u64;
     let d0 = 0u64;
     let s0 = 2u64;
@@ -190,13 +200,14 @@ fn load_ca_positive_prove_verify() {
     let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
     let root = poseidon_hash_two_lanes(&program.commitment, BE::from(s1), h0);
 
-    let mut pi = pi::PublicInputsBuilder::from_program(&program)
+    let mut pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     pi.merkle_root = be_to_bytes32(root);
 
     let trace = build_trace(&program, &pi).expect("trace");
-    let prover = ZkProver::new(opts(), pi.clone());
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
+    let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
     match prove::verify_proof(proof, pi, &opts()) {
@@ -215,8 +226,7 @@ fn store_ca_new_root_overlay() {
     // replacing leaf with new value
     let src = r#"
 (def (main leaf_new d0 s0 d1 s1)
-  (store-ca leaf_new ((d0 s0) (d1 s1))))
-"#;
+  (store-ca leaf_new ((d0 s0) (d1 s1))))"#;
     let leaf_new = 9u64;
     let d0 = 0u64;
     let s0 = 2u64;
@@ -249,8 +259,7 @@ fn store_ca_new_root_overlay() {
 fn load_ca_wrong_sibling_verify_fails() {
     let src = r#"
 (def (main leaf d0 s0 d1 s1)
-  (load-ca leaf ((d0 s0) (d1 s1))))
-"#;
+  (load-ca leaf ((d0 s0) (d1 s1))))"#;
     let (leaf, d0, s0, d1, s1) = (1u64, 0u64, 2u64, 1u64, 999u64);
     let program = compile_entry(src, &[leaf, d0, s0, d1, s1]).expect("compile");
 
@@ -259,13 +268,14 @@ fn load_ca_wrong_sibling_verify_fails() {
     let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
     let correct_root = poseidon_hash_two_lanes(&program.commitment, BE::from(3u64), h0);
 
-    let mut pi = pi::PublicInputsBuilder::from_program(&program)
+    let mut pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     pi.merkle_root = be_to_bytes32(correct_root);
 
     let trace = build_trace(&program, &pi).expect("trace");
-    let prover = ZkProver::new(opts(), pi.clone());
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
+    let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
 
     if let Ok(proof) = prover.prove(trace) {
         assert!(prove::verify_proof(proof, pi, &opts()).is_err());
@@ -277,14 +287,13 @@ fn load_ca_wrong_sibling_verify_fails() {
 fn merkle_wrong_root_verify_fails() {
     let src = r#"
 (def (main leaf d0 s0 d1 s1)
-  (merkle-verify leaf ((d0 s0) (d1 s1))))
-"#;
+  (merkle-verify leaf ((d0 s0) (d1 s1))))"#;
     let (leaf, d0, s0, d1, s1) = (1u64, 0u64, 2u64, 1u64, 3u64);
     let program = compile_entry(src, &[leaf, d0, s0, d1, s1]).expect("compile");
 
     // Bind incorrect root (arbitrary value)
     let bad_root = BE::from(123456789u64);
-    let mut pi = pi::PublicInputsBuilder::from_program(&program)
+    let mut pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     pi.merkle_root = be_to_bytes32(bad_root);
@@ -292,7 +301,8 @@ fn merkle_wrong_root_verify_fails() {
     let pi_for_verify = pi.clone();
 
     let trace = build_trace(&program, &pi_for_verify).expect("trace");
-    let prover = ZkProver::new(opts(), pi);
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
+    let prover = ZkProver::new(opts(), pi, rom_acc);
 
     match prover.prove(trace) {
         Ok(proof) => {
@@ -313,16 +323,16 @@ fn merkle_wrong_sibling_verify_fails() {
     // Same as positive, but s1 is wrong
     let src = r#"
 (def (main leaf d0 s0 d1 s1)
-  (merkle-verify leaf ((d0 s0) (d1 s1))))
-"#;
+  (merkle-verify leaf ((d0 s0) (d1 s1))))"#;
     let (leaf, d0, s0, d1, s1) = (1u64, 0u64, 2u64, 1u64, 999u64);
     let program = compile_entry(src, &[leaf, d0, s0, d1, s1]).expect("compile");
 
-    // Compute root as if s1=3 (correct), but we pass s1=999 into program
+    // Compute root as if s1=3 (correct),
+    // but we pass s1=999 into program.
     let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
     let correct_root = poseidon_hash_two_lanes(&program.commitment, BE::from(3u64), h0);
 
-    let mut pi = pi::PublicInputsBuilder::from_program(&program)
+    let mut pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
     pi.merkle_root = be_to_bytes32(correct_root);
@@ -330,7 +340,8 @@ fn merkle_wrong_sibling_verify_fails() {
     let pi_for_verify = pi.clone();
 
     let trace = build_trace(&program, &pi).expect("trace");
-    let prover = ZkProver::new(opts(), pi);
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
+    let prover = ZkProver::new(opts(), pi, rom_acc);
 
     match prover.prove(trace) {
         Ok(proof) => {

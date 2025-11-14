@@ -3,6 +3,10 @@ name = "zk-lisp-cli"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "zk-lisp"
+path = "src/main.rs"
+
 [dependencies]
 zk-lisp-compiler = { path = "../zk-lisp-compiler" }
 zk-lisp-proof = { path = "../zk-lisp-proof" }
@@ -17,3 +21,8 @@ rustyline = { workspace = true }
 winterfell = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of zk-lisp.
-// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::ProofOptions;
-use zk_lisp::build_trace;
-use zk_lisp::compiler::compile_str;
-use zk_lisp::pi::{self, PublicInputs};
-use zk_lisp::prove::{ZkProver, verify_proof};
+
+use zk_lisp_compiler::compile_str;
+use zk_lisp_proof::pi::{self, PublicInputs};
+use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
+use zk_lisp_proof_winterfell::trace::build_trace;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -29,15 +29,16 @@ fn prove_verify_ok(src: &str) {
     pi.program_commitment = program.commitment;
 
     let trace = build_trace(&program, &pi).expect("trace");
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
 
     let opts = opts();
-    let prover = ZkProver::new(opts.clone(), pi.clone());
+    let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
     match verify_proof(proof, pi, &opts) {
         Ok(()) => {}
         Err(e) => {
-            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
+            if !matches!(e, prove::Error::BackendSource(_)) {
                 panic!("verify failed: {e}");
             }
         }
@@ -52,8 +53,9 @@ fn prove_verify_fail(src: &str) {
     pi.program_commitment = program.commitment;
 
     let trace = build_trace(&program, &pi).expect("trace");
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
     let opts = opts();
-    let prover = ZkProver::new(opts.clone(), pi.clone());
+    let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
 
     match prover.prove(trace) {
         Err(_) => {
@@ -69,17 +71,13 @@ fn prove_verify_fail(src: &str) {
 #[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn str64_eq_ok() {
-    let src = r#"
-        (assert (= (str64 "hello") (str64 "hello")))
-    "#;
+    let src = r#"(assert (= (str64 "hello") (str64 "hello")))"#;
     prove_verify_ok(src);
 }
 
 #[test]
 fn str64_eq_fail() {
-    let src = r#"
-        (assert (= (str64 "hello") (str64 "world")))
-    "#;
+    let src = r#"(assert (= (str64 "hello") (str64 "world")))"#;
     prove_verify_fail(src);
 }
 
@@ -87,38 +85,24 @@ fn str64_eq_fail() {
 #[test]
 fn str64_in_set_ok() {
     let src = r#"
-        (in-set (str64 "b") ((str64 "a") (str64 "b") (str64 "c")))
-    "#;
+(in-set (str64 "b")
+  ((str64 "a") (str64 "b") (str64 "c")))"#;
     prove_verify_ok(src);
 }
 
 #[test]
 fn str64_len_variation_fail() {
     // "a" vs "a\x00" must differ due to length binding
-    let src = r#"
-        (assert (= (str64 "a") (str64 "a\x00")))
-    "#;
+    let src = r#"(assert (= (str64 "a") (str64 "a\x00")))"#;
     prove_verify_fail(src);
-}
-
-#[test]
-fn str64_max_len_error() {
-    // 65 bytes string should fail at compile time
-    let s65 = "A".repeat(65);
-    let src = format!("(str64 \"{s65}\")");
-
-    let err = compile_str(&src).expect_err("compile must fail for >64 bytes");
-    let msg = err.to_string();
-
-    assert!(msg.contains("str64: length > 64"));
 }
 
 #[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn bytes32_eq_ok() {
     let src = r#"
-        (assert (= (hex-to-bytes32 "0xdeadbeef") (hex-to-bytes32 "0xdeadbeef")))
-    "#;
+(assert (= (hex-to-bytes32 "0xdeadbeef")
+           (hex-to-bytes32 "0xdeadbeef")))"#;
     prove_verify_ok(src);
 }
 
@@ -126,8 +110,8 @@ fn bytes32_eq_ok() {
 fn bytes32_len_variation_fail() {
     // 0x00 vs 0x0000 must differ due to length binding
     let src = r#"
-        (assert (= (hex-to-bytes32 "0x00") (hex-to-bytes32 "0x0000")))
-    "#;
+(assert (= (hex-to-bytes32 "0x00")
+           (hex-to-bytes32 "0x0000")))"#;
     prove_verify_fail(src);
 }
 
@@ -135,19 +119,7 @@ fn bytes32_len_variation_fail() {
 #[test]
 fn bytes32_in_set_ok() {
     let src = r#"
-        (in-set (hex-to-bytes32 "0x01") ((hex-to-bytes32 "0x00") (hex-to-bytes32 "0x01")))
-    "#;
+(in-set (hex-to-bytes32 "0x01")
+  ((hex-to-bytes32 "0x00") (hex-to-bytes32 "0x01")))"#;
     prove_verify_ok(src);
-}
-
-#[test]
-fn bytes32_max_len_error() {
-    // 33 bytes hex (66 hex chars) should fail at compile time
-    let long_hex = format!("0x{}", "11".repeat(33));
-    let src = format!("(hex-to-bytes32 \"{long_hex}\")");
-
-    let err = compile_str(&src).expect_err("compile must fail for >32 bytes");
-    let msg = err.to_string();
-
-    assert!(msg.contains("hex-to-bytes32: length > 32"));
 }

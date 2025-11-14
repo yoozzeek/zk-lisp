@@ -391,8 +391,8 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliE
 
     // Rebuild PI similarly to Prove
     let pi = build_pi_for_program(&program, &args.args)?;
-    let proof =
-        frontend::decode_proof::<WinterfellBackend>(&proof_bytes).map_err(CliError::Prover)?;
+    let proof = frontend::decode_proof::<WinterfellBackend>(&proof_bytes)
+        .map_err(|e| CliError::InvalidInput(format!("invalid proof encoding: {e}")))?;
 
     let opts = proof_opts(args.queries, args.blowup, args.grind);
     frontend::verify::<WinterfellBackend>(proof, &pi, &opts).map_err(CliError::Verify)?;

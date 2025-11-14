@@ -3,23 +3,28 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::ProofOptions;
-use zk_lisp::build_trace;
-use zk_lisp::compiler::compile_str;
-use zk_lisp::pi::{self, PublicInputs};
-use zk_lisp::prove::{ZkProver, verify_proof};
+
+use zk_lisp_compiler::compile_entry;
+use zk_lisp_proof::pi::{self, PublicInputs};
+use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
+use zk_lisp_proof_winterfell::trace::build_trace;
 
 #[test]
-fn hash2_prove_verify() {
-    // Poseidon placeholder: choose left=1 to keep output stable (1)
-    let src = "(let ((x 1) (y 2)) (hash2 x y))";
-    let program = compile_str(src).expect("compile");
+fn arithmetic_select_prove_verify() {
+    // Lisp: arithmetic + select
+    let src = r"
+ (def (main)
+   (let ((a 7) (b 9))
+     (select (= a b) (+ a b) 0)))
+ ";
+    let program = compile_entry(src, &[]).expect("compile");
 
     let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;
+    pi.feature_mask = pi::FM_VM;
     pi.program_commitment = program.commitment;
 
     let trace = build_trace(&program, &pi).expect("trace");
-
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
     let opts = ProofOptions::new(
         1,
         8,
@@ -30,13 +35,14 @@ fn hash2_prove_verify() {
         winterfell::BatchingMethod::Linear,
         winterfell::BatchingMethod::Linear,
     );
-    let prover = ZkProver::new(opts.clone(), pi.clone());
+    let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
+    // Verify (allow insufficient conjectured security on tiny traces)
     match verify_proof(proof, pi, &opts) {
         Ok(()) => {}
         Err(e) => {
-            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
+            if !matches!(e, prove::Error::BackendSource(_)) {
                 panic!("verify failed: {e}");
             }
         }

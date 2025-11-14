@@ -1,13 +1,21 @@
-use assert_cmd::prelude::*;
-use predicates::prelude::*;
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
+use std::path::Path;
 use std::process::Command;
 
 fn bin() -> Command {
-    Command::new(assert_cmd::cargo::cargo_bin!("zk-lisp"))
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("zk-lisp"));
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .expect("zk-lisp-cli crate must have a parent workspace directory");
+    cmd.current_dir(workspace_root);
+
+    cmd
 }
 
 #[test]
@@ -60,6 +68,7 @@ fn prove_and_verify_ok() {
         "--json",
     ]);
     let assert = cmd2.assert();
+
     // Accept either success (ok:true) or failure due to verification policy
     // (e.g., insufficient conjectured security on tiny traces).
     let output = assert.get_output();

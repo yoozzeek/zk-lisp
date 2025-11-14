@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of zk-lisp.
-// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use std::panic;
 use winterfell::ProofOptions;
-use zk_lisp::build_trace;
-use zk_lisp::compiler::compile_entry;
-use zk_lisp::pi::PublicInputsBuilder;
-use zk_lisp::prove::{ZkProver, verify_proof};
+
+use zk_lisp_compiler::compile_entry;
+use zk_lisp_proof::pi::PublicInputsBuilder;
+use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
+use zk_lisp_proof_winterfell::trace::build_trace;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -32,9 +32,9 @@ fn u128_to_bytes32(n: u128) -> [u8; 32] {
 #[test]
 fn enum_predicate_positive_verifies() {
     let src = r#"
-        (deftype fruit () '(member apple orange banana))
-        (def (main t)
-          (fruit:is t))
+(deftype fruit () '(member apple orange banana))
+(def (main t)
+  (fruit:is t))
     "#;
 
     let t = 1u64; // in set
@@ -48,15 +48,16 @@ fn enum_predicate_positive_verifies() {
         .expect("pi");
 
     let trace = build_trace(&program, &pi).expect("trace");
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
 
     let opts = opts();
-    let prover = ZkProver::new(opts.clone(), pi.clone());
+    let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
     match verify_proof(proof, pi, &opts) {
         Ok(()) => {}
         Err(e) => {
-            if !matches!(e, zk_lisp::prove::Error::BackendSource(_)) {
+            if !matches!(e, prove::Error::BackendSource(_)) {
                 panic!("verify failed: {e}");
             }
         }
@@ -66,9 +67,9 @@ fn enum_predicate_positive_verifies() {
 #[test]
 fn enum_predicate_negative_fails_verify() {
     let src = r#"
-        (deftype fruit () '(member apple orange banana))
-        (def (main t)
-          (fruit:is t))
+(deftype fruit () '(member apple orange banana))
+(def (main t)
+  (fruit:is t))
     "#;
 
     let t = 3u64; // not in set
@@ -87,8 +88,9 @@ fn enum_predicate_negative_fails_verify() {
 
     // In debug, prove() may panic during preflight/assertion checks.
     // In release, prove() may succeed but the proof must fail to verify.
+    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
     let prove_res = panic::catch_unwind(|| {
-        let prover = ZkProver::new(opts.clone(), pi.clone());
+        let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
         prover.prove(trace)
     });
 
@@ -96,9 +98,9 @@ fn enum_predicate_negative_fails_verify() {
         Ok(Ok(proof)) => {
             let err = verify_proof(proof, pi, &opts).expect_err("must fail verify");
             match err {
-                zk_lisp::prove::Error::Backend(_)
-                | zk_lisp::prove::Error::BackendSource(_)
-                | zk_lisp::prove::Error::PublicInputs(_) => {}
+                prove::Error::Backend(_)
+                | prove::Error::BackendSource(_)
+                | prove::Error::PublicInputs(_) => {}
             }
         }
         // Prove returned an error — acceptable failure mode
