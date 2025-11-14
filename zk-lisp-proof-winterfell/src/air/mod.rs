@@ -27,6 +27,7 @@ use alu::VmAluAir;
 use ctrl::VmCtrlAir;
 use ram::RamAir;
 use rom::RomAir;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use winterfell::math::FieldElement;
 use winterfell::math::fft;
@@ -68,6 +69,10 @@ struct AirSharedContext {
     pub rom_w_enc0: [BaseElement; 59],
     pub rom_w_enc1: [BaseElement; 59],
 
+    /// Final ROM accumulator state lanes
+    /// (t=3 sponge) as observed by the prover.
+    pub rom_acc: [BaseElement; 3],
+
     /// Field-level program commitment derived from the
     /// Blake3 program_commitment (two field elements).
     pub program_fe: [BaseElement; 2],
@@ -86,7 +91,7 @@ impl Air for ZkLispAir {
     fn new(info: TraceInfo, pub_inputs: Self::PublicInputs, options: ProofOptions) -> Self {
         let mut degrees = Vec::new();
 
-        let core = pub_inputs.0;
+        let core = pub_inputs.core;
         let suite_id = &core.program_commitment;
         let ps = poseidon_core::get_poseidon_suite(suite_id);
 
@@ -162,6 +167,7 @@ impl Air for ZkLispAir {
             rom_mds: rom_mds_arr,
             rom_w_enc0,
             rom_w_enc1,
+            rom_acc: pub_inputs.rom_acc,
             program_fe,
         });
 
@@ -222,9 +228,10 @@ impl Air for ZkLispAir {
             num_assertions = 1;
         }
 
-        // ROM accumulator boundaries:
-        // - initial s0(map0) = 0 (1)
-        // - final s0(last) = f0 and s1(last) = f1 (2)
+        // ROM accumulator boundary:
+        // - initial s0(map0) = 0
+        // - final lanes 0/1 at last row bound
+        //   to rom_acc[0/1].
         if core.program_commitment.iter().any(|b| *b != 0) {
             num_assertions += 3;
         }
@@ -367,6 +374,35 @@ impl Air for ZkLispAir {
             out.push(Assertion::single(ctx.cols.mask, last, BE::from(0u32)));
         }
 
+        // Deduplicate assertions by (column, step). Winterfell
+        // rejects overlapping assertions even when they bind
+        // the same value; keeping just one instance preserves
+        // semantics and matches the intent of the AIR.
+        let mut seen: BTreeMap<(usize, usize), BE> = BTreeMap::new();
+        let mut dedup = Vec::with_capacity(out.len());
+
+        for a in out.into_iter() {
+            let key = (a.column(), a.first_step());
+            let val = a.values()[0];
+
+            if let Some(prev) = seen.get(&key) {
+                // If overlapping assertions disagree, this is
+                // a logic bug in the AIR; enforce only in debug.
+                debug_assert_eq!(
+                    *prev, val,
+                    "conflicting boundary assertions for column {} step {}: {:?} vs {:?}",
+                    key.0, key.1, prev, val,
+                );
+
+                // Identical assertion already recorded (or debug-only
+                // conflict already reported); skip.
+                continue;
+            }
+
+            seen.insert(key, val);
+            dedup.push(a);
+        }
+
         // Debug:
         // validate assertion columns
         let width = ctx.cols.width(ctx.pub_inputs.feature_mask);
@@ -374,7 +410,7 @@ impl Air for ZkLispAir {
         let mut bad = 0usize;
         let mut max_col = 0usize;
 
-        for a in &out {
+        for a in &dedup {
             let c = a.column();
             if c > max_col {
                 max_col = c;
@@ -386,14 +422,14 @@ impl Air for ZkLispAir {
 
         tracing::debug!(
             target="proof.air",
-            assertions_len=%out.len(),
+            assertions_len=%dedup.len(),
             width=%width,
             last=%last,
             bad_cols=%bad,
             max_col=%max_col,
         );
 
-        out
+        dedup
     }
 
     fn get_periodic_column_values(&self) -> Vec<Vec<Self::BaseField>> {

@@ -15,6 +15,7 @@ pub mod layout;
 pub mod poseidon;
 pub mod preflight;
 pub mod prove;
+pub mod romacc;
 pub mod schedule;
 pub mod trace;
 pub mod utils;
@@ -55,21 +56,38 @@ impl ZkField for WinterfellField {
     }
 }
 
-/// Public inputs visible to the Winterfell AIR;
-/// wraps backend-agnostic core public inputs.
-#[derive(Clone, Debug, Default)]
-pub struct AirPublicInputs(pub CorePublicInputs);
+/// Public inputs visible to the Winterfell AIR.
+///
+/// `core` wraps backend-agnostic public inputs used
+/// across backends. `rom_acc` carries the final ROM
+/// accumulator state lanes (t=3 sponge) and is used
+/// only internally by this backend's AIR; it is not
+/// currently exposed in the public input encoding.
+#[derive(Clone, Debug)]
+pub struct AirPublicInputs {
+    pub core: CorePublicInputs,
+    pub rom_acc: [BE; 3],
+}
+
+impl Default for AirPublicInputs {
+    fn default() -> Self {
+        Self {
+            core: CorePublicInputs::default(),
+            rom_acc: [BE::ZERO; 3],
+        }
+    }
+}
 
 impl ToElements<BE> for AirPublicInputs {
     fn to_elements(&self) -> Vec<BE> {
         let mut out = Vec::with_capacity(5);
 
-        out.push(BE::from(self.0.feature_mask));
-        out.push(utils::be_from_le8(&self.0.program_commitment));
-        out.push(utils::be_from_le8(&self.0.merkle_root));
+        out.push(BE::from(self.core.feature_mask));
+        out.push(utils::be_from_le8(&self.core.program_commitment));
+        out.push(utils::be_from_le8(&self.core.merkle_root));
 
-        if self.0.program_commitment.iter().any(|b| *b != 0) {
-            let fc = commit::program_field_commitment(&self.0.program_commitment);
+        if self.core.program_commitment.iter().any(|b| *b != 0) {
+            let fc = commit::program_field_commitment(&self.core.program_commitment);
             out.push(fc[0]);
             out.push(fc[1]);
         } else {
@@ -108,7 +126,17 @@ impl ZkBackend for WinterfellBackend {
         );
 
         let trace = build_trace(program, pub_inputs)?;
-        let prover = prove::ZkProver::new(wf_opts, pub_inputs.clone());
+
+        // Offline ROM accumulator
+        // from program.
+        let rom_acc = if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            crate::romacc::rom_acc_from_program(program)
+        } else {
+            [BE::ZERO; 3]
+        };
+
+        let prover = prove::ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc);
+
         prover.prove(trace)
     }
 

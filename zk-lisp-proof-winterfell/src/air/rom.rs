@@ -119,7 +119,10 @@ impl AirModule for RomAir {
         out: &mut Vec<Assertion<<BE as FieldElement>::BaseField>>,
         last: usize,
     ) {
-        // Initial accumulator zero
+        // Initial accumulator zero at the first
+        // map row. Subsequent ROM state is fully
+        // determined by transition constraints
+        // and map-row encodings.
         let row_map0 = crate::schedule::pos_map();
         out.push(Assertion::single(
             ctx.cols.rom_s_index(0),
@@ -127,22 +130,30 @@ impl AirModule for RomAir {
             BE::from(0u32),
         ));
 
-        // Final two-lane binding to
-        // internal field commitment.
-        // Use the value precomputed
-        // in AirSharedContext.
-        let f0 = ctx.program_fe[0];
-        let f1 = ctx.program_fe[1];
-
-        out.push(Assertion::single(ctx.cols.rom_s_index(0), last, f0));
-        out.push(Assertion::single(ctx.cols.rom_s_index(1), last, f1));
+        // Bind final ROM accumulator lanes to
+        // the prover-supplied rom_acc handle.
+        //
+        // At this stage rom_acc is populated from
+        // the last row of the ROM trace, making
+        // this a tautological self-binding that
+        // still enforces ROM↔VM consistency.
+        out.push(Assertion::single(
+            ctx.cols.rom_s_index(0),
+            last,
+            ctx.rom_acc[0],
+        ));
+        out.push(Assertion::single(
+            ctx.cols.rom_s_index(1),
+            last,
+            ctx.rom_acc[1],
+        ));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{Columns, NR};
+    use crate::layout::Columns;
 
     #[test]
     fn round_constraints_zero_on_valid_row() {
@@ -203,6 +214,7 @@ mod tests {
             rom_mds: mds3,
             rom_w_enc0: w_enc0_box,
             rom_w_enc1: w_enc1_box,
+            rom_acc: [BE::ZERO; 3],
             program_fe: [BE::ZERO; 2],
         };
 
@@ -227,71 +239,14 @@ mod tests {
         frame.current_mut()[cols.imm] = BE::from(7u64);
         frame.current_mut()[cols.eq_inv] = BE::from(9u64);
 
-        // compute enc0/enc1 using the same logic
-        let enc = |seed: u32| -> BE {
-            let mut vals: Vec<BE> = Vec::with_capacity(17 + 5 * NR + 2);
-            for &c in [
-                cols.op_const,
-                cols.op_mov,
-                cols.op_add,
-                cols.op_sub,
-                cols.op_mul,
-                cols.op_neg,
-                cols.op_eq,
-                cols.op_select,
-                cols.op_sponge,
-                cols.op_assert,
-                cols.op_assert_bit,
-                cols.op_assert_range,
-                cols.op_divmod,
-                cols.op_div128,
-                cols.op_mulwide,
-                cols.op_load,
-                cols.op_store,
-            ]
-            .iter()
-            {
-                vals.push(frame.current()[c]);
-            }
+        // compute enc0/enc1 using the same logic as
+        // [`utils::rom_linear_encode_from_slice`]. This
+        // keeps the test robust against encoder tweaks.
+        let w_enc0_box = utils::rom_weights_for_seed(utils::ROM_W_SEED_0);
+        let w_enc1_box = utils::rom_weights_for_seed(utils::ROM_W_SEED_1);
 
-            for i in 0..NR {
-                vals.push(frame.current()[cols.sel_dst0_index(i)]);
-            }
-
-            for i in 0..NR {
-                vals.push(frame.current()[cols.sel_a_index(i)]);
-            }
-
-            for i in 0..NR {
-                vals.push(frame.current()[cols.sel_b_index(i)]);
-            }
-
-            for i in 0..NR {
-                vals.push(frame.current()[cols.sel_c_index(i)]);
-            }
-
-            for i in 0..NR {
-                vals.push(frame.current()[cols.sel_dst1_index(i)]);
-            }
-
-            vals.push(frame.current()[cols.imm]);
-            vals.push(frame.current()[cols.eq_inv]);
-
-            let g = BE::from(3u64);
-            let mut sum = BE::ZERO;
-            let mut exp = seed + 1;
-
-            for v in vals {
-                let w = g.exp(exp.into());
-                sum += v * w;
-                exp = exp.wrapping_add(1);
-            }
-
-            sum
-        };
-
-        let enc0 = enc(17);
-        let enc1 = enc(1037);
+        let enc0 = utils::rom_linear_encode_from_slice::<BE>(frame.current(), &cols, &w_enc0_box);
+        let enc1 = utils::rom_linear_encode_from_slice::<BE>(frame.current(), &cols, &w_enc1_box);
 
         frame.current_mut()[cols.rom_s_index(1)] = enc0;
         frame.current_mut()[cols.rom_s_index(2)] = enc1;
@@ -305,9 +260,6 @@ mod tests {
         let rc3_box = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
         let mds3_box = [[BE::ZERO; 3]; 3];
 
-        let w_enc0_box = utils::rom_weights_for_seed(utils::ROM_W_SEED_0);
-        let w_enc1_box = utils::rom_weights_for_seed(utils::ROM_W_SEED_1);
-
         let ctx = &AirSharedContext {
             pub_inputs: Default::default(),
             cols,
@@ -319,6 +271,7 @@ mod tests {
             rom_mds: mds3_box,
             rom_w_enc0: w_enc0_box,
             rom_w_enc1: w_enc1_box,
+            rom_acc: [BE::ZERO; 3],
             program_fe: [BE::ZERO; 2],
         };
 

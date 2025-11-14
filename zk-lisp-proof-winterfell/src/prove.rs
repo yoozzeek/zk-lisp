@@ -41,11 +41,12 @@ pub enum Error {
 pub struct ZkProver {
     options: ProofOptions,
     pub_inputs: PublicInputs,
+    rom_acc: [BE; 3],
     preflight: PreflightMode,
 }
 
 impl ZkProver {
-    pub fn new(options: ProofOptions, pub_inputs: PublicInputs) -> Self {
+    pub fn new(options: ProofOptions, pub_inputs: PublicInputs, rom_acc: [BE; 3]) -> Self {
         let mut pf = if cfg!(debug_assertions) {
             PreflightMode::Console
         } else {
@@ -64,6 +65,7 @@ impl ZkProver {
         Self {
             options,
             pub_inputs,
+            rom_acc,
             preflight: pf,
         }
     }
@@ -102,6 +104,7 @@ impl ZkProver {
         let prover = ZkWinterfellProver {
             options: self.options.clone(),
             pub_inputs: self.pub_inputs.clone(),
+            rom_acc: self.rom_acc,
         };
 
         let t0 = std::time::Instant::now();
@@ -128,6 +131,7 @@ impl ZkProver {
 struct ZkWinterfellProver {
     options: ProofOptions,
     pub_inputs: PublicInputs,
+    rom_acc: [BE; 3],
 }
 
 impl WProver for ZkWinterfellProver {
@@ -149,16 +153,22 @@ impl WProver for ZkWinterfellProver {
 
         // Compute VM output location (last op level)
         if (pi.feature_mask & core_pi::FM_VM) != 0 {
-            // If caller provided explicit
-            // VM_EXPECT (via builder/meta), respect it.
-            if (pi.feature_mask & core_pi::FM_VM_EXPECT) == 0 {
+            // If caller provided explicit VM_EXPECT location via
+            // vm_out_reg/vm_out_row, respect it. Otherwise, detect
+            // the output cell from the trace even when FM_VM_EXPECT
+            // is set (builder-provided expected value only).
+            let has_explicit_loc = pi.vm_out_row != 0 || pi.vm_out_reg != 0;
+            if !has_explicit_loc {
                 let (r, row) = utils::vm_output_from_trace(trace);
                 pi.vm_out_reg = r;
                 pi.vm_out_row = row;
             }
         }
 
-        crate::AirPublicInputs(pi)
+        crate::AirPublicInputs {
+            core: pi,
+            rom_acc: self.rom_acc,
+        }
     }
 
     fn options(&self) -> &ProofOptions {
@@ -231,7 +241,14 @@ pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Resu
             Blake3_256<BE>,
             DefaultRandomCoin<Blake3_256<BE>>,
             MerkleTree<Blake3_256<BE>>,
-        >(proof, crate::AirPublicInputs(pi), &acceptable)
+        >(
+            proof,
+            crate::AirPublicInputs {
+                core: pi,
+                rom_acc: [BE::ZERO; 3],
+            },
+            &acceptable,
+        )
     }));
 
     match res {

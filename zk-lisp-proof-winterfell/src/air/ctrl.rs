@@ -430,6 +430,7 @@ mod tests {
             rom_mds: mds3_binding,
             rom_w_enc0: w_enc0_binding,
             rom_w_enc1: w_enc1_binding,
+            rom_acc: [BE::ZERO; 3],
             program_fe: [BE::ZERO; 2],
         };
 
@@ -492,6 +493,7 @@ mod tests {
             rom_mds: mds3_binding,
             rom_w_enc0: w_enc0_binding,
             rom_w_enc1: w_enc1_binding,
+            rom_acc: [BE::ZERO; 3],
             program_fe: [BE::ZERO; 2],
         };
 
@@ -550,6 +552,7 @@ mod tests {
             rom_mds: mds3_box,
             rom_w_enc0: w_enc0_box,
             rom_w_enc1: w_enc1_box,
+            rom_acc: [BE::ZERO; 3],
             program_fe: [BE::ZERO; 2],
         };
 
@@ -604,6 +607,7 @@ mod tests {
             rom_mds: mds3_box,
             rom_w_enc0: w_enc0_box,
             rom_w_enc1: w_enc1_box,
+            rom_acc: [BE::ZERO; 3],
             program_fe: [BE::ZERO; 2],
         };
 

@@ -10,7 +10,9 @@
 
 use crate::layout::NR;
 use crate::poseidon::get_poseidon_suite;
-use crate::trace::{set_sel, TraceBuilderContext, TraceModule, poseidon::apply_level_absorb, ram::RamEvent};
+use crate::trace::{
+    TraceBuilderContext, TraceModule, poseidon::apply_level_absorb, ram::RamEvent, set_sel,
+};
 use crate::{schedule, utils};
 
 use arrayvec::ArrayVec;

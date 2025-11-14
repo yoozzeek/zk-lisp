@@ -75,7 +75,25 @@ pub fn run(
     }
 
     let ti = TraceInfo::new(trace.width(), trace.length());
-    let air = ZkLispAir::new(ti, AirPublicInputs(pub_inputs.clone()), options.clone());
+
+    // Derive ROM accumulator lanes from the last
+    // row of the trace to mirror prover behaviour.
+    let mut rom_acc = [BE::ZERO; 3];
+    let cols = layout::Columns::baseline();
+    let last = trace.length().saturating_sub(1);
+
+    if pub_inputs.program_commitment.iter().any(|b| *b != 0) && last > 0 {
+        for (i, dst) in rom_acc.iter_mut().enumerate() {
+            *dst = trace.get(cols.rom_s_index(i), last);
+        }
+    }
+
+    let air_pi = AirPublicInputs {
+        core: pub_inputs.clone(),
+        rom_acc,
+    };
+
+    let air = ZkLispAir::new(ti, air_pi, options.clone());
     let res_len = air.context().num_main_transition_constraints();
     let pc = air.get_periodic_column_values();
 

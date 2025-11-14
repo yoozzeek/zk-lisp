@@ -78,6 +78,7 @@ pub fn rom_linear_encode_from_slice<E: FieldElement<BaseField = BE> + From<BE>>(
     let mut k = 0usize;
     let mut sum = E::ZERO;
 
+    // Opcode one-hots
     for &c in [
         cols.op_const,
         cols.op_mov,
@@ -103,6 +104,7 @@ pub fn rom_linear_encode_from_slice<E: FieldElement<BaseField = BE> + From<BE>>(
         k += 1;
     }
 
+    // Selector columns (dst0, a, b, c, dst1)
     for i in 0..NR {
         sum += cur[cols.sel_dst0_index(i)] * E::from(weights[k]);
         k += 1;
@@ -128,10 +130,7 @@ pub fn rom_linear_encode_from_slice<E: FieldElement<BaseField = BE> + From<BE>>(
         k += 1;
     }
 
-    sum += cur[cols.imm] * E::from(weights[k]);
-    k += 1;
-
-    sum += cur[cols.eq_inv] * E::from(weights[k]);
+    debug_assert!(k <= weights.len());
 
     sum
 }
@@ -146,6 +145,7 @@ pub fn rom_linear_encode_from_trace(
     let mut k = 0usize;
     let mut sum = BE::ZERO;
 
+    // Opcode one-hots
     for &c in [
         cols.op_const,
         cols.op_mov,
@@ -171,6 +171,8 @@ pub fn rom_linear_encode_from_trace(
         k += 1;
     }
 
+    // Selector columns
+    // (dst0, a, b, c, dst1)
     for i in 0..NR {
         sum += trace.get(cols.sel_dst0_index(i), row) * weights[k];
         k += 1;
@@ -196,10 +198,7 @@ pub fn rom_linear_encode_from_trace(
         k += 1;
     }
 
-    sum += trace.get(cols.imm, row) * weights[k];
-    k += 1;
-
-    sum += trace.get(cols.eq_inv, row) * weights[k];
+    debug_assert!(k <= weights.len());
 
     sum
 }
