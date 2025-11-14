@@ -145,17 +145,6 @@ impl PublicInputsBuilder {
         self
     }
 
-    #[deprecated]
-    pub fn with_sponge(mut self, enabled: bool) -> Self {
-        if enabled {
-            self.pi.feature_mask |= FM_SPONGE;
-        } else {
-            self.pi.feature_mask &= !FM_SPONGE;
-        }
-
-        self
-    }
-
     pub fn build(self) -> Result<PublicInputs> {
         // basic validation and defaults
         if self.pi.program_commitment.iter().all(|b| *b == 0) {

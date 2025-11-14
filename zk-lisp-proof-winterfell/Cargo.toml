@@ -1,0 +1,16 @@
+[package]
+name = "zk-lisp-proof-winterfell"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zk-lisp-compiler = { path = "../zk-lisp-compiler" }
+zk-lisp-proof = { path = "../zk-lisp-proof" }
+winterfell = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+comfy-table = { workspace = true }
+arrayvec = { workspace = true }

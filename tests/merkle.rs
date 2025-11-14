@@ -122,7 +122,6 @@ fn merkle_two_steps_positive_prove_verify() {
 
     // PI: bind root only (Merkle)
     let mut pi = pi::PublicInputsBuilder::from_program(&program)
-        .with_sponge(false)
         .build()
         .expect("pi");
     pi.merkle_root = be_to_bytes32(root);
@@ -192,7 +191,6 @@ fn load_ca_positive_prove_verify() {
     let root = poseidon_hash_two_lanes(&program.commitment, BE::from(s1), h0);
 
     let mut pi = pi::PublicInputsBuilder::from_program(&program)
-        .with_sponge(false)
         .build()
         .expect("pi");
     pi.merkle_root = be_to_bytes32(root);
@@ -262,7 +260,6 @@ fn load_ca_wrong_sibling_verify_fails() {
     let correct_root = poseidon_hash_two_lanes(&program.commitment, BE::from(3u64), h0);
 
     let mut pi = pi::PublicInputsBuilder::from_program(&program)
-        .with_sponge(false)
         .build()
         .expect("pi");
     pi.merkle_root = be_to_bytes32(correct_root);
@@ -288,7 +285,6 @@ fn merkle_wrong_root_verify_fails() {
     // Bind incorrect root (arbitrary value)
     let bad_root = BE::from(123456789u64);
     let mut pi = pi::PublicInputsBuilder::from_program(&program)
-        .with_sponge(false)
         .build()
         .expect("pi");
     pi.merkle_root = be_to_bytes32(bad_root);
@@ -327,7 +323,6 @@ fn merkle_wrong_sibling_verify_fails() {
     let correct_root = poseidon_hash_two_lanes(&program.commitment, BE::from(3u64), h0);
 
     let mut pi = pi::PublicInputsBuilder::from_program(&program)
-        .with_sponge(false)
         .build()
         .expect("pi");
     pi.merkle_root = be_to_bytes32(correct_root);

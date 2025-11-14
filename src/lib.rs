@@ -10,6 +10,7 @@ mod preflight;
 mod schedule;
 mod trace;
 mod utils;
+mod backend;
 
 pub mod compiler;
 pub mod error;
