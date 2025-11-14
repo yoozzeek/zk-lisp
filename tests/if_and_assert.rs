@@ -3,9 +3,10 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::ProofOptions;
+use zk_lisp::build_trace;
 use zk_lisp::compiler::compile_str;
 use zk_lisp::pi::{self, PublicInputs};
-use zk_lisp::prove::{ZkProver, build_trace, verify_proof};
+use zk_lisp::prove::{ZkProver, verify_proof};
 
 #[test]
 fn assert_positive() {
@@ -18,11 +19,12 @@ fn assert_positive() {
     (assert (eq1 a b))))
 ";
     let program = zk_lisp::compiler::compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_VM;
     pi.program_commitment = program.commitment;
+
+    let trace = build_trace(&program, &pi).expect("trace");
 
     let opts = ProofOptions::new(
         1,
@@ -52,11 +54,12 @@ fn assert_positive() {
 fn if_positive() {
     let src = "(def (main) (if 1 5 9))";
     let program = zk_lisp::compiler::compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_VM;
     pi.program_commitment = program.commitment;
+
+    let trace = build_trace(&program, &pi).expect("trace");
 
     let opts = ProofOptions::new(
         1,
@@ -94,11 +97,11 @@ fn assert_negative_fails() {
             assert!(msg.contains("assert: constant false"));
         }
         Ok(program) => {
-            let trace = build_trace(&program).expect("trace");
-
             let mut pi = PublicInputs::default();
             pi.feature_mask = pi::FM_VM;
             pi.program_commitment = program.commitment;
+
+            let trace = build_trace(&program, &pi).expect("trace");
 
             let opts = ProofOptions::new(
                 1,

@@ -9,7 +9,7 @@ use zk_lisp::layout::{Columns, STEPS_PER_LEVEL_P2};
 use zk_lisp::pi::{self};
 use zk_lisp::poseidon::poseidon_hash_two_lanes;
 use zk_lisp::prove::{self, ZkProver};
-use zk_lisp::schedule;
+use zk_lisp::{build_trace, pos_final, pos_map};
 
 #[derive(Clone, Debug)]
 pub struct MerkleRow {
@@ -41,12 +41,12 @@ impl<'a> MerkleOverlay<'a> {
 
     #[inline]
     pub fn row_map(&self, level: usize) -> usize {
-        level * self.steps + schedule::pos_map()
+        level * self.steps + pos_map()
     }
 
     #[inline]
     pub fn row_final(&self, level: usize) -> usize {
-        level * self.steps + schedule::pos_final()
+        level * self.steps + pos_final()
     }
 
     #[inline]
@@ -121,14 +121,14 @@ fn merkle_two_steps_positive_prove_verify() {
     let root = poseidon_hash_two_lanes(&program.commitment, BE::from(s1), h0);
 
     // PI: bind root only (Merkle)
-    let mut pi = pi::PublicInputsBuilder::for_program(&program)
-        .sponge(false)
+    let mut pi = pi::PublicInputsBuilder::from_program(&program)
+        .with_sponge(false)
         .build()
         .expect("pi");
-    pi.cn_root = be_to_bytes32(root);
+    pi.merkle_root = be_to_bytes32(root);
 
     // Build trace and check overlay
-    let trace = prove::build_trace(&program).expect("trace");
+    let trace = build_trace(&program, &pi).expect("trace");
     let ov = MerkleOverlay::new(&trace);
 
     // Find merkle levels
@@ -191,13 +191,13 @@ fn load_ca_positive_prove_verify() {
     let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
     let root = poseidon_hash_two_lanes(&program.commitment, BE::from(s1), h0);
 
-    let mut pi = pi::PublicInputsBuilder::for_program(&program)
-        .sponge(false)
+    let mut pi = pi::PublicInputsBuilder::from_program(&program)
+        .with_sponge(false)
         .build()
         .expect("pi");
-    pi.cn_root = be_to_bytes32(root);
+    pi.merkle_root = be_to_bytes32(root);
 
-    let trace = prove::build_trace(&program).expect("trace");
+    let trace = build_trace(&program, &pi).expect("trace");
     let prover = ZkProver::new(opts(), pi.clone());
     let proof = prover.prove(trace).expect("prove");
 
@@ -226,7 +226,7 @@ fn store_ca_new_root_overlay() {
     let s1 = 3u64;
 
     let program = compile_entry(src, &[leaf_new, d0, s0, d1, s1]).expect("compile");
-    let trace = prove::build_trace(&program).expect("trace");
+    let trace = build_trace(&program, &pi::PublicInputs::default()).expect("trace");
     let ov = MerkleOverlay::new(&trace);
 
     // find last merkle level
@@ -261,13 +261,13 @@ fn load_ca_wrong_sibling_verify_fails() {
     let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
     let correct_root = poseidon_hash_two_lanes(&program.commitment, BE::from(3u64), h0);
 
-    let mut pi = pi::PublicInputsBuilder::for_program(&program)
-        .sponge(false)
+    let mut pi = pi::PublicInputsBuilder::from_program(&program)
+        .with_sponge(false)
         .build()
         .expect("pi");
-    pi.cn_root = be_to_bytes32(correct_root);
+    pi.merkle_root = be_to_bytes32(correct_root);
 
-    let trace = prove::build_trace(&program).expect("trace");
+    let trace = build_trace(&program, &pi).expect("trace");
     let prover = ZkProver::new(opts(), pi.clone());
 
     if let Ok(proof) = prover.prove(trace) {
@@ -287,15 +287,15 @@ fn merkle_wrong_root_verify_fails() {
 
     // Bind incorrect root (arbitrary value)
     let bad_root = BE::from(123456789u64);
-    let mut pi = pi::PublicInputsBuilder::for_program(&program)
-        .sponge(false)
+    let mut pi = pi::PublicInputsBuilder::from_program(&program)
+        .with_sponge(false)
         .build()
         .expect("pi");
-    pi.cn_root = be_to_bytes32(bad_root);
+    pi.merkle_root = be_to_bytes32(bad_root);
 
     let pi_for_verify = pi.clone();
 
-    let trace = prove::build_trace(&program).expect("trace");
+    let trace = build_trace(&program, &pi_for_verify).expect("trace");
     let prover = ZkProver::new(opts(), pi);
 
     match prover.prove(trace) {
@@ -326,15 +326,15 @@ fn merkle_wrong_sibling_verify_fails() {
     let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
     let correct_root = poseidon_hash_two_lanes(&program.commitment, BE::from(3u64), h0);
 
-    let mut pi = pi::PublicInputsBuilder::for_program(&program)
-        .sponge(false)
+    let mut pi = pi::PublicInputsBuilder::from_program(&program)
+        .with_sponge(false)
         .build()
         .expect("pi");
-    pi.cn_root = be_to_bytes32(correct_root);
+    pi.merkle_root = be_to_bytes32(correct_root);
 
     let pi_for_verify = pi.clone();
 
-    let trace = prove::build_trace(&program).expect("trace");
+    let trace = build_trace(&program, &pi).expect("trace");
     let prover = ZkProver::new(opts(), pi);
 
     match prover.prove(trace) {

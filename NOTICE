@@ -1,0 +1,29 @@
+zk-lisp
+Copyright (C) 2025 Andrei Kochergin <zeek@tuta.com>
+
+In addition to the terms of the GNU Affero General Public License v3.0,
+the following additional terms apply to zk-lisp and all files in this
+repository that are copyright (c) 2024–2025 Andrei Kochergin, as
+permitted by section 7(b)-(d) of that license:
+
+1. Attribution preservation
+
+   You must preserve the following notices in all copies of the source
+   code of zk-lisp and in any substantial portions of it:
+
+     - The original copyright notice:
+         Copyright (c) 2025 Andrei Kochergin <zeek@tuta.com>
+
+     - The project name and origin notice:
+         This file is part of the zk-lisp project (https://github.com/yoozzeek/zk-lisp).
+
+2. Modified versions
+
+   If you modify this material and convey the modified version, you must
+   add a prominent notice stating that you modified it and the date of
+   modification. You must not misrepresent the origin of the material or
+   imply that your modified version is the original zk-lisp.
+
+These terms are intended as “additional permissions” regarding attribution
+and do not impose any further restrictions beyond those allowed by section 7
+of the GNU Affero General Public License v3.0.

@@ -5,8 +5,8 @@
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
 use zk_lisp::compiler::compile_entry;
-use zk_lisp::prove;
-use zk_lisp::{PreflightMode, pi};
+use zk_lisp::run_preflight;
+use zk_lisp::{PreflightMode, build_trace, pi};
 
 fn proof_opts() -> ProofOptions {
     ProofOptions::new(
@@ -29,10 +29,9 @@ fn store_then_load_same_address() {
          (load 42)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = prove::build_trace(&p).expect("trace");
-
+    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
     let cols = zk_lisp::layout::Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(7u64));
@@ -47,10 +46,9 @@ fn double_load_after_single_store_ok() {
          (load 7)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = prove::build_trace(&p).expect("trace");
-
+    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
     let cols = zk_lisp::layout::Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(11u64));
@@ -65,10 +63,9 @@ fn store_same_addr_updates_value() {
          (load 7)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = prove::build_trace(&p).expect("trace");
-
+    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
     let cols = zk_lisp::layout::Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(13u64));
@@ -83,10 +80,9 @@ fn switch_addr_then_load_new_ok() {
          (load 2)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = prove::build_trace(&p).expect("trace");
-
+    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
     let cols = zk_lisp::layout::Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(7u64));
@@ -100,10 +96,9 @@ fn store_then_load_different_addr_reads_zero_without_prior_store() {
          (load 2)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = prove::build_trace(&p).expect("trace");
-
+    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
     let cols = zk_lisp::layout::Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(0u64));
@@ -117,14 +112,13 @@ fn ram_perm_store_then_load_preflight_ok() {
          (load 10)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-
-    let pi = pi::PublicInputsBuilder::for_program(&p)
+    let pi = pi::PublicInputsBuilder::from_program(&p)
         .build()
         .expect("pi");
-    let trace = prove::build_trace_with_pi(&p, &pi).expect("trace");
-
+    let trace = build_trace(&p, &pi).expect("trace");
     let opts = proof_opts();
-    prove::preflight_check(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
+
+    run_preflight(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
 }
 
 #[test]
@@ -140,15 +134,15 @@ fn ram_perm_many_addresses_preflight_ok() {
          (load 3)
          (load 5)))
 ";
-    let p = compile_entry(src, &[]).expect("compile");
 
-    let pi = pi::PublicInputsBuilder::for_program(&p)
+    let p = compile_entry(src, &[]).expect("compile");
+    let pi = pi::PublicInputsBuilder::from_program(&p)
         .build()
         .expect("pi");
-    let trace = prove::build_trace_with_pi(&p, &pi).expect("trace");
-
+    let trace = build_trace(&p, &pi).expect("trace");
     let opts = proof_opts();
-    prove::preflight_check(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
+
+    run_preflight(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
 }
 
 #[test]
@@ -161,13 +155,13 @@ fn ram_perm_interleaved_preflight_ok() {
          (load 2)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let pi = pi::PublicInputsBuilder::for_program(&p)
+    let pi = pi::PublicInputsBuilder::from_program(&p)
         .build()
         .expect("pi");
-    let trace = prove::build_trace_with_pi(&p, &pi).expect("trace");
-
+    let trace = build_trace(&p, &pi).expect("trace");
     let opts = proof_opts();
-    prove::preflight_check(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
+
+    run_preflight(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
 }
 
 #[test]
@@ -179,13 +173,13 @@ fn ram_perm_double_store_then_load_preflight_ok() {
          (load 9)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let pi = pi::PublicInputsBuilder::for_program(&p)
+    let pi = pi::PublicInputsBuilder::from_program(&p)
         .build()
         .expect("pi");
-    let trace = prove::build_trace_with_pi(&p, &pi).expect("trace");
-
+    let trace = build_trace(&p, &pi).expect("trace");
     let opts = proof_opts();
-    prove::preflight_check(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
+
+    run_preflight(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
 }
 
 #[test]
@@ -198,10 +192,9 @@ fn computed_addr_and_value_ok() {
     (load a)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = prove::build_trace(&p).expect("trace");
-
+    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
     let cols = zk_lisp::layout::Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(9u64));
@@ -216,10 +209,9 @@ fn switch_addr_then_load_old_addr_reads_old_value() {
          (load 1)))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = prove::build_trace(&p).expect("trace");
-
+    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
     let cols = zk_lisp::layout::Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     // expected load 1 should read
@@ -233,10 +225,9 @@ fn load_before_store_reads_zero() {
     // active addr (which is none at start)
     let src = "(def (main) (load 1))";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = prove::build_trace(&p).expect("trace");
-
+    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
     let cols = zk_lisp::layout::Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(0u64));

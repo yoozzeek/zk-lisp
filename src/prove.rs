@@ -15,13 +15,11 @@ use winterfell::{
 };
 
 use crate::air::ZkLispAir;
-use crate::compiler::ir;
 use crate::pi::PublicInputs;
-use crate::trace::TraceBuilder;
 use crate::{
     error, layout,
     preflight::{PreflightMode, run as run_preflight},
-    schedule,
+    utils,
 };
 
 #[derive(Debug, Error)]
@@ -149,7 +147,7 @@ impl WProver for ZkWinterfellProver {
             // If caller provided explicit
             // VM_EXPECT (via builder/meta), respect it.
             if (pi.feature_mask & crate::pi::FM_VM_EXPECT) == 0 {
-                let (r, row) = Self::compute_vm_output_from_trace(trace);
+                let (r, row) = utils::vm_output_from_trace(trace);
                 pi.vm_out_reg = r;
                 pi.vm_out_row = row;
             }
@@ -208,37 +206,6 @@ impl WProver for ZkWinterfellProver {
     }
 }
 
-impl ZkWinterfellProver {
-    #[inline]
-    fn compute_vm_output_from_trace(trace: &TraceTable<BE>) -> (u8, u32) {
-        let cols = layout::Columns::baseline();
-        let steps = layout::STEPS_PER_LEVEL_P2;
-        let lvls = trace.length() / steps;
-
-        // Scan levels backwards and pick
-        // the most recent write at final row.
-        for lvl in (0..lvls).rev() {
-            let base = lvl * steps;
-            let row_fin = base + schedule::pos_final();
-
-            for i in 0..layout::NR {
-                if trace.get(cols.sel_dst0_index(i), row_fin) == BE::ONE {
-                    return (i as u8, (row_fin + 1) as u32);
-                }
-            }
-        }
-
-        // Fallback: no write observed;
-        // default to (r0, first row after final of level 0)
-        let row_fin0 = schedule::pos_final();
-        (0u8, (row_fin0 + 1) as u32)
-    }
-}
-
-pub fn compute_vm_output(trace: &TraceTable<BE>) -> (u8, u32) {
-    ZkWinterfellProver::compute_vm_output_from_trace(trace)
-}
-
 #[tracing::instrument(
     level = "info",
     skip(proof, pi, opts),
@@ -287,66 +254,4 @@ pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Resu
         Ok(Err(e)) => Err(Error::BackendSource(Box::new(e))),
         Err(_) => Err(Error::Backend("winterfell panic during verify".into())),
     }
-}
-
-pub fn build_trace(program: &ir::Program) -> error::Result<TraceTable<BE>> {
-    TraceBuilder::build_from_program(program)
-}
-
-/// Build trace using PublicInputs
-/// to seed VM args at level 0 map row.
-#[tracing::instrument(level = "info", skip(program, pi))]
-pub fn build_trace_with_pi(
-    program: &ir::Program,
-    pi: &PublicInputs,
-) -> error::Result<TraceTable<BE>> {
-    let mut trace = TraceBuilder::build_from_program(program)?;
-
-    if (pi.feature_mask & crate::pi::FM_VM) != 0 && !pi.vm_args.is_empty() {
-        let cols = layout::Columns::baseline();
-        let base0 = 0usize;
-        let row_map0 = base0 + schedule::pos_map();
-        let row_fin0 = base0 + schedule::pos_final();
-
-        // 1) seed args on map..=final
-        for (i, &a) in pi.vm_args.iter().enumerate() {
-            if i < layout::NR {
-                let val = BE::from(a);
-                for r in row_map0..=row_fin0 {
-                    trace.set(cols.r_index(i), r, val);
-                }
-            }
-        }
-
-        // 2) set next row after final
-        // for non-dst regs to equal cur (carry)
-        let row_next = row_fin0 + 1;
-        let level_end = base0 + layout::STEPS_PER_LEVEL_P2;
-
-        for i in 0..layout::NR {
-            let is_dst = trace.get(cols.sel_dst0_index(i), row_fin0) == BE::ONE;
-            if !is_dst {
-                if let Some(&a) = pi.vm_args.get(i) {
-                    let val = BE::from(a);
-
-                    // Set all rows after final within level
-                    // to the arg value for non-dst regs.
-                    for r in row_next..level_end {
-                        trace.set(cols.r_index(i), r, val);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(trace)
-}
-
-pub fn preflight_check(
-    mode: PreflightMode,
-    options: &ProofOptions,
-    pub_inputs: &PublicInputs,
-    trace: &TraceTable<BE>,
-) -> Result<(), Error> {
-    run_preflight(mode, options, pub_inputs, trace)
 }

@@ -7,31 +7,30 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{Assertion, EvaluationFrame, TransitionConstraintDegree};
 
 use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
-use crate::pi;
 use crate::schedule;
+use crate::utils;
 
-use super::{AirBlock, BlockCtx};
+use super::{AirModule, AirSharedContext};
 
-pub struct ScheduleBlock;
+pub(super) struct ScheduleAir;
 
-impl<E> AirBlock<E> for ScheduleBlock
-where
-    E: FieldElement<BaseField = BE> + From<BE>,
-{
-    fn push_degrees(_out: &mut Vec<TransitionConstraintDegree>) {}
+impl AirModule for ScheduleAir {
+    fn push_degrees(_ctx: &AirSharedContext, _out: &mut Vec<TransitionConstraintDegree>) {}
 
-    fn eval_block(
-        _ctx: &BlockCtx<E>,
+    fn eval_block<E>(
+        _ctx: &AirSharedContext,
         _frame: &EvaluationFrame<E>,
         _periodic: &[E],
         _result: &mut [E],
         _ix: &mut usize,
-    ) {
+    ) where
+        E: FieldElement<BaseField = BE> + From<BE>,
+    {
     }
 
     fn append_assertions(
-        ctx: &BlockCtx<E>,
-        out: &mut Vec<Assertion<<E as FieldElement>::BaseField>>,
+        ctx: &AirSharedContext,
+        out: &mut Vec<Assertion<<BE as FieldElement>::BaseField>>,
         last: usize,
     ) {
         // Per-level assertions:
@@ -106,9 +105,9 @@ where
 
             // Program commitment bound at the very first map row (level 0)
             if lvl == 0 {
-                let vm_enabled = ctx.pub_inputs.get_features().vm;
+                let vm_enabled = ctx.features.vm;
                 if vm_enabled {
-                    let pc = pi::be_from_le8(&ctx.pub_inputs.program_commitment);
+                    let pc = utils::be_from_le8(&ctx.pub_inputs.program_commitment);
                     out.push(Assertion::single(ctx.cols.pi_prog, row_map, pc));
 
                     // Bind PC=0 at the first map row

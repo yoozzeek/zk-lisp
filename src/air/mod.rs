@@ -2,26 +2,27 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
+mod alu;
+mod ctrl;
 mod merkle;
 mod mixers;
 mod poseidon;
 mod ram;
 mod rom;
 mod schedule;
-mod vm_alu;
-mod vm_ctrl;
 
-use crate::air::{
-    merkle::MerkleBlock, poseidon::PoseidonBlock, ram::RamBlock, rom::RomBlock,
-    schedule::ScheduleBlock, vm_alu::VmAluBlock, vm_ctrl::VmCtrlBlock,
-};
+use crate::air::{merkle::MerkleAir, poseidon::PoseidonAir, schedule::ScheduleAir};
 use crate::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::pi::{FeaturesMap, PublicInputs};
 use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
 use crate::schedule as schedule_core;
 use crate::{poseidon as poseidon_core, utils};
 
-use core::marker::PhantomData;
+use alu::VmAluAir;
+use ctrl::VmCtrlAir;
+use ram::RamAir;
+use rom::RomAir;
+use std::sync::Arc;
 use winterfell::math::FieldElement;
 use winterfell::math::fft;
 use winterfell::math::fields::f128::{BaseElement as BE, BaseElement};
@@ -30,79 +31,40 @@ use winterfell::{
     TransitionConstraintDegree,
 };
 
-pub struct BlockCtx<'a, E: FieldElement> {
-    pub cols: &'a Columns,
-    pub pub_inputs: &'a PublicInputs,
-    pub poseidon_rc: &'a [[BE; 12]; POSEIDON_ROUNDS],
-    pub poseidon_mds: &'a [[BE; 12]; 12],
-    pub poseidon_dom: &'a [BE; 2],
-    pub rom_rc: &'a [[BE; 3]; POSEIDON_ROUNDS],
-    pub rom_mds: &'a [[BE; 3]; 3],
-    pub rom_w_enc0: &'a [BE; 59],
-    pub rom_w_enc1: &'a [BE; 59],
-    _pd: PhantomData<E>,
-}
+trait AirModule {
+    fn push_degrees(ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>);
 
-impl<'a, E: FieldElement> BlockCtx<'a, E> {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        cols: &'a Columns,
-        pub_inputs: &'a PublicInputs,
-        poseidon_rc: &'a [[BE; 12]; POSEIDON_ROUNDS],
-        poseidon_mds: &'a [[BE; 12]; 12],
-        poseidon_dom: &'a [BE; 2],
-        rom_rc: &'a [[BE; 3]; POSEIDON_ROUNDS],
-        rom_mds: &'a [[BE; 3]; 3],
-        rom_w_enc0: &'a [BE; 59],
-        rom_w_enc1: &'a [BE; 59],
-    ) -> Self {
-        Self {
-            cols,
-            pub_inputs,
-            poseidon_rc,
-            poseidon_mds,
-            poseidon_dom,
-            rom_rc,
-            rom_mds,
-            rom_w_enc0,
-            rom_w_enc1,
-            _pd: PhantomData,
-        }
-    }
-}
-
-pub trait AirBlock<E: FieldElement> {
-    #[allow(dead_code)]
-    fn push_degrees(out: &mut Vec<TransitionConstraintDegree>);
-
-    fn eval_block(
-        ctx: &BlockCtx<E>,
+    fn eval_block<E>(
+        ctx: &AirSharedContext,
         frame: &EvaluationFrame<E>,
         periodic: &[E],
         result: &mut [E],
         ix: &mut usize,
-    );
+    ) where
+        E: FieldElement<BaseField = BE> + From<BE>;
 
-    fn append_assertions(ctx: &BlockCtx<E>, out: &mut Vec<Assertion<E::BaseField>>, last: usize) {
+    fn append_assertions(ctx: &AirSharedContext, out: &mut Vec<Assertion<BE>>, last: usize) {
         let _ = (ctx, out, last);
     }
 }
 
+struct AirSharedContext {
+    pub pub_inputs: PublicInputs,
+    pub cols: Columns,
+    pub features: FeaturesMap,
+    pub poseidon_rc: [[BaseElement; 12]; POSEIDON_ROUNDS],
+    pub poseidon_mds: [[BaseElement; 12]; 12],
+    pub poseidon_dom: [BaseElement; 2],
+    pub rom_rc: [[BaseElement; 3]; POSEIDON_ROUNDS],
+    pub rom_mds: [[BaseElement; 3]; 3],
+    pub rom_w_enc0: [BaseElement; 59],
+    pub rom_w_enc1: [BaseElement; 59],
+}
+
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct ZkLispAir {
     ctx: AirContext<BaseElement>,
-    pub_inputs: PublicInputs,
-    cols: Columns,
-    features: FeaturesMap,
-
-    poseidon_rc: [[BaseElement; 12]; POSEIDON_ROUNDS],
-    poseidon_mds: [[BaseElement; 12]; 12],
-    poseidon_dom: [BaseElement; 2],
-    rom_rc: [[BaseElement; 3]; POSEIDON_ROUNDS],
-    rom_mds: [[BaseElement; 3]; 3],
-    rom_w_enc0: [BaseElement; 59],
-    rom_w_enc1: [BaseElement; 59],
+    shared_ctx: Arc<AirSharedContext>,
 }
 
 impl Air for ZkLispAir {
@@ -111,88 +73,6 @@ impl Air for ZkLispAir {
 
     fn new(info: TraceInfo, pub_inputs: Self::PublicInputs, options: ProofOptions) -> Self {
         let mut degrees = Vec::new();
-
-        let features = pub_inputs.get_features();
-        if features.poseidon {
-            <PoseidonBlock as AirBlock<BE>>::push_degrees(&mut degrees);
-
-            // When VM is enabled AND sponge ops
-            // are present enforce VM->lane bindings
-            // on map rows of absorb operations.
-            if features.vm && features.sponge {
-                PoseidonBlock::push_degrees_vm_bind(&mut degrees);
-            }
-        }
-        if features.vm {
-            VmCtrlBlock::push_degrees(&mut degrees, features.sponge);
-            <VmAluBlock as AirBlock<BE>>::push_degrees(&mut degrees);
-        }
-        if features.ram {
-            <RamBlock as AirBlock<BE>>::push_degrees(&mut degrees);
-        }
-        if features.merkle {
-            <MerkleBlock as AirBlock<BE>>::push_degrees(&mut degrees);
-        }
-        // ROM accumulator when program
-        // commitment is provided.
-        if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-            <RomBlock as AirBlock<BE>>::push_degrees(&mut degrees);
-        }
-
-        // Boundary assertions count per level:
-        let levels = (info.length() / STEPS_PER_LEVEL_P2).max(1);
-
-        // Strict schedule/domain boundary
-        // assertions per level:
-        // ones at positions: (2 + R)
-        // zeros at non-positions: (4R + 2)
-        // domain tags at map: 2
-        let mut num_assertions =
-            (2 + POSEIDON_ROUNDS) * levels + (4 * POSEIDON_ROUNDS + 2) * levels + 2 * levels;
-
-        if features.vm {
-            // bind program commitment at lvl0 map row
-            // + PC=0 at lvl0 map when program
-            // commitment is set (added in schedule block).
-            num_assertions += 1;
-
-            if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-                num_assertions += 1; // PC=0 at lvl0 map
-            }
-
-            // bind VM args at lvl0 map row
-            num_assertions += pub_inputs.vm_args.len();
-        }
-        if features.vm && features.vm_expect {
-            // one assertion for expected
-            // output at computed row.
-            num_assertions += 1;
-        }
-        if num_assertions == 0 {
-            num_assertions = 1;
-        }
-
-        // ROM accumulator boundaries:
-        // - initial s0(map0) = 0 (1)
-        // - final s0(last) = f0 and s1(last) = f1 (2)
-        if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-            num_assertions += 3;
-        }
-
-        // Debug: print expected evals and context
-        Self::print_evals_debug(&pub_inputs, &info, &features, &degrees);
-
-        // Ensure at least one degree exists
-        let degrees = if degrees.is_empty() {
-            vec![TransitionConstraintDegree::new(1)]
-        } else {
-            degrees
-        };
-
-        let ctx = AirContext::new(info, degrees, num_assertions, options);
-        let cols = Columns::baseline();
-
-        Self::print_degrees_debug(&ctx, &pub_inputs, &features);
 
         let suite_id = &pub_inputs.program_commitment;
         let ps = poseidon_core::get_poseidon_suite(suite_id);
@@ -249,10 +129,10 @@ impl Air for ZkLispAir {
         let rom_w_enc0 = compute_weights(utils::ROM_W_SEED_0);
         let rom_w_enc1 = compute_weights(utils::ROM_W_SEED_1);
 
-        Self {
-            ctx,
-            pub_inputs,
-            cols,
+        let features = pub_inputs.get_features();
+        let shared_ctx = Arc::new(AirSharedContext {
+            pub_inputs: pub_inputs.clone(),
+            cols: Columns::baseline(),
             features,
             poseidon_rc: rc_arr,
             poseidon_mds: mds,
@@ -261,52 +141,124 @@ impl Air for ZkLispAir {
             rom_mds: rom_mds_arr,
             rom_w_enc0,
             rom_w_enc1,
+        });
+
+        // Init AIR modules
+        if features.poseidon {
+            PoseidonAir::push_degrees(&shared_ctx, &mut degrees);
         }
+
+        if features.vm {
+            VmCtrlAir::push_degrees(&shared_ctx, &mut degrees);
+            VmAluAir::push_degrees(&shared_ctx, &mut degrees);
+        }
+
+        if features.ram {
+            RamAir::push_degrees(&shared_ctx, &mut degrees);
+        }
+
+        if features.merkle {
+            MerkleAir::push_degrees(&shared_ctx, &mut degrees);
+        }
+
+        // ROM accumulator when program
+        // commitment is provided.
+        if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            RomAir::push_degrees(&shared_ctx, &mut degrees);
+        }
+
+        // Boundary assertions count per level
+        let levels = (info.length() / STEPS_PER_LEVEL_P2).max(1);
+
+        // Strict schedule/domain boundary
+        // assertions per level:
+        // ones at positions: (2 + R)
+        // zeros at non-positions: (4R + 2)
+        // domain tags at map: 2
+        let mut num_assertions =
+            (2 + POSEIDON_ROUNDS) * levels + (4 * POSEIDON_ROUNDS + 2) * levels + 2 * levels;
+
+        if features.vm {
+            // bind program commitment at lvl0 map row
+            // + PC=0 at lvl0 map when program
+            // commitment is set (added in schedule block).
+            num_assertions += 1;
+
+            if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+                num_assertions += 1; // PC=0 at lvl0 map
+            }
+
+            // bind VM args at lvl0 map row
+            num_assertions += pub_inputs.vm_args.len();
+        }
+        if features.vm && features.vm_expect {
+            // one assertion for expected
+            // output at computed row.
+            num_assertions += 1;
+        }
+        if num_assertions == 0 {
+            num_assertions = 1;
+        }
+
+        // ROM accumulator boundaries:
+        // - initial s0(map0) = 0 (1)
+        // - final s0(last) = f0 and s1(last) = f1 (2)
+        if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            num_assertions += 3;
+        }
+
+        print_evals_debug(&pub_inputs, &info, &features, &degrees);
+
+        // Ensure at least one degree exists
+        let degrees = if degrees.is_empty() {
+            vec![TransitionConstraintDegree::new(1)]
+        } else {
+            degrees
+        };
+
+        let ctx = AirContext::new(info, degrees, num_assertions, options);
+        print_degrees_debug(&ctx, &pub_inputs, &features);
+
+        Self { ctx, shared_ctx }
     }
 
     fn context(&self) -> &AirContext<Self::BaseField> {
         &self.ctx
     }
 
-    fn evaluate_transition<E: FieldElement<BaseField = Self::BaseField>>(
+    fn evaluate_transition<E>(
         &self,
         frame: &EvaluationFrame<E>,
         periodic_values: &[E],
         result: &mut [E],
-    ) {
-        let bctx = BlockCtx::<E>::new(
-            &self.cols,
-            &self.pub_inputs,
-            &self.poseidon_rc,
-            &self.poseidon_mds,
-            &self.poseidon_dom,
-            &self.rom_rc,
-            &self.rom_mds,
-            &self.rom_w_enc0,
-            &self.rom_w_enc1,
-        );
-
+    ) where
+        E: FieldElement<BaseField = Self::BaseField> + From<Self::BaseField>,
+    {
+        let ctx = &self.shared_ctx;
         let mut ix = 0usize;
 
-        if self.features.poseidon {
-            PoseidonBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+        if ctx.features.poseidon {
+            PoseidonAir::eval_block(&ctx, frame, periodic_values, result, &mut ix);
         }
-        if self.features.vm {
-            VmCtrlBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
-            VmAluBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+
+        if ctx.features.vm {
+            VmCtrlAir::eval_block(&ctx, frame, periodic_values, result, &mut ix);
+            VmAluAir::eval_block(&ctx, frame, periodic_values, result, &mut ix);
         }
-        if self.features.merkle {
-            MerkleBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+
+        if ctx.features.ram {
+            RamAir::eval_block(&ctx, frame, periodic_values, result, &mut ix);
         }
-        if self.features.ram {
-            RamBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+
+        if ctx.features.merkle {
+            MerkleAir::eval_block(&ctx, frame, periodic_values, result, &mut ix);
         }
 
         // ROM accumulator block is
         // independent of pose_active
         // and always runs when commit != 0
-        if self.pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-            RomBlock::eval_block(&bctx, frame, periodic_values, result, &mut ix);
+        if ctx.pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            RomAir::eval_block(&ctx, frame, periodic_values, result, &mut ix);
         }
 
         debug_assert_eq!(ix, result.len());
@@ -331,31 +283,20 @@ impl Air for ZkLispAir {
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {
+        let ctx = &self.shared_ctx;
         let last = self.ctx.trace_len().saturating_sub(1);
         let mut out = Vec::new();
 
-        // Schedule/domain-tag assertions (per-level)
-        let bctx_sched = BlockCtx::<BaseElement>::new(
-            &self.cols,
-            &self.pub_inputs,
-            &self.poseidon_rc,
-            &self.poseidon_mds,
-            &self.poseidon_dom,
-            &self.rom_rc,
-            &self.rom_mds,
-            &self.rom_w_enc0,
-            &self.rom_w_enc1,
-        );
-        ScheduleBlock::append_assertions(&bctx_sched, &mut out, last);
+        ScheduleAir::append_assertions(&ctx, &mut out, last);
 
         // VM PI binding assertions (inputs/outputs)
-        if self.features.vm {
+        if ctx.features.vm {
             // Bind inputs at level 0 map row
             let row_map0 = schedule_core::pos_map();
-            for (i, &a) in self.pub_inputs.vm_args.iter().enumerate() {
+            for (i, &a) in ctx.pub_inputs.vm_args.iter().enumerate() {
                 if i < NR {
                     out.push(Assertion::single(
-                        self.cols.r_index(i),
+                        ctx.cols.r_index(i),
                         row_map0,
                         BE::from(a),
                     ));
@@ -363,10 +304,10 @@ impl Air for ZkLispAir {
             }
 
             // Expected output at selected row
-            if self.features.vm_expect {
-                let row = (self.pub_inputs.vm_out_row as usize).min(last);
-                let reg = (self.pub_inputs.vm_out_reg as usize).min(NR - 1);
-                let exp = crate::pi::be_from_le8(&self.pub_inputs.vm_expected_bytes);
+            if ctx.features.vm_expect {
+                let row = (ctx.pub_inputs.vm_out_row as usize).min(last);
+                let reg = (ctx.pub_inputs.vm_out_reg as usize).min(NR - 1);
+                let exp = crate::utils::be_from_le8(&ctx.pub_inputs.vm_expected_bytes);
 
                 tracing::debug!(
                     target = "proof.air",
@@ -376,36 +317,38 @@ impl Air for ZkLispAir {
                     exp
                 );
 
-                out.push(Assertion::single(self.cols.r_index(reg), row, exp));
+                out.push(Assertion::single(ctx.cols.r_index(reg), row, exp));
             }
         }
 
         // ROM accumulator boundary assertions:
         // first map = 0, last = commit
-        if self.pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-            RomBlock::append_assertions(&bctx_sched, &mut out, last);
+        if ctx.pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            RomAir::append_assertions(&ctx, &mut out, last);
         }
 
-        if self.features.ram {
+        if ctx.features.ram {
             // Final equality of grand-products
             out.push(Assertion::single(
-                self.cols.ram_gp_unsorted,
+                ctx.cols.ram_gp_unsorted,
                 last,
                 BE::from(0u32),
             ));
             out.push(Assertion::single(
-                self.cols.ram_gp_sorted,
+                ctx.cols.ram_gp_sorted,
                 last,
                 BE::from(0u32),
             ));
         }
 
         if out.is_empty() {
-            out.push(Assertion::single(self.cols.mask, last, BE::from(0u32)));
+            out.push(Assertion::single(ctx.cols.mask, last, BE::from(0u32)));
         }
 
-        // Debug: validate assertion columns
-        let width = self.cols.width(self.pub_inputs.feature_mask);
+        // Debug:
+        // validate assertion columns
+        let width = ctx.cols.width(ctx.pub_inputs.feature_mask);
+
         let mut bad = 0usize;
         let mut max_col = 0usize;
 
@@ -427,6 +370,7 @@ impl Air for ZkLispAir {
             bad_cols=%bad,
             max_col=%max_col,
         );
+
         out
     }
 
@@ -519,138 +463,121 @@ impl Air for ZkLispAir {
     }
 }
 
-impl ZkLispAir {
-    #[inline]
-    #[allow(unused_assignments)]
-    fn print_evals_debug(
-        pub_inputs: &PublicInputs,
-        info: &TraceInfo,
-        features: &FeaturesMap,
-        degrees: &[TransitionConstraintDegree],
-    ) {
-        let trace_len = info.length();
-        let evals: Vec<usize> = degrees
-            .iter()
-            .map(|d| d.get_evaluation_degree(trace_len) - (trace_len - 1))
-            .collect();
+#[inline]
+#[allow(unused_assignments)]
+fn print_evals_debug(
+    pub_inputs: &PublicInputs,
+    info: &TraceInfo,
+    features: &FeaturesMap,
+    degrees: &[TransitionConstraintDegree],
+) {
+    let trace_len = info.length();
+    let evals: Vec<usize> = degrees
+        .iter()
+        .map(|d| d.get_evaluation_degree(trace_len) - (trace_len - 1))
+        .collect();
 
-        tracing::debug!(
-            target = "proof.air",
-            "expected_eval_degrees_len={} evals={:?}",
-            evals.len(),
-            evals
-        );
+    tracing::debug!(
+        target = "proof.air",
+        "expected_eval_degrees_len={} evals={:?}",
+        evals.len(),
+        evals
+    );
 
-        // print per-block slices for easier debugging
-        let mut ofs = 0usize;
-        let mut dbg: Vec<(&str, Vec<usize>)> = Vec::new();
+    // print per-block slices for easier debugging
+    let mut ofs = 0usize;
+    let mut dbg: Vec<(&str, Vec<usize>)> = Vec::new();
 
-        if features.poseidon {
-            let len = 12 * POSEIDON_ROUNDS + 12; // rounds + holds
-            dbg.push(("poseidon", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-        }
-        // ROM block
-        if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-            let len = 3 * POSEIDON_ROUNDS + 3 + 2;
-            dbg.push(("rom", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-        }
-        if features.vm {
-            // vm_ctrl dynamic length:
-            // 5*NR role booleans + 5 role sums + NR no-overlap
-            // + optional sponge: 10*NR lane booleans + 10 lane sums
-            // + 1 select-cond + 17 op booleans + 1 one-hot + 17 rom-op eq + 2 PC
-            let len = 5 * NR
-                + 5
-                + NR
-                + if features.sponge { 10 * NR + 10 } else { 0 }
-                + 1
-                + 17
-                + 1
-                + 17
-                + 2;
-            dbg.push(("vm_ctrl", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-
-            // vm_alu base (58)
-            let len = 58;
-            dbg.push(("vm_alu", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-        }
-        if features.ram {
-            // ram block length:
-            // 6 base constraints
-            // + 33 (32 bit booleanities + equality)
-            // + 1 final-row GP equality
-            // = 40
-            let len = 40;
-            dbg.push(("ram", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-        }
-
-        tracing::debug!(target = "proof.air", "per_block_evals: {:?}", dbg);
+    if features.poseidon {
+        let len = 12 * POSEIDON_ROUNDS + 12; // rounds + holds
+        dbg.push(("poseidon", evals[ofs..ofs + len].to_vec()));
+        ofs += len;
     }
 
-    #[inline]
-    #[allow(unused_assignments)]
-    fn print_degrees_debug(
-        ctx: &AirContext<BE>,
-        pub_inputs: &PublicInputs,
-        features: &FeaturesMap,
-    ) {
-        let tl = ctx.trace_len();
-        let ce = ctx.ce_domain_size();
-        let lde = ctx.lde_domain_size();
-        let blow_ce = ce / tl;
-
-        tracing::debug!(
-            target = "proof.air",
-            "ctx: trace_len={} ce_domain_size={} lde_domain_size={} ce_blowup={} exemptions={}",
-            tl,
-            ce,
-            lde,
-            blow_ce,
-            ctx.num_transition_exemptions()
-        );
-
-        let mut ofs = 0usize;
-        let mut ranges = Vec::new();
-
-        if features.poseidon {
-            let len = 12 * POSEIDON_ROUNDS + 12; // rounds + holds
-            ranges.push(("poseidon", ofs, ofs + len));
-            ofs += len;
-        }
-        if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-            let len = 3 * POSEIDON_ROUNDS + 3 + 2;
-            ranges.push(("rom", ofs, ofs + len));
-            ofs += len;
-        }
-        if features.vm {
-            let len = 5 * NR
-                + 5
-                + NR
-                + if features.sponge { 10 * NR + 10 } else { 0 }
-                + 1
-                + 17
-                + 1
-                + 17
-                + 2;
-            ranges.push(("vm_ctrl", ofs, ofs + len));
-            ofs += len;
-
-            let len2 = 58;
-            ranges.push(("vm_alu", ofs, ofs + len2));
-            ofs += len2;
-        }
-        if features.ram {
-            let len = 39;
-            ranges.push(("ram", ofs, ofs + len));
-            ofs += len;
-        }
-
-        tracing::debug!(target = "proof.air", "deg_ranges: {:?}", ranges);
-        tracing::debug!(target = "proof.air", "deg_len={} (computed)", ofs);
+    // ROM block
+    if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+        let len = 3 * POSEIDON_ROUNDS + 3 + 2;
+        dbg.push(("rom", evals[ofs..ofs + len].to_vec()));
+        ofs += len;
     }
+
+    if features.vm {
+        // vm_ctrl dynamic length:
+        // 5*NR role booleans + 5 role sums + NR no-overlap
+        // + optional sponge: 10*NR lane booleans + 10 lane sums
+        // + 1 select-cond + 17 op booleans + 1 one-hot + 17 rom-op eq + 2 PC
+        let len =
+            5 * NR + 5 + NR + if features.sponge { 10 * NR + 10 } else { 0 } + 1 + 17 + 1 + 17 + 2;
+        dbg.push(("vm_ctrl", evals[ofs..ofs + len].to_vec()));
+        ofs += len;
+
+        // vm_alu base (58)
+        let len = 58;
+        dbg.push(("vm_alu", evals[ofs..ofs + len].to_vec()));
+        ofs += len;
+    }
+
+    if features.ram {
+        // ram block length:
+        // 6 base constraints
+        // + 33 (32 bit booleanities + equality)
+        // + 1 final-row GP equality
+        // = 40
+        let len = 40;
+        dbg.push(("ram", evals[ofs..ofs + len].to_vec()));
+        ofs += len;
+    }
+
+    tracing::debug!(target = "proof.air", "per_block_evals: {:?}", dbg);
+}
+
+#[inline]
+#[allow(unused_assignments)]
+fn print_degrees_debug(ctx: &AirContext<BE>, pub_inputs: &PublicInputs, features: &FeaturesMap) {
+    let tl = ctx.trace_len();
+    let ce = ctx.ce_domain_size();
+    let lde = ctx.lde_domain_size();
+    let blow_ce = ce / tl;
+
+    tracing::debug!(
+        target = "proof.air",
+        "ctx: trace_len={} ce_domain_size={} lde_domain_size={} ce_blowup={} exemptions={}",
+        tl,
+        ce,
+        lde,
+        blow_ce,
+        ctx.num_transition_exemptions()
+    );
+
+    let mut ofs = 0usize;
+    let mut ranges = Vec::new();
+
+    if features.poseidon {
+        let len = 12 * POSEIDON_ROUNDS + 12; // rounds + holds
+        ranges.push(("poseidon", ofs, ofs + len));
+        ofs += len;
+    }
+    if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+        let len = 3 * POSEIDON_ROUNDS + 3 + 2;
+        ranges.push(("rom", ofs, ofs + len));
+        ofs += len;
+    }
+    if features.vm {
+        let len =
+            5 * NR + 5 + NR + if features.sponge { 10 * NR + 10 } else { 0 } + 1 + 17 + 1 + 17 + 2;
+        ranges.push(("vm_ctrl", ofs, ofs + len));
+        ofs += len;
+
+        let len2 = 58;
+        ranges.push(("vm_alu", ofs, ofs + len2));
+        ofs += len2;
+    }
+    if features.ram {
+        let len = 39;
+        ranges.push(("ram", ofs, ofs + len));
+        ofs += len;
+    }
+
+    tracing::debug!(target = "proof.air", "deg_ranges: {:?}", ranges);
+    tracing::debug!(target = "proof.air", "deg_len={} (computed)", ofs);
 }

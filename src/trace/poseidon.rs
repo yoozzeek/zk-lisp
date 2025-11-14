@@ -9,11 +9,11 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use crate::layout::{self, Columns, POSEIDON_ROUNDS};
 use crate::{poseidon, schedule};
 
-// Apply one Poseidon level at `level`
-// absorbing up to 10 inputs. Map row:
-// set lane[0..inputs.len()) = inputs, lane[10..12) = domain tags,
-// rest of rate lanes are set to 0.
-// Then apply R rounds and write final row.
+/// Apply one Poseidon level at `level`
+/// absorbing up to 10 inputs. Map row:
+/// set lane[0..inputs.len()) = inputs, lane[10..12) = domain tags,
+/// rest of rate lanes are set to 0.
+/// Then apply R rounds and write final row.
 pub fn apply_level_absorb(
     trace: &mut TraceTable<BE>,
     suite_id: &[u8; 32],
@@ -88,7 +88,10 @@ pub fn apply_level_absorb(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace::TraceBuilder;
+    use crate::compiler::{CompilerMetrics, builder, builder::Op};
+    use crate::layout::STEPS_PER_LEVEL_P2;
+    use crate::pi::PublicInputs;
+    use crate::trace::{build_empty_trace, build_trace};
 
     fn sponge_ref(inputs: &[BE], suite_id: &[u8; 32]) -> BE {
         let ps = poseidon::get_poseidon_suite(suite_id);
@@ -123,7 +126,7 @@ mod tests {
 
     pub fn copy_level(trace: &mut TraceTable<BE>, src_level: usize, dst_level: usize) {
         let cols = Columns::baseline();
-        let steps = layout::STEPS_PER_LEVEL_P2;
+        let steps = STEPS_PER_LEVEL_P2;
 
         let src_base = src_level * steps;
         let dst_base = dst_level * steps;
@@ -161,31 +164,31 @@ mod tests {
     #[test]
     fn absorb_0_2_10_match_reference() {
         let cols = Columns::baseline();
-        let mut trace = TraceBuilder::build_empty_levels(1);
+        let mut trace = build_empty_trace(1);
         let sid = [3u8; 32];
         let level = 0usize;
 
         // N=0
         apply_level_absorb(&mut trace, &sid, level, &[]);
 
-        let fin = level * layout::STEPS_PER_LEVEL_P2 + schedule::pos_final();
+        let fin = level * STEPS_PER_LEVEL_P2 + schedule::pos_final();
         let out0 = trace.get(cols.lane_index(0), fin);
         assert_eq!(out0, sponge_ref(&[], &sid));
 
         // N=2
-        let mut trace = TraceBuilder::build_empty_levels(1);
+        let mut trace = build_empty_trace(1);
         apply_level_absorb(&mut trace, &sid, level, &[BE::from(1u64), BE::from(2u64)]);
 
-        let fin = level * layout::STEPS_PER_LEVEL_P2 + schedule::pos_final();
+        let fin = level * STEPS_PER_LEVEL_P2 + schedule::pos_final();
         let out2 = trace.get(cols.lane_index(0), fin);
         assert_eq!(out2, sponge_ref(&[BE::from(1u64), BE::from(2u64)], &sid));
 
         // N=10
-        let mut trace = TraceBuilder::build_empty_levels(1);
+        let mut trace = build_empty_trace(1);
         let inputs: Vec<BE> = (0u64..10).map(BE::from).collect();
         apply_level_absorb(&mut trace, &sid, level, &inputs);
 
-        let fin = level * layout::STEPS_PER_LEVEL_P2 + schedule::pos_final();
+        let fin = level * STEPS_PER_LEVEL_P2 + schedule::pos_final();
         let out10 = trace.get(cols.lane_index(0), fin);
         assert_eq!(out10, sponge_ref(&inputs, &sid));
     }
@@ -193,7 +196,7 @@ mod tests {
     #[test]
     fn copy_level_clones_rows() {
         let cols = Columns::baseline();
-        let mut trace = TraceBuilder::build_empty_levels(2);
+        let mut trace = build_empty_trace(2);
         let sid = [9u8; 32];
 
         // write level 0
@@ -210,6 +213,34 @@ mod tests {
                 assert_eq!(
                     trace.get(cols.lane_index(i), r0),
                     trace.get(cols.lane_index(i), r1)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pose_active_zero_on_alu_levels() {
+        let metrics = CompilerMetrics::default();
+        let mut b = builder::ProgramBuilder::new();
+
+        b.push(Op::Const { dst: 0, imm: 7 });
+        b.push(Op::Const { dst: 1, imm: 9 });
+        b.push(Op::Add { dst: 2, a: 0, b: 1 });
+        b.push(Op::End);
+
+        let p = b.finalize(metrics);
+
+        let trace = build_trace(&p, &PublicInputs::default()).unwrap();
+        let cols = Columns::baseline();
+        let steps = STEPS_PER_LEVEL_P2;
+
+        for lvl in 0..p.ops.len() {
+            let base = lvl * steps;
+            for r in base..(base + steps) {
+                assert_eq!(
+                    trace.get(cols.pose_active, r),
+                    BE::ZERO,
+                    "lvl {lvl} row {r}"
                 );
             }
         }

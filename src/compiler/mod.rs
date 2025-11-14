@@ -3,14 +3,15 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 mod lower;
+mod metrics;
 
-pub mod ir;
+pub use metrics::CompilerMetrics;
+pub mod builder;
 
-use crate::compiler::ir::{Op, Program};
-use crate::{layout, schedule};
+use crate::compiler::builder::{Op, ProgramBuilder};
 
 use lower::{Ast, Atom, LowerCtx, Tok};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use thiserror::Error;
 use tracing::{debug, instrument};
 
@@ -39,22 +40,33 @@ pub enum Error {
     Limit(&'static str),
 }
 
-// register or immediate
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Binding {
-    Reg(u8),
-    Imm(u64),
+#[derive(Clone, Debug)]
+pub struct Program {
+    pub commitment: [u8; 32],
+    pub ops: Vec<Op>,
+    pub reg_count: u8,
+    pub out_reg: u8,
+    pub out_row: u32,
+    pub compiler_metrics: CompilerMetrics,
 }
 
-#[derive(Default, Debug, Clone)]
-struct Env {
-    // variable -> binding
-    vars: BTreeMap<String, Binding>,
-    // function name -> (params, body)
-    funs: BTreeMap<String, (Vec<String>, Ast)>,
+impl Program {
+    pub fn new(
+        commitment: [u8; 32],
+        ops: Vec<Op>,
+        reg_count: u8,
+        compiler_metrics: CompilerMetrics,
+    ) -> Self {
+        Self {
+            ops,
+            reg_count,
+            commitment,
+            out_reg: 0,
+            out_row: 0,
+            compiler_metrics,
+        }
+    }
 }
-
-impl Env {}
 
 #[instrument(level = "info", skip(src))]
 pub fn compile_str(src: &str) -> Result<Program, Error> {
@@ -64,21 +76,24 @@ pub fn compile_str(src: &str) -> Result<Program, Error> {
     let forms = parse(&toks)?;
     debug!(forms = forms.len(), "parsed");
 
-    let mut cx = LowerCtx::new();
+    let mut metrics = CompilerMetrics::default();
+    let mut builder = ProgramBuilder::new();
 
-    for f in forms {
-        lower::lower_top(&mut cx, f)?;
+    {
+        let mut cx = LowerCtx::new(&mut builder, &mut metrics);
+        for f in forms {
+            lower::lower_top(&mut cx, f)?;
+        }
     }
 
-    cx.b.push(Op::End);
+    builder.push(Op::End);
 
-    let peak_live = cx.peak_live();
-    let program = cx.b.finalize();
+    let program = builder.finalize(metrics);
 
     debug!(
         ops = program.ops.len(),
         reg_count = program.reg_count,
-        peak_live = peak_live,
+        peak_live = program.compiler_metrics.peak_live,
         "lowered"
     );
 
@@ -95,8 +110,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     debug!(forms = forms.len(), "parsed");
 
     // discover main signature
-    let mut main_params: Option<usize> = None;
-
+    let mut main_args: Option<usize> = None;
     for f in &forms {
         if let Ast::List(items) = f {
             if items.is_empty() {
@@ -108,7 +122,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
                     if let Some(Ast::List(hh)) = items.get(1) {
                         if let Some(Ast::Atom(Atom::Sym(name))) = hh.first() {
                             if name == "main" {
-                                main_params = Some(hh.len().saturating_sub(1));
+                                main_args = Some(hh.len().saturating_sub(1));
                             }
                         }
                     }
@@ -117,7 +131,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
         }
     }
 
-    let arity = main_params.ok_or_else(|| Error::InvalidForm("main: not found".into()))?;
+    let arity = main_args.ok_or_else(|| Error::InvalidForm("main: not found".into()))?;
     if arity != args.len() {
         return Err(Error::InvalidForm(format!(
             "main expects {} args (got {})",
@@ -127,18 +141,21 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     }
 
     // Build (main ARG0 ... ARGN)
-    let mut call_items: Vec<Ast> = Vec::with_capacity(1 + args.len());
-    call_items.push(Ast::Atom(Atom::Sym("main".to_string())));
+    let mut calls: Vec<Ast> = Vec::with_capacity(1 + args.len());
+    calls.push(Ast::Atom(Atom::Sym("main".to_string())));
 
     for &v in args {
-        call_items.push(Ast::Atom(Atom::Int(v)));
+        calls.push(Ast::Atom(Atom::Int(v)));
     }
 
-    let call_ast = Ast::List(call_items);
+    let call_ast = Ast::List(calls);
+
+    let mut metrics = CompilerMetrics::default();
+    let mut builder = ProgramBuilder::new();
 
     // Lower: first all top-level forms (defs, etc.),
     // then tail-call main and capture its result reg.
-    let mut cx = LowerCtx::new();
+    let mut cx = LowerCtx::new(&mut builder, &mut metrics);
     for f in forms {
         lower::lower_top(&mut cx, f)?;
     }
@@ -161,50 +178,19 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
         cx.emit_mov(0, res_reg);
     }
 
+    // Drop lowering context
+    drop(cx);
+
+    builder.push(Op::End);
+
     // Finalize program
-    cx.b.push(Op::End);
-
-    let peak_live = cx.peak_live();
-    let mut program = cx.b.finalize();
-
-    // Compute ProgramMeta from last write into r0
-    let mut last_lvl = 0usize;
-    for (i, op) in program.ops.iter().enumerate() {
-        match *op {
-            Op::Const { dst, .. }
-            | Op::Mov { dst, .. }
-            | Op::Add { dst, .. }
-            | Op::Sub { dst, .. }
-            | Op::Mul { dst, .. }
-            | Op::Neg { dst, .. }
-            | Op::Eq { dst, .. }
-            | Op::Select { dst, .. }
-            | Op::SSqueeze { dst }
-            | Op::Assert { dst, .. } => {
-                if dst == 0 {
-                    last_lvl = i;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let steps = layout::STEPS_PER_LEVEL_P2;
-    let pos_fin = schedule::pos_final();
-
-    program.meta.out_reg = 0;
-    program.meta.out_row = (last_lvl * steps + pos_fin + 1) as u32;
-    program.meta.peak_live = peak_live.min(u16::MAX as usize) as u16;
-    program.meta.reuse_dst_count = cx.stats.reuse_dst;
-    program.meta.su_reorders_count = cx.stats.su_reorders;
-    program.meta.balanced_chains_count = cx.stats.balanced_chains;
-    program.meta.mov_elided_count = cx.stats.mov_elided;
+    let program = builder.finalize(metrics);
 
     debug!(
         ops = program.ops.len(),
         reg_count = program.reg_count,
-        out_row = program.meta.out_row,
-        peak_live = peak_live,
+        out_row = program.out_row,
+        peak_live = program.compiler_metrics.peak_live,
         "entry lowered",
     );
 

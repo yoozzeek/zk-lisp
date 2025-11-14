@@ -4,20 +4,17 @@
 
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
-use winterfell::{Assertion, EvaluationFrame, TransitionConstraintDegree};
+use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
-use crate::pi;
+use crate::utils;
 
-use super::{AirBlock, BlockCtx};
+use super::{AirModule, AirSharedContext};
 
-pub struct MerkleBlock;
+pub(super) struct MerkleAir;
 
-impl<E> AirBlock<E> for MerkleBlock
-where
-    E: FieldElement<BaseField = BE> + From<BE>,
-{
-    fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
+impl AirModule for MerkleAir {
+    fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
         // dir boolean at map
         out.push(TransitionConstraintDegree::with_cycles(
             3,
@@ -55,13 +52,15 @@ where
         ));
     }
 
-    fn eval_block(
-        ctx: &BlockCtx<E>,
+    fn eval_block<E>(
+        ctx: &AirSharedContext,
         frame: &EvaluationFrame<E>,
         periodic: &[E],
         result: &mut [E],
         ix: &mut usize,
-    ) {
+    ) where
+        E: FieldElement<BaseField = BE> + From<BE>,
+    {
         let cur = frame.current();
         let next = frame.next();
 
@@ -108,7 +107,7 @@ where
         // last-level root binding at final
         // if merkle_last==1: acc == root
         let is_last = cur[ctx.cols.merkle_last];
-        let root = E::from(pi::be_from_le8(&ctx.pub_inputs.cn_root));
+        let root = E::from(utils::be_from_le8(&ctx.pub_inputs.merkle_root));
         result[*ix] = p_final * g * is_last * (cur[ctx.cols.merkle_acc] - root);
         *ix += 1;
 
@@ -121,13 +120,5 @@ where
         result[*ix] =
             p_pad_last * g * g_next * (next[ctx.cols.merkle_acc] - cur[ctx.cols.merkle_acc]);
         *ix += 1;
-    }
-
-    fn append_assertions(
-        _ctx: &BlockCtx<E>,
-        _out: &mut Vec<Assertion<<E as FieldElement>::BaseField>>,
-        _last: usize,
-    ) {
-        // All ties are inside transitions via gated constraints
     }
 }

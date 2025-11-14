@@ -22,7 +22,7 @@ pub enum PreflightMode {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct PreflightReport {
+pub struct PreflightReport {
     pub row: usize,
     pub constraint_idx: usize,
     pub constraint_val: String,
@@ -39,7 +39,7 @@ pub(crate) struct PreflightReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct RamSnap {
+pub struct RamSnap {
     pub sorted: bool,
     pub addr_cur: String,
     pub addr_next: String,
@@ -56,7 +56,7 @@ pub(crate) struct RamSnap {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct VmSnap {
+pub struct VmSnap {
     pub dst_reg: Option<usize>,
     pub a_val: String,
     pub b_val: String,
@@ -64,7 +64,7 @@ pub(crate) struct VmSnap {
     pub lhs: String,
 }
 
-pub(crate) fn run(
+pub fn run(
     mode: PreflightMode,
     options: &ProofOptions,
     pub_inputs: &PublicInputs,
@@ -127,6 +127,7 @@ pub(crate) fn run(
         );
     }
 
+    let compilers_stats = &pub_inputs.compiler_stats;
     let mut frame = EvaluationFrame::<BE>::new(trace.width());
     let last_row = trace.length().saturating_sub(1);
 
@@ -354,7 +355,7 @@ pub(crate) fn run(
                 lanes_exp,
                 ram: ram_snap,
                 vm: vm_snap,
-                peak_live: Some(pub_inputs.compiler_peak_live),
+                peak_live: Some(pub_inputs.compiler_stats.peak_live),
             };
 
             match mode {
@@ -380,16 +381,16 @@ pub(crate) fn run(
 
     match mode {
         PreflightMode::Console => {
-            let peak = pub_inputs.compiler_peak_live;
+            let peak = pub_inputs.compiler_stats.peak_live;
             println!(
                 "preflight: OK (rows={}, constraints={}, peak_live={}, reuse_dst={}, su_reorders={}, balanced_chains={}, mov_elided={})",
                 trace.length(),
                 res_len,
                 peak,
-                pub_inputs.compiler_reuse_dst,
-                pub_inputs.compiler_su_reorders,
-                pub_inputs.compiler_balanced_chains,
-                pub_inputs.compiler_mov_elided,
+                pub_inputs.compiler_stats.reuse_dst,
+                pub_inputs.compiler_stats.su_reorders,
+                pub_inputs.compiler_stats.balanced_chains,
+                pub_inputs.compiler_stats.mov_elided,
             );
         }
         PreflightMode::Json => {
@@ -399,11 +400,11 @@ pub(crate) fn run(
                     "ok": true,
                     "rows": trace.length(),
                     "constraints": res_len,
-                    "peak_live": pub_inputs.compiler_peak_live,
-                    "reuse_dst": pub_inputs.compiler_reuse_dst,
-                    "su_reorders": pub_inputs.compiler_su_reorders,
-                    "balanced_chains": pub_inputs.compiler_balanced_chains,
-                    "mov_elided": pub_inputs.compiler_mov_elided
+                    "peak_live": compilers_stats.reuse_dst,
+                    "reuse_dst": compilers_stats.su_reorders,
+                    "su_reorders": compilers_stats.su_reorders,
+                    "balanced_chains": compilers_stats.balanced_chains,
+                    "mov_elided": compilers_stats.mov_elided
                 })
             );
         }

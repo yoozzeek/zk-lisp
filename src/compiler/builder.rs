@@ -2,7 +2,10 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
-//! Intermediate representation for zk-lisp
+use crate::commit::program_commitment;
+use crate::compiler::Program;
+use crate::compiler::metrics::CompilerMetrics;
+use crate::{layout, schedule};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -140,37 +143,7 @@ pub enum Op {
     End,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ProgramMeta {
-    pub out_reg: u8,
-    pub out_row: u32,
-    pub peak_live: u16,
-    pub reuse_dst_count: u32,
-    pub su_reorders_count: u32,
-    pub balanced_chains_count: u32,
-    pub mov_elided_count: u32,
-}
-
-#[derive(Clone, Debug)]
-pub struct Program {
-    pub ops: Vec<Op>,
-    pub reg_count: u8,
-    pub commitment: [u8; 32],
-    pub meta: ProgramMeta,
-}
-
-impl Program {
-    pub fn new(ops: Vec<Op>, reg_count: u8, commitment: [u8; 32], meta: ProgramMeta) -> Self {
-        Self {
-            ops,
-            reg_count,
-            commitment,
-            meta,
-        }
-    }
-}
-
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct ProgramBuilder {
     ops: Vec<Op>,
     reg_max: u8,
@@ -178,7 +151,10 @@ pub struct ProgramBuilder {
 
 impl ProgramBuilder {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            ops: Vec::new(),
+            reg_max: 0,
+        }
     }
 
     pub fn push(&mut self, op: Op) {
@@ -305,25 +281,42 @@ impl ProgramBuilder {
         self.ops.push(op);
     }
 
-    pub fn finalize(self) -> Program {
+    pub fn finalize(self, metrics: CompilerMetrics) -> Program {
         let reg_count = self.reg_max;
         let bytes = encode_ops(&self.ops);
-        let commitment = crate::commit::program_commitment(&bytes);
+        let commitment = program_commitment(&bytes);
 
-        // ProgramMeta is computed at compile_entry time
-        // for programs generated from source; for ad-hoc
-        // ProgramBuilder usage we leave it as default (0,0).
-        let meta = ProgramMeta {
-            out_reg: 0,
-            out_row: 0,
-            peak_live: 0,
-            reuse_dst_count: 0,
-            su_reorders_count: 0,
-            balanced_chains_count: 0,
-            mov_elided_count: 0,
-        };
+        let mut program = Program::new(commitment, self.ops, reg_count, metrics);
 
-        Program::new(self.ops, reg_count, commitment, meta)
+        // Compute last_lvl from last write into r0
+        let mut last_lvl = 0usize;
+        for (i, op) in program.ops.iter().enumerate() {
+            match *op {
+                Op::Const { dst, .. }
+                | Op::Mov { dst, .. }
+                | Op::Add { dst, .. }
+                | Op::Sub { dst, .. }
+                | Op::Mul { dst, .. }
+                | Op::Neg { dst, .. }
+                | Op::Eq { dst, .. }
+                | Op::Select { dst, .. }
+                | Op::SSqueeze { dst }
+                | Op::Assert { dst, .. } => {
+                    if dst == 0 {
+                        last_lvl = i;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let steps = layout::STEPS_PER_LEVEL_P2;
+        let pos_fin = schedule::pos_final();
+
+        program.out_reg = 0;
+        program.out_row = (last_lvl * steps + pos_fin + 1) as u32;
+
+        program
     }
 
     #[inline]
@@ -398,6 +391,7 @@ pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
             SAbsorbN { ref regs } => {
                 out.push(0x10);
                 out.push(regs.len() as u8);
+
                 for &r in regs {
                     out.push(r);
                 }
@@ -498,13 +492,15 @@ mod tests {
 
     #[test]
     fn build_and_commit() {
+        let metrics = CompilerMetrics::default();
         let mut b = ProgramBuilder::new();
+
         b.push(Op::Const { dst: 0, imm: 7 });
         b.push(Op::Const { dst: 1, imm: 9 });
         b.push(Op::Add { dst: 2, a: 0, b: 1 });
         b.push(Op::End);
 
-        let p = b.finalize();
+        let p = b.finalize(metrics);
         assert_eq!(p.reg_count, 3);
         assert_eq!(p.ops.len(), 4);
         assert_eq!(p.commitment.len(), 32);

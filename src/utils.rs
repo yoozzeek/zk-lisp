@@ -3,11 +3,12 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use crate::layout::{self, NR};
+use crate::schedule;
 
 use std::sync::OnceLock;
-use winterfell::TraceTable;
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
+use winterfell::{Trace, TraceTable};
 
 pub const ROM_W_SEED_0: u32 = 17;
 pub const ROM_W_SEED_1: u32 = 1037;
@@ -195,4 +196,40 @@ pub fn rom_linear_encode_from_trace(
     sum += trace.get(cols.eq_inv, row) * weights[k];
 
     sum
+}
+
+#[inline]
+pub fn vm_output_from_trace(trace: &TraceTable<BE>) -> (u8, u32) {
+    let cols = layout::Columns::baseline();
+    let steps = layout::STEPS_PER_LEVEL_P2;
+    let lvls = trace.length() / steps;
+
+    // Scan levels backwards and pick
+    // the most recent write at final row.
+    for lvl in (0..lvls).rev() {
+        let base = lvl * steps;
+        let row_fin = base + schedule::pos_final();
+
+        for i in 0..NR {
+            if trace.get(cols.sel_dst0_index(i), row_fin) == BE::ONE {
+                return (i as u8, (row_fin + 1) as u32);
+            }
+        }
+    }
+
+    // Fallback: no write observed;
+    // default to (r0, first row after final of level 0)
+    let row_fin0 = schedule::pos_final();
+    (0u8, (row_fin0 + 1) as u32)
+}
+
+pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {
+    // fold first 16 bytes (LE) into
+    // a field element: lo + hi * 2^64.
+    let mut lo = [0u8; 8];
+    let mut hi = [0u8; 8];
+    lo.copy_from_slice(&bytes32[0..8]);
+    hi.copy_from_slice(&bytes32[8..16]);
+
+    BE::from(u64::from_le_bytes(lo)) + BE::from(u64::from_le_bytes(hi)) * pow2_64()
 }

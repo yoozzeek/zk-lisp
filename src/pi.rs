@@ -5,9 +5,8 @@
 //! Public inputs and features
 
 use crate::commit::program_field_commitment;
-use crate::compiler::ir;
 use crate::error::{Error, Result};
-use crate::utils;
+use crate::{compiler, compiler::CompilerMetrics, utils};
 
 use winterfell::math::fields::f128::BaseElement as BE;
 
@@ -31,26 +30,17 @@ pub struct FeaturesMap {
 
 #[derive(Clone, Debug, Default)]
 pub struct PublicInputs {
-    pub feature_mask: u64,
     pub program_commitment: [u8; 32],
-    pub cn_root: [u8; 32],
+    pub merkle_root: [u8; 32],
     pub program_commitment_f0: BE,
     pub program_commitment_f1: BE,
-
-    // VM PI binding:
-    // inputs and expected output
     pub vm_args: Vec<u64>,
     pub vm_out_reg: u8,
     pub vm_out_row: u32,
     pub vm_expected_bytes: [u8; 32],
 
-    // Compiler metrics; not part
-    // of cryptographic PI encoding
-    pub compiler_peak_live: u16,
-    pub compiler_reuse_dst: u32,
-    pub compiler_su_reorders: u32,
-    pub compiler_balanced_chains: u32,
-    pub compiler_mov_elided: u32,
+    pub feature_mask: u64,
+    pub compiler_stats: CompilerMetrics,
 }
 
 pub struct PublicInputsBuilder {
@@ -58,35 +48,31 @@ pub struct PublicInputsBuilder {
 }
 
 impl PublicInputsBuilder {
-    pub fn for_program(program: &ir::Program) -> Self {
-        let mut b = Self {
-            pi: PublicInputs::default(),
+    pub fn from_program(program: &compiler::Program) -> Self {
+        let mut builder = Self {
+            pi: PublicInputs {
+                program_commitment: program.commitment,
+                ..PublicInputs::default()
+            },
         };
-
-        b.pi.program_commitment = program.commitment;
 
         // derive internal field-friendly
         // commitment from Blake3 digest.
         let fc = program_field_commitment(&program.commitment);
-        b.pi.program_commitment_f0 = fc[0];
-        b.pi.program_commitment_f1 = fc[1];
+        builder.pi.program_commitment_f0 = fc[0];
+        builder.pi.program_commitment_f1 = fc[1];
 
         // infer features from program ops
-        b.infer_features(program);
+        builder.infer_features(program);
 
-        // carry compiler metrics
-        // for observability.
-        b.pi.compiler_peak_live = program.meta.peak_live;
-        b.pi.compiler_reuse_dst = program.meta.reuse_dst_count;
-        b.pi.compiler_su_reorders = program.meta.su_reorders_count;
-        b.pi.compiler_balanced_chains = program.meta.balanced_chains_count;
-        b.pi.compiler_mov_elided = program.meta.mov_elided_count;
+        builder.pi.vm_out_reg = program.out_reg;
+        builder.pi.vm_out_row = program.out_row;
 
-        b
+        builder
     }
 
-    fn infer_features(&mut self, program: &ir::Program) {
-        use crate::compiler::ir::Op::*;
+    fn infer_features(&mut self, program: &compiler::Program) {
+        use crate::compiler::builder::Op::*;
 
         let mut vm = false;
         let mut pose = false;
@@ -145,32 +131,22 @@ impl PublicInputsBuilder {
         }
     }
 
-    pub fn vm_args(mut self, args: &[u64]) -> Self {
+    pub fn with_args(mut self, args: &[u64]) -> Self {
         self.pi.vm_args = args.to_vec();
         self.pi.feature_mask |= FM_VM;
 
         self
     }
 
-    pub fn vm_expect_from_meta(mut self, program: &ir::Program, expected: &[u8; 32]) -> Self {
-        self.pi.vm_out_reg = program.meta.out_reg;
-        self.pi.vm_out_row = program.meta.out_row;
+    pub fn with_expect(mut self, expected: &[u8; 32]) -> Self {
         self.pi.vm_expected_bytes = *expected;
         self.pi.feature_mask |= FM_VM | FM_VM_EXPECT;
 
         self
     }
 
-    pub fn vm_expect_at(mut self, reg: u8, row: u32, expected: &[u8; 32]) -> Self {
-        self.pi.vm_out_reg = reg;
-        self.pi.vm_out_row = row;
-        self.pi.vm_expected_bytes = *expected;
-        self.pi.feature_mask |= FM_VM | FM_VM_EXPECT;
-
-        self
-    }
-
-    pub fn sponge(mut self, enabled: bool) -> Self {
+    #[deprecated]
+    pub fn with_sponge(mut self, enabled: bool) -> Self {
         if enabled {
             self.pi.feature_mask |= FM_SPONGE;
         } else {
@@ -232,25 +208,14 @@ impl winterfell::math::ToElements<BE> for PublicInputs {
     fn to_elements(&self) -> Vec<BE> {
         let out = vec![
             BE::from(self.feature_mask),
-            be_from_le8(&self.program_commitment),
-            be_from_le8(&self.cn_root),
+            utils::be_from_le8(&self.program_commitment),
+            utils::be_from_le8(&self.merkle_root),
             self.program_commitment_f0,
             self.program_commitment_f1,
         ];
 
         out
     }
-}
-
-pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {
-    // fold first 16 bytes (LE) into
-    // a field element: lo + hi * 2^64.
-    let mut lo = [0u8; 8];
-    let mut hi = [0u8; 8];
-    lo.copy_from_slice(&bytes32[0..8]);
-    hi.copy_from_slice(&bytes32[8..16]);
-
-    BE::from(u64::from_le_bytes(lo)) + BE::from(u64::from_le_bytes(hi)) * utils::pow2_64()
 }
 
 #[cfg(test)]

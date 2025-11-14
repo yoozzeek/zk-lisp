@@ -6,16 +6,13 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
-use super::{AirBlock, BlockCtx};
+use crate::air::{AirModule, AirSharedContext};
 use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
-pub struct RamBlock;
+pub(super) struct RamAir;
 
-impl<E> AirBlock<E> for RamBlock
-where
-    E: FieldElement<BaseField = BE> + From<BE>,
-{
-    fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
+impl AirModule for RamAir {
+    fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
         // Carry gp_unsorted across rows,
         // update at final+event
         out.push(TransitionConstraintDegree::with_cycles(
@@ -76,13 +73,15 @@ where
         ));
     }
 
-    fn eval_block(
-        ctx: &BlockCtx<E>,
+    fn eval_block<E>(
+        ctx: &AirSharedContext,
         frame: &EvaluationFrame<E>,
         periodic: &[E],
         result: &mut [E],
         ix: &mut usize,
-    ) {
+    ) where
+        E: FieldElement<BaseField = BE> + From<BE>,
+    {
         let cur = frame.current();
         let next = frame.next();
 

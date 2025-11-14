@@ -5,21 +5,20 @@
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp::compiler::compile_entry;
 use zk_lisp::layout::Columns;
-use zk_lisp::pi;
-use zk_lisp::prove::{self, build_trace_with_pi};
+use zk_lisp::prove::{self};
+use zk_lisp::{build_trace, pi};
 
 #[test]
 fn stack_push_pop_simple() {
     let src = "(def (main) (begin (push 7) (pop)))";
     let program = compile_entry(src, &[]).expect("compile");
 
-    let pi = pi::PublicInputsBuilder::for_program(&program)
+    let pi = pi::PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
-    let trace = build_trace_with_pi(&program, &pi).expect("trace");
-
+    let trace = build_trace(&program, &pi).expect("trace");
     let cols = Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(7u64));
@@ -37,14 +36,12 @@ fn stack_push_push_pop_add() {
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");
-
-    let pi = pi::PublicInputsBuilder::for_program(&program)
+    let pi = pi::PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
-    let trace = build_trace_with_pi(&program, &pi).expect("trace");
-
+    let trace = build_trace(&program, &pi).expect("trace");
     let cols = Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(18u64));
@@ -65,14 +62,12 @@ fn stack_fill_empty_sum() {
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");
-
-    let pi = pi::PublicInputsBuilder::for_program(&program)
+    let pi = pi::PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
-    let trace = build_trace_with_pi(&program, &pi).expect("trace");
-
+    let trace = build_trace(&program, &pi).expect("trace");
     let cols = Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(15u64));
@@ -96,14 +91,12 @@ fn stack_with_load_store_interop() {
 "#;
 
     let program = compile_entry(src, &[]).expect("compile");
-
-    let pi = pi::PublicInputsBuilder::for_program(&program)
+    let pi = pi::PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi");
-    let trace = build_trace_with_pi(&program, &pi).expect("trace");
-
+    let trace = build_trace(&program, &pi).expect("trace");
     let cols = Columns::baseline();
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     assert_eq!(v, BE::from(16u64));

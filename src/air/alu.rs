@@ -6,17 +6,14 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
-use super::{AirBlock, BlockCtx};
-use crate::air::mixers;
+use crate::air::AirModule;
+use crate::air::{AirSharedContext, mixers};
 use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
-pub struct VmAluBlock;
+pub(super) struct VmAluAir;
 
-impl<E> AirBlock<E> for VmAluBlock
-where
-    E: FieldElement<BaseField = BE> + From<BE>,
-{
-    fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
+impl AirModule for VmAluAir {
+    fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
         // carry registers on non-final rows
         for _ in 0..NR {
             out.push(TransitionConstraintDegree::with_cycles(
@@ -96,13 +93,15 @@ where
         }
     }
 
-    fn eval_block(
-        ctx: &BlockCtx<E>,
+    fn eval_block<E>(
+        ctx: &AirSharedContext,
         frame: &EvaluationFrame<E>,
         periodic: &[E],
         result: &mut [E],
         ix: &mut usize,
-    ) {
+    ) where
+        E: FieldElement<BaseField = BE> + From<BE>,
+    {
         let cur = frame.current();
         let next = frame.next();
 
@@ -340,37 +339,34 @@ mod tests {
         let mut res = vec![BE::ZERO; 1024];
         let mut ix = 0usize;
 
-        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let mds_box = Box::new({
+        let rc_box = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_box = {
             let mut m = [[BE::ZERO; 12]; 12];
             for (i, row) in m.iter_mut().enumerate() {
                 row[i] = BE::ONE;
             }
 
             m
-        });
-        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
-        let w_enc0_box = Box::new([BE::ZERO; 59]);
-        let w_enc1_box = Box::new([BE::ZERO; 59]);
+        };
+        let rc3_box = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_box = [[BE::ZERO; 3]; 3];
+        let w_enc0_box = [BE::ZERO; 59];
+        let w_enc1_box = [BE::ZERO; 59];
 
-        VmAluBlock::eval_block(
-            &BlockCtx::new(
-                &cols,
-                &Default::default(),
-                &rc_box,
-                &mds_box,
-                &Box::new([BE::ZERO; 2]),
-                &rc3_box,
-                &mds3_box,
-                &w_enc0_box,
-                &w_enc1_box,
-            ),
-            &frame,
-            &periodic,
-            &mut res,
-            &mut ix,
-        );
+        let ctx = &AirSharedContext {
+            pub_inputs: Default::default(),
+            cols,
+            features: Default::default(),
+            poseidon_rc: rc_box,
+            poseidon_mds: mds_box,
+            poseidon_dom: [BE::ZERO; 2],
+            rom_rc: rc3_box,
+            rom_mds: mds3_box,
+            rom_w_enc0: w_enc0_box,
+            rom_w_enc1: w_enc1_box,
+        };
+
+        VmAluAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
 
         assert!(res.iter().any(|v| *v != BE::ZERO));
     }

@@ -3,9 +3,10 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::ProofOptions;
+use zk_lisp::build_trace;
 use zk_lisp::compiler::compile_str;
 use zk_lisp::pi::{self, PublicInputs};
-use zk_lisp::prove::{ZkProver, build_trace, verify_proof};
+use zk_lisp::prove::{ZkProver, verify_proof};
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -22,11 +23,12 @@ fn opts() -> ProofOptions {
 
 fn prove_verify_ok(src: &str) {
     let program = compile_str(src).expect("compile");
-    let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;
     pi.program_commitment = program.commitment;
+
+    let trace = build_trace(&program, &pi).expect("trace");
 
     let opts = opts();
     let prover = ZkProver::new(opts.clone(), pi.clone());
@@ -44,12 +46,12 @@ fn prove_verify_ok(src: &str) {
 
 fn prove_verify_fail(src: &str) {
     let program = compile_str(src).expect("compile");
-    let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;
     pi.program_commitment = program.commitment;
 
+    let trace = build_trace(&program, &pi).expect("trace");
     let opts = opts();
     let prover = ZkProver::new(opts.clone(), pi.clone());
 

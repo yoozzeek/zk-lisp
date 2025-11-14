@@ -6,18 +6,16 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{Assertion, EvaluationFrame, TransitionConstraintDegree};
 
-use super::{AirBlock, BlockCtx};
 use crate::commit::program_field_commitment;
 use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::utils;
 
-pub struct RomBlock;
+use crate::air::{AirModule, AirSharedContext};
 
-impl<E> AirBlock<E> for RomBlock
-where
-    E: FieldElement<BaseField = BE> + From<BE>,
-{
-    fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
+pub(super) struct RomAir;
+
+impl AirModule for RomAir {
+    fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
         // Per-round t=3
         // Poseidon-like transitions
         for _ in 0..POSEIDON_ROUNDS {
@@ -47,13 +45,15 @@ where
         }
     }
 
-    fn eval_block(
-        ctx: &BlockCtx<E>,
+    fn eval_block<E>(
+        ctx: &AirSharedContext,
         frame: &EvaluationFrame<E>,
         periodic: &[E],
         result: &mut [E],
         ix: &mut usize,
-    ) {
+    ) where
+        E: FieldElement<BaseField = BE> + From<BE>,
+    {
         let cur = frame.current();
         let next = frame.next();
 
@@ -68,9 +68,8 @@ where
             });
 
             let rc = &ctx.rom_rc[j];
-            let mm = ctx.rom_mds;
             let y: [E; 3] = core::array::from_fn(|i| {
-                let acc = (0..3).fold(E::ZERO, |acc, k| acc + E::from(mm[i][k]) * s3[k]);
+                let acc = (0..3).fold(E::ZERO, |acc, k| acc + E::from(ctx.rom_mds[i][k]) * s3[k]);
                 acc + E::from(rc[i])
             });
 
@@ -95,8 +94,8 @@ where
         let p_map = periodic[0];
         if p_map != E::ZERO {
             // Use precomputed weights
-            let enc0 = utils::rom_linear_encode_from_slice(cur, ctx.cols, ctx.rom_w_enc0);
-            let enc1 = utils::rom_linear_encode_from_slice(cur, ctx.cols, ctx.rom_w_enc1);
+            let enc0 = utils::rom_linear_encode_from_slice(cur, &ctx.cols, &ctx.rom_w_enc0);
+            let enc1 = utils::rom_linear_encode_from_slice(cur, &ctx.cols, &ctx.rom_w_enc1);
 
             result[*ix] = p_map * (cur[ctx.cols.rom_s_index(1)] - enc0);
             *ix += 1;
@@ -112,8 +111,8 @@ where
     }
 
     fn append_assertions(
-        ctx: &BlockCtx<E>,
-        out: &mut Vec<Assertion<<E as FieldElement>::BaseField>>,
+        ctx: &AirSharedContext,
+        out: &mut Vec<Assertion<<BE as FieldElement>::BaseField>>,
         last: usize,
     ) {
         // Initial accumulator zero
@@ -192,31 +191,26 @@ mod tests {
         let mut res = vec![BE::ZERO; 3 * POSEIDON_ROUNDS + 3 + 2];
         let mut ix = 0usize;
 
-        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let mds_box = Box::new([[BE::ZERO; 12]; 12]);
-        let dom_box = Box::new([BE::ZERO; 2]);
-        let rc3_box = Box::new(rc3);
-        let mds3_box = Box::new(mds3);
-        let w_enc0_box = Box::new([BE::ZERO; 59]);
-        let w_enc1_box = Box::new([BE::ZERO; 59]);
+        let rc_box = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_box = [[BE::ZERO; 12]; 12];
+        let dom_box = [BE::ZERO; 2];
+        let w_enc0_box = [BE::ZERO; 59];
+        let w_enc1_box = [BE::ZERO; 59];
 
-        RomBlock::eval_block(
-            &BlockCtx::new(
-                &cols,
-                &Default::default(),
-                &rc_box,
-                &mds_box,
-                &dom_box,
-                &rc3_box,
-                &mds3_box,
-                &w_enc0_box,
-                &w_enc1_box,
-            ),
-            &frame,
-            &periodic,
-            &mut res,
-            &mut ix,
-        );
+        let ctx = &AirSharedContext {
+            pub_inputs: Default::default(),
+            cols,
+            features: Default::default(),
+            poseidon_rc: rc_box,
+            poseidon_mds: mds_box,
+            poseidon_dom: dom_box,
+            rom_rc: rc3,
+            rom_mds: mds3,
+            rom_w_enc0: w_enc0_box,
+            rom_w_enc1: w_enc1_box,
+        };
+
+        RomAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
 
         assert!(res.iter().all(|v| *v == BE::ZERO));
     }
@@ -309,32 +303,29 @@ mod tests {
         let mut res = vec![BE::ZERO; 3 * POSEIDON_ROUNDS + 3 + 2];
         let mut ix = 0usize;
 
-        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let mds_box = Box::new([[BE::ZERO; 12]; 12]);
-        let dom_box = Box::new([BE::ZERO; 2]);
-        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
+        let rc_box = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_box = [[BE::ZERO; 12]; 12];
+        let dom_box = [BE::ZERO; 2];
+        let rc3_box = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_box = [[BE::ZERO; 3]; 3];
 
-        let w_enc0_box = Box::new(utils::rom_weights_for_seed(utils::ROM_W_SEED_0));
-        let w_enc1_box = Box::new(utils::rom_weights_for_seed(utils::ROM_W_SEED_1));
+        let w_enc0_box = utils::rom_weights_for_seed(utils::ROM_W_SEED_0);
+        let w_enc1_box = utils::rom_weights_for_seed(utils::ROM_W_SEED_1);
 
-        RomBlock::eval_block(
-            &BlockCtx::new(
-                &cols,
-                &Default::default(),
-                &rc_box,
-                &mds_box,
-                &dom_box,
-                &rc3_box,
-                &mds3_box,
-                &w_enc0_box,
-                &w_enc1_box,
-            ),
-            &frame,
-            &periodic,
-            &mut res,
-            &mut ix,
-        );
+        let ctx = &AirSharedContext {
+            pub_inputs: Default::default(),
+            cols,
+            features: Default::default(),
+            poseidon_rc: rc_box,
+            poseidon_mds: mds_box,
+            poseidon_dom: dom_box,
+            rom_rc: rc3_box,
+            rom_mds: mds3_box,
+            rom_w_enc0: w_enc0_box,
+            rom_w_enc1: w_enc1_box,
+        };
+
+        RomAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
 
         assert!(res.iter().all(|v| *v == BE::ZERO));
     }

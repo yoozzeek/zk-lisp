@@ -2,10 +2,12 @@
 // This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
-use crate::compiler::ir::{Op, ProgramBuilder};
-use crate::compiler::{Binding, Env, Error};
+use crate::compiler::Error;
+use crate::compiler::builder::{Op, ProgramBuilder};
+use crate::compiler::metrics::CompilerMetrics;
 use crate::layout::NR;
 
+use std::collections::BTreeMap;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField};
 
@@ -50,88 +52,74 @@ pub enum RVal {
     Imm(u64),
 }
 
-impl RVal {
-    pub fn as_imm(self) -> Option<u64> {
-        match self {
-            RVal::Imm(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    pub fn into_owned(self, cx: &mut LowerCtx) -> Result<RVal, Error> {
-        match self {
-            RVal::Owned(r) => Ok(RVal::Owned(r)),
-            RVal::Borrowed(s) => {
-                let dst = cx.alloc()?;
-                cx.emit_mov(dst, s);
-
-                Ok(RVal::Owned(dst))
-            }
-            RVal::Imm(v) => {
-                let dst = cx.alloc()?;
-                cx.b.push(Op::Const { dst, imm: v });
-
-                Ok(RVal::Owned(dst))
-            }
-        }
-    }
+// register or immediate
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Binding {
+    Reg(u8),
+    Imm(u64),
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct CompileStats {
-    pub reuse_dst: u32,
-    pub su_reorders: u32,
-    pub balanced_chains: u32,
-    pub mov_elided: u32,
+struct Env {
+    // variable -> binding
+    vars: BTreeMap<String, Binding>,
+    // function name -> (params, body)
+    funs: BTreeMap<String, (Vec<String>, Ast)>,
 }
 
 #[derive(Debug)]
 pub struct LowerCtx<'a> {
-    pub b: ProgramBuilder,
-    pub stats: CompileStats,
+    builder: &'a mut ProgramBuilder,
+    metrics: &'a mut CompilerMetrics,
+
     env: Env,
     free: Vec<u8>,
     call_stack: Vec<String>,
-    // Live-set tracking
-    // for spillless metrics.
-    cur_live: usize,
-    peak_live: usize,
-    // Internal stack pointer register
     sp_reg: Option<u8>,
-    _m: core::marker::PhantomData<&'a ()>,
 }
 
 impl<'a> LowerCtx<'a> {
-    pub fn new() -> Self {
+    pub fn new(builder: &'a mut ProgramBuilder, metrics: &'a mut CompilerMetrics) -> Self {
         let free: Vec<u8> = (0u8..NR as u8).collect();
 
         // simple stack: pop() to allocate from
         // the end gives high-numbered regs first.
         Self {
-            b: ProgramBuilder::new(),
+            builder,
+            metrics,
             free,
             env: Env::default(),
             call_stack: Vec::new(),
-            cur_live: 0,
-            peak_live: 0,
-            stats: CompileStats::default(),
             sp_reg: None,
-            _m: core::marker::PhantomData,
         }
     }
 
-    pub fn peak_live(&self) -> usize {
-        self.peak_live
+    pub fn emit_mov(&mut self, dst: u8, src: u8) {
+        if dst == src {
+            self.metrics.inc_mov_elided();
+            return;
+        }
+
+        self.builder.push(Op::Mov { dst, src });
+    }
+
+    fn val_reg(&self, v: &RVal) -> Result<u8, Error> {
+        match *v {
+            RVal::Owned(r) | RVal::Borrowed(r) => Ok(r),
+            RVal::Imm(_) => Err(Error::InvalidForm(
+                "internal: immediate used where register required".into(),
+            )),
+        }
     }
 
     fn alloc(&mut self) -> Result<u8, Error> {
         match self.free.pop() {
             Some(r) => {
                 // track live-set size
-                self.cur_live += 1;
+                self.metrics.inc_cur_live();
 
-                if self.cur_live > self.peak_live {
-                    self.peak_live = self.cur_live;
+                if self.metrics.cur_live > self.metrics.peak_live {
+                    self.metrics.set_peak_live(self.metrics.cur_live);
                 }
 
                 Ok(r)
@@ -144,17 +132,8 @@ impl<'a> LowerCtx<'a> {
         // free and reduce current live-set
         self.free.push(r);
 
-        if self.cur_live > 0 {
-            self.cur_live -= 1;
-        }
-    }
-
-    pub fn val_reg(&self, v: &RVal) -> Result<u8, Error> {
-        match *v {
-            RVal::Owned(r) | RVal::Borrowed(r) => Ok(r),
-            RVal::Imm(_) => Err(Error::InvalidForm(
-                "internal: immediate used where register required".into(),
-            )),
+        if self.metrics.cur_live > 0 {
+            self.metrics.dec_cur_live();
         }
     }
 
@@ -177,14 +156,32 @@ impl<'a> LowerCtx<'a> {
     fn get_fun(&self, name: &str) -> Option<&(Vec<String>, Ast)> {
         self.env.funs.get(name)
     }
+}
 
-    pub fn emit_mov(&mut self, dst: u8, src: u8) {
-        if dst == src {
-            self.stats.mov_elided += 1;
-            return;
+impl RVal {
+    pub fn as_imm(self) -> Option<u64> {
+        match self {
+            RVal::Imm(v) => Some(v),
+            _ => None,
         }
+    }
 
-        self.b.push(Op::Mov { dst, src });
+    pub fn into_owned(self, cx: &mut LowerCtx) -> Result<RVal, Error> {
+        match self {
+            RVal::Owned(r) => Ok(RVal::Owned(r)),
+            RVal::Borrowed(s) => {
+                let dst = cx.alloc()?;
+                cx.emit_mov(dst, s);
+
+                Ok(RVal::Owned(dst))
+            }
+            RVal::Imm(v) => {
+                let dst = cx.alloc()?;
+                cx.builder.push(Op::Const { dst, imm: v });
+
+                Ok(RVal::Owned(dst))
+            }
+        }
     }
 }
 
@@ -241,10 +238,11 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                         if tail.len() != 2 {
                             let balanced = balance_chain("+", tail);
 
-                            cx.stats.balanced_chains += 1;
+                            cx.metrics.inc_balanced_chains();
 
                             return lower_expr(cx, balanced);
                         }
+
                         lower_bin(cx, tail, BinOp::Add)
                     }
                     "-" => lower_bin(cx, tail, BinOp::Sub),
@@ -252,10 +250,11 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                         if tail.len() != 2 {
                             let balanced = balance_chain("*", tail);
 
-                            cx.stats.balanced_chains += 1;
+                            cx.metrics.inc_balanced_chains();
 
                             return lower_expr(cx, balanced);
                         }
+
                         lower_bin(cx, tail, BinOp::Mul)
                     }
                     "=" => lower_eq(cx, tail),
@@ -456,7 +455,7 @@ fn lower_select(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Select {
+    cx.builder.push(Op::Select {
         dst,
         c: cx.val_reg(&c)?,
         a: cx.val_reg(&a)?,
@@ -496,7 +495,7 @@ fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<RVal, Error> 
     };
 
     if both_pure && !eval_left_first {
-        cx.stats.su_reorders += 1;
+        cx.metrics.inc_su_reorders();
     }
 
     // Evaluate in chosen order
@@ -576,17 +575,17 @@ fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<RVal, Error> 
 
     // Emit op using semantic (a,b)
     match op {
-        BinOp::Add => cx.b.push(Op::Add {
+        BinOp::Add => cx.builder.push(Op::Add {
             dst,
             a: a_r,
             b: b_r,
         }),
-        BinOp::Sub => cx.b.push(Op::Sub {
+        BinOp::Sub => cx.builder.push(Op::Sub {
             dst,
             a: a_r,
             b: b_r,
         }),
-        BinOp::Mul => cx.b.push(Op::Mul {
+        BinOp::Mul => cx.builder.push(Op::Mul {
             dst,
             a: a_r,
             b: b_r,
@@ -595,7 +594,7 @@ fn lower_bin(cx: &mut LowerCtx, rest: &[Ast], op: BinOp) -> Result<RVal, Error> 
 
     // Free temps
     if reused {
-        cx.stats.reuse_dst += 1;
+        cx.metrics.inc_reuse_dst();
 
         // If dst == a, free b;
         // else free a (only when Owned)
@@ -637,7 +636,7 @@ fn lower_neg(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         _ => cx.alloc()?,
     };
 
-    cx.b.push(Op::Neg {
+    cx.builder.push(Op::Neg {
         dst,
         a: cx.val_reg(&a)?,
     });
@@ -671,7 +670,7 @@ fn lower_assert(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let c = c.into_owned(cx)?;
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Assert {
+    cx.builder.push(Op::Assert {
         dst,
         c: cx.val_reg(&c)?,
     });
@@ -707,7 +706,7 @@ fn lower_if(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Select {
+    cx.builder.push(Op::Select {
         dst,
         c: cx.val_reg(&c)?,
         a: cx.val_reg(&t)?,
@@ -738,7 +737,7 @@ fn lower_eq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Eq {
+    cx.builder.push(Op::Eq {
         dst,
         a: cx.val_reg(&a)?,
         b: cx.val_reg(&b)?,
@@ -772,13 +771,13 @@ fn lower_hash2(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     };
 
     // Lower to SAbsorbN(2) + SSqueeze
-    cx.b.push(Op::SAbsorbN {
+    cx.builder.push(Op::SAbsorbN {
         regs: vec![cx.val_reg(&a)?, cx.val_reg(&b)?],
     });
 
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::SSqueeze { dst });
+    cx.builder.push(Op::SSqueeze { dst });
 
     free_if_owned(cx, a);
     free_if_owned(cx, b);
@@ -993,18 +992,18 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // c0 = H(lo0, hi0), c1 = H(lo1, hi1), ...
     let c_hash = |cx: &mut LowerCtx, lo: u64, hi: u64| -> Result<u8, Error> {
         let r_lo = cx.alloc()?;
-        cx.b.push(Op::Const { dst: r_lo, imm: lo });
+        cx.builder.push(Op::Const { dst: r_lo, imm: lo });
 
         let r_hi = cx.alloc()?;
-        cx.b.push(Op::Const { dst: r_hi, imm: hi });
+        cx.builder.push(Op::Const { dst: r_hi, imm: hi });
 
-        cx.b.push(Op::SAbsorbN {
+        cx.builder.push(Op::SAbsorbN {
             regs: vec![r_lo, r_hi],
         });
 
         let r_c = cx.alloc()?;
 
-        cx.b.push(Op::SSqueeze { dst: r_c });
+        cx.builder.push(Op::SSqueeze { dst: r_c });
 
         cx.free_reg(r_lo);
         cx.free_reg(r_hi);
@@ -1018,10 +1017,10 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let r_c1 = c_hash(cx, lo1, hi1)?;
     let r_p01 = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorbN {
+        cx.builder.push(Op::SAbsorbN {
             regs: vec![r_c0, r_c1],
         });
-        cx.b.push(Op::SSqueeze { dst });
+        cx.builder.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_c0);
         cx.free_reg(r_c1);
@@ -1035,10 +1034,10 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let r_c3 = c_hash(cx, lo3, hi3)?;
     let r_p23 = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorbN {
+        cx.builder.push(Op::SAbsorbN {
             regs: vec![r_c2, r_c3],
         });
-        cx.b.push(Op::SSqueeze { dst });
+        cx.builder.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_c2);
         cx.free_reg(r_c3);
@@ -1048,10 +1047,10 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     let r_payload = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorbN {
+        cx.builder.push(Op::SAbsorbN {
             regs: vec![r_p01, r_p23],
         });
-        cx.b.push(Op::SSqueeze { dst });
+        cx.builder.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_p01);
         cx.free_reg(r_p23);
@@ -1069,23 +1068,23 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     };
 
     let r_tag = cx.alloc()?;
-    cx.b.push(Op::Const {
+    cx.builder.push(Op::Const {
         dst: r_tag,
         imm: tag8,
     });
 
     let r_len = cx.alloc()?;
-    cx.b.push(Op::Const {
+    cx.builder.push(Op::Const {
         dst: r_len,
         imm: bytes_src.len() as u64,
     });
 
     let r_t0 = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorbN {
+        cx.builder.push(Op::SAbsorbN {
             regs: vec![r_tag, r_len],
         });
-        cx.b.push(Op::SSqueeze { dst });
+        cx.builder.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_tag);
         cx.free_reg(r_len);
@@ -1095,10 +1094,10 @@ fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // digest = H(t0, payload)
     let r_digest = cx.alloc()?;
-    cx.b.push(Op::SAbsorbN {
+    cx.builder.push(Op::SAbsorbN {
         regs: vec![r_t0, r_payload],
     });
-    cx.b.push(Op::SSqueeze { dst: r_digest });
+    cx.builder.push(Op::SSqueeze { dst: r_digest });
 
     cx.free_reg(r_t0);
     cx.free_reg(r_payload);
@@ -1139,18 +1138,18 @@ fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> 
     // from u64 pairs via sponge ops.
     let c_hash = |cx: &mut LowerCtx, lo: u64, hi: u64| -> Result<u8, Error> {
         let r_lo = cx.alloc()?;
-        cx.b.push(Op::Const { dst: r_lo, imm: lo });
+        cx.builder.push(Op::Const { dst: r_lo, imm: lo });
 
         let r_hi = cx.alloc()?;
-        cx.b.push(Op::Const { dst: r_hi, imm: hi });
+        cx.builder.push(Op::Const { dst: r_hi, imm: hi });
 
-        cx.b.push(Op::SAbsorbN {
+        cx.builder.push(Op::SAbsorbN {
             regs: vec![r_lo, r_hi],
         });
 
         let r_c = cx.alloc()?;
 
-        cx.b.push(Op::SSqueeze { dst: r_c });
+        cx.builder.push(Op::SSqueeze { dst: r_c });
 
         cx.free_reg(r_lo);
         cx.free_reg(r_hi);
@@ -1165,10 +1164,10 @@ fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> 
 
     let r_payload = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorbN {
+        cx.builder.push(Op::SAbsorbN {
             regs: vec![r_c0, r_c1],
         });
-        cx.b.push(Op::SSqueeze { dst });
+        cx.builder.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_c0);
         cx.free_reg(r_c1);
@@ -1186,23 +1185,23 @@ fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> 
     };
 
     let r_tag = cx.alloc()?;
-    cx.b.push(Op::Const {
+    cx.builder.push(Op::Const {
         dst: r_tag,
         imm: tag8,
     });
 
     let r_len = cx.alloc()?;
-    cx.b.push(Op::Const {
+    cx.builder.push(Op::Const {
         dst: r_len,
         imm: decoded.len() as u64,
     });
 
     let r_t0 = {
         let dst = cx.alloc()?;
-        cx.b.push(Op::SAbsorbN {
+        cx.builder.push(Op::SAbsorbN {
             regs: vec![r_tag, r_len],
         });
-        cx.b.push(Op::SSqueeze { dst });
+        cx.builder.push(Op::SSqueeze { dst });
 
         cx.free_reg(r_tag);
         cx.free_reg(r_len);
@@ -1212,10 +1211,10 @@ fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> 
 
     // digest = H(t0, payload)
     let r_digest = cx.alloc()?;
-    cx.b.push(Op::SAbsorbN {
+    cx.builder.push(Op::SAbsorbN {
         regs: vec![r_t0, r_payload],
     });
-    cx.b.push(Op::SSqueeze { dst: r_digest });
+    cx.builder.push(Op::SSqueeze { dst: r_digest });
 
     cx.free_reg(r_t0);
     cx.free_reg(r_payload);
@@ -1250,7 +1249,7 @@ fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
         let r_diff = cx.alloc()?;
 
-        cx.b.push(Op::Sub {
+        cx.builder.push(Op::Sub {
             dst: r_diff,
             a: cx.val_reg(&x)?,
             b: cx.val_reg(&si)?,
@@ -1263,7 +1262,7 @@ fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
             Some(prev) => {
                 let r_mul = cx.alloc()?;
 
-                cx.b.push(Op::Mul {
+                cx.builder.push(Op::Mul {
                     dst: r_mul,
                     a: prev,
                     b: r_diff,
@@ -1279,7 +1278,7 @@ fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     let r_zero = cx.alloc()?;
 
-    cx.b.push(Op::Const {
+    cx.builder.push(Op::Const {
         dst: r_zero,
         imm: 0,
     });
@@ -1287,7 +1286,7 @@ fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let prev = r_prod.unwrap();
     let r_eq = cx.alloc()?;
 
-    cx.b.push(Op::Eq {
+    cx.builder.push(Op::Eq {
         dst: r_eq,
         a: prev,
         b: r_zero,
@@ -1298,7 +1297,7 @@ fn lower_in_set(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     let r_out = cx.alloc()?;
 
-    cx.b.push(Op::Assert {
+    cx.builder.push(Op::Assert {
         dst: r_out,
         c: r_eq,
     });
@@ -1352,7 +1351,7 @@ fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         (d, s)
     };
 
-    cx.b.push(Op::MerkleStepFirst {
+    cx.builder.push(Op::MerkleStepFirst {
         leaf_reg: leaf_r,
         dir_reg: cx.val_reg(&dir0_v)?,
         sib_reg: cx.val_reg(&sib0_v)?,
@@ -1388,7 +1387,7 @@ fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
             s
         };
 
-        cx.b.push(Op::MerkleStep {
+        cx.builder.push(Op::MerkleStep {
             dir_reg: cx.val_reg(&d)?,
             sib_reg: cx.val_reg(&s)?,
         });
@@ -1419,7 +1418,7 @@ fn lower_merkle_verify(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
             s
         };
 
-        cx.b.push(Op::MerkleStepLast {
+        cx.builder.push(Op::MerkleStepLast {
             dir_reg: cx.val_reg(&d)?,
             sib_reg: cx.val_reg(&s)?,
         });
@@ -1450,13 +1449,13 @@ fn lower_bit_pred(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let x = x.into_owned(cx)?;
     let one = {
         let r = cx.alloc()?;
-        cx.b.push(Op::Const { dst: r, imm: 1 });
+        cx.builder.push(Op::Const { dst: r, imm: 1 });
 
         r
     };
     let xm1 = {
         let r = cx.alloc()?;
-        cx.b.push(Op::Sub {
+        cx.builder.push(Op::Sub {
             dst: r,
             a: cx.val_reg(&x)?,
             b: one,
@@ -1466,7 +1465,7 @@ fn lower_bit_pred(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     };
     let t = {
         let r = cx.alloc()?;
-        cx.b.push(Op::Mul {
+        cx.builder.push(Op::Mul {
             dst: r,
             a: cx.val_reg(&x)?,
             b: xm1,
@@ -1478,13 +1477,13 @@ fn lower_bit_pred(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // eq = (t == 0)
     let z = {
         let r = cx.alloc()?;
-        cx.b.push(Op::Const { dst: r, imm: 0 });
+        cx.builder.push(Op::Const { dst: r, imm: 0 });
 
         r
     };
     let eq = {
         let r = cx.alloc()?;
-        cx.b.push(Op::Eq { dst: r, a: t, b: z });
+        cx.builder.push(Op::Eq { dst: r, a: t, b: z });
 
         r
     };
@@ -1516,7 +1515,7 @@ fn lower_assert_bit(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let x = x.into_owned(cx)?;
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::AssertBit {
+    cx.builder.push(Op::AssertBit {
         dst,
         r: cx.val_reg(&x)?,
     });
@@ -1558,7 +1557,7 @@ fn lower_assert_range(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         let x = x.into_owned(cx)?;
         let dst = cx.alloc()?;
 
-        cx.b.push(Op::AssertRange {
+        cx.builder.push(Op::AssertRange {
             dst,
             r: cx.val_reg(&x)?,
             bits: 32,
@@ -1577,11 +1576,11 @@ fn lower_assert_range(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         let x = x.into_owned(cx)?;
         let dst = cx.alloc()?;
 
-        cx.b.push(Op::AssertRangeLo {
+        cx.builder.push(Op::AssertRangeLo {
             dst,
             r: cx.val_reg(&x)?,
         });
-        cx.b.push(Op::AssertRangeHi {
+        cx.builder.push(Op::AssertRangeHi {
             dst,
             r: cx.val_reg(&x)?,
         });
@@ -1625,7 +1624,7 @@ fn lower_safe_add(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     assert_range_bits_for_reg(cx, b_r, 64)?;
 
     let dst = cx.alloc()?;
-    cx.b.push(Op::Add {
+    cx.builder.push(Op::Add {
         dst,
         a: a_r,
         b: b_r,
@@ -1668,7 +1667,7 @@ fn lower_safe_sub(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     assert_range_bits_for_reg(cx, b_r, 64)?;
 
     let dst = cx.alloc()?;
-    cx.b.push(Op::Sub {
+    cx.builder.push(Op::Sub {
         dst,
         a: a_r,
         b: b_r,
@@ -1713,7 +1712,7 @@ fn lower_safe_mul(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     assert_range_bits_for_reg(cx, b_r, 32)?;
 
     let dst = cx.alloc()?;
-    cx.b.push(Op::Mul {
+    cx.builder.push(Op::Mul {
         dst,
         a: a_r,
         b: b_r,
@@ -1748,13 +1747,13 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // Enforce b != 0
     let zero_b = cx.alloc()?;
-    cx.b.push(Op::Const {
+    cx.builder.push(Op::Const {
         dst: zero_b,
         imm: 0,
     });
 
     let eq_b0 = cx.alloc()?;
-    cx.b.push(Op::Eq {
+    cx.builder.push(Op::Eq {
         dst: eq_b0,
         a: b_r,
         b: zero_b,
@@ -1763,10 +1762,10 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(zero_b);
 
     let one_b = cx.alloc()?;
-    cx.b.push(Op::Const { dst: one_b, imm: 1 });
+    cx.builder.push(Op::Const { dst: one_b, imm: 1 });
 
     let cond_b = cx.alloc()?;
-    cx.b.push(Op::Sub {
+    cx.builder.push(Op::Sub {
         dst: cond_b,
         a: one_b,
         b: eq_b0,
@@ -1775,7 +1774,7 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(one_b);
 
     let assert_b_nz = cx.alloc()?;
-    cx.b.push(Op::Assert {
+    cx.builder.push(Op::Assert {
         dst: assert_b_nz,
         c: cond_b,
     });
@@ -1787,7 +1786,7 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // produce q,r in two regs
     let rq = cx.alloc()?;
     let rr = cx.alloc()?;
-    cx.b.push(Op::DivMod {
+    cx.builder.push(Op::DivMod {
         dst_q: rq,
         dst_r: rr,
         a: a_r,
@@ -1796,7 +1795,7 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // r = a - q*b
     let qmulb = cx.alloc()?;
-    cx.b.push(Op::Mul {
+    cx.builder.push(Op::Mul {
         dst: qmulb,
         a: rq,
         b: b_r,
@@ -1808,21 +1807,21 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // Enforce a = b*q + r first,
     // while qmulb is alive.
     let sum1 = cx.alloc()?;
-    cx.b.push(Op::Add {
+    cx.builder.push(Op::Add {
         dst: sum1,
         a: qmulb,
         b: rr,
     });
 
     let eq = cx.alloc()?;
-    cx.b.push(Op::Eq {
+    cx.builder.push(Op::Eq {
         dst: eq,
         a: sum1,
         b: a_r,
     });
 
     let assert_eq = cx.alloc()?;
-    cx.b.push(Op::Assert {
+    cx.builder.push(Op::Assert {
         dst: assert_eq,
         c: eq,
     });
@@ -1836,7 +1835,7 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // Enforce r < b via t = b - r;
     // t in u64 and t != 0
     let t = cx.alloc()?;
-    cx.b.push(Op::Sub {
+    cx.builder.push(Op::Sub {
         dst: t,
         a: b_r,
         b: rr,
@@ -1846,10 +1845,10 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // Assert t != 0 with minimal live regs
     let zero = cx.alloc()?;
-    cx.b.push(Op::Const { dst: zero, imm: 0 });
+    cx.builder.push(Op::Const { dst: zero, imm: 0 });
 
     let eq_t0 = cx.alloc()?;
-    cx.b.push(Op::Eq {
+    cx.builder.push(Op::Eq {
         dst: eq_t0,
         a: t,
         b: zero,
@@ -1858,10 +1857,10 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(zero);
 
     let one = cx.alloc()?;
-    cx.b.push(Op::Const { dst: one, imm: 1 });
+    cx.builder.push(Op::Const { dst: one, imm: 1 });
 
     let cond = cx.alloc()?;
-    cx.b.push(Op::Sub {
+    cx.builder.push(Op::Sub {
         dst: cond,
         a: one,
         b: eq_t0,
@@ -1870,7 +1869,7 @@ fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(one);
 
     let assert_ok = cx.alloc()?;
-    cx.b.push(Op::Assert {
+    cx.builder.push(Op::Assert {
         dst: assert_ok,
         c: cond,
     });
@@ -1910,13 +1909,13 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // Enforce b != 0
     let zero_b = cx.alloc()?;
-    cx.b.push(Op::Const {
+    cx.builder.push(Op::Const {
         dst: zero_b,
         imm: 0,
     });
 
     let eq_b0 = cx.alloc()?;
-    cx.b.push(Op::Eq {
+    cx.builder.push(Op::Eq {
         dst: eq_b0,
         a: b_r,
         b: zero_b,
@@ -1925,10 +1924,10 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(zero_b);
 
     let one_b = cx.alloc()?;
-    cx.b.push(Op::Const { dst: one_b, imm: 1 });
+    cx.builder.push(Op::Const { dst: one_b, imm: 1 });
 
     let cond_b = cx.alloc()?;
-    cx.b.push(Op::Sub {
+    cx.builder.push(Op::Sub {
         dst: cond_b,
         a: one_b,
         b: eq_b0,
@@ -1937,7 +1936,7 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(one_b);
 
     let assert_b_nz = cx.alloc()?;
-    cx.b.push(Op::Assert {
+    cx.builder.push(Op::Assert {
         dst: assert_b_nz,
         c: cond_b,
     });
@@ -1949,7 +1948,7 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // produce q,r in two regs
     let rq = cx.alloc()?;
     let rr = cx.alloc()?;
-    cx.b.push(Op::DivMod {
+    cx.builder.push(Op::DivMod {
         dst_q: rq,
         dst_r: rr,
         a: a_r,
@@ -1957,7 +1956,7 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     });
 
     let qmulb = cx.alloc()?;
-    cx.b.push(Op::Mul {
+    cx.builder.push(Op::Mul {
         dst: qmulb,
         a: rq,
         b: b_r,
@@ -1968,21 +1967,21 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // Enforce a = b*q + r first (mulb is alive)
     let sum1 = cx.alloc()?;
-    cx.b.push(Op::Add {
+    cx.builder.push(Op::Add {
         dst: sum1,
         a: qmulb,
         b: rr,
     });
 
     let eq = cx.alloc()?;
-    cx.b.push(Op::Eq {
+    cx.builder.push(Op::Eq {
         dst: eq,
         a: sum1,
         b: a_r,
     });
 
     let assert_eq = cx.alloc()?;
-    cx.b.push(Op::Assert {
+    cx.builder.push(Op::Assert {
         dst: assert_eq,
         c: eq,
     });
@@ -1993,7 +1992,7 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(qmulb);
 
     let t = cx.alloc()?;
-    cx.b.push(Op::Sub {
+    cx.builder.push(Op::Sub {
         dst: t,
         a: b_r,
         b: rr,
@@ -2002,10 +2001,10 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     assert_range_bits_for_reg(cx, t, 64)?;
 
     let zero = cx.alloc()?;
-    cx.b.push(Op::Const { dst: zero, imm: 0 });
+    cx.builder.push(Op::Const { dst: zero, imm: 0 });
 
     let eq_t0 = cx.alloc()?;
-    cx.b.push(Op::Eq {
+    cx.builder.push(Op::Eq {
         dst: eq_t0,
         a: t,
         b: zero,
@@ -2014,10 +2013,10 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(zero);
 
     let one = cx.alloc()?;
-    cx.b.push(Op::Const { dst: one, imm: 1 });
+    cx.builder.push(Op::Const { dst: one, imm: 1 });
 
     let cond = cx.alloc()?;
-    cx.b.push(Op::Sub {
+    cx.builder.push(Op::Sub {
         dst: cond,
         a: one,
         b: eq_t0,
@@ -2026,7 +2025,7 @@ fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     cx.free_reg(one);
 
     let assert_ok = cx.alloc()?;
-    cx.b.push(Op::Assert {
+    cx.builder.push(Op::Assert {
         dst: assert_ok,
         c: cond,
     });
@@ -2069,7 +2068,7 @@ fn lower_mulwide_hi(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let rhi = cx.alloc()?;
     let rlo = cx.alloc()?;
 
-    cx.b.push(Op::MulWide {
+    cx.builder.push(Op::MulWide {
         dst_hi: rhi,
         dst_lo: rlo,
         a: a_r,
@@ -2111,7 +2110,7 @@ fn lower_mulwide_lo(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let rhi = cx.alloc()?;
     let rlo = cx.alloc()?;
 
-    cx.b.push(Op::MulWide {
+    cx.builder.push(Op::MulWide {
         dst_hi: rhi,
         dst_lo: rlo,
         a: a_r,
@@ -2156,7 +2155,7 @@ fn lower_muldiv_floor(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // Wide multiply
     let rhi = cx.alloc()?;
     let rlo = cx.alloc()?;
-    cx.b.push(Op::MulWide {
+    cx.builder.push(Op::MulWide {
         dst_hi: rhi,
         dst_lo: rlo,
         a: a_r,
@@ -2169,7 +2168,7 @@ fn lower_muldiv_floor(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // 128/64 division -> q,r
     let rq = cx.alloc()?;
     let rr = cx.alloc()?;
-    cx.b.push(Op::DivMod128 {
+    cx.builder.push(Op::DivMod128 {
         a_hi: rhi,
         a_lo: rlo,
         b: c_r,
@@ -2215,7 +2214,7 @@ fn lower_load(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let addr = addr.into_owned(cx)?;
     let dst = cx.alloc()?;
 
-    cx.b.push(Op::Load {
+    cx.builder.push(Op::Load {
         dst,
         addr: cx.val_reg(&addr)?,
     });
@@ -2237,7 +2236,7 @@ fn lower_store(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     let addr = addr.into_owned(cx)?;
     let val = val.into_owned(cx)?;
 
-    cx.b.push(Op::Store {
+    cx.builder.push(Op::Store {
         addr: cx.val_reg(&addr)?,
         src: cx.val_reg(&val)?,
     });
@@ -2260,7 +2259,7 @@ fn lower_push(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // base = STACK_BASE
     let r_base = cx.alloc()?;
-    cx.b.push(Op::Const {
+    cx.builder.push(Op::Const {
         dst: r_base,
         imm: STACK_BASE,
     });
@@ -2269,14 +2268,14 @@ fn lower_push(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let r_addr = cx.alloc()?;
     let sp = ensure_sp(cx)?;
 
-    cx.b.push(Op::Add {
+    cx.builder.push(Op::Add {
         dst: r_addr,
         a: r_base,
         b: sp,
     });
 
     // Mem[addr] <- v
-    cx.b.push(Op::Store {
+    cx.builder.push(Op::Store {
         addr: r_addr,
         src: cx.val_reg(&v)?,
     });
@@ -2288,10 +2287,10 @@ fn lower_push(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // SP = SP + 1
     let r_one = cx.alloc()?;
-    cx.b.push(Op::Const { dst: r_one, imm: 1 });
+    cx.builder.push(Op::Const { dst: r_one, imm: 1 });
 
     let sp = ensure_sp(cx)?;
-    cx.b.push(Op::Add {
+    cx.builder.push(Op::Add {
         dst: sp,
         a: sp,
         b: r_one,
@@ -2311,10 +2310,10 @@ fn lower_pop(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // SP = SP - 1
     let r_one = cx.alloc()?;
-    cx.b.push(Op::Const { dst: r_one, imm: 1 });
+    cx.builder.push(Op::Const { dst: r_one, imm: 1 });
 
     let sp = ensure_sp(cx)?;
-    cx.b.push(Op::Sub {
+    cx.builder.push(Op::Sub {
         dst: sp,
         a: sp,
         b: r_one,
@@ -2324,7 +2323,7 @@ fn lower_pop(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // addr = STACK_BASE + SP
     let r_base = cx.alloc()?;
-    cx.b.push(Op::Const {
+    cx.builder.push(Op::Const {
         dst: r_base,
         imm: STACK_BASE,
     });
@@ -2332,7 +2331,7 @@ fn lower_pop(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     let r_addr = cx.alloc()?;
     let sp = ensure_sp(cx)?;
 
-    cx.b.push(Op::Add {
+    cx.builder.push(Op::Add {
         dst: r_addr,
         a: r_base,
         b: sp,
@@ -2340,7 +2339,7 @@ fn lower_pop(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // dst <- Mem[addr]
     let r_dst = cx.alloc()?;
-    cx.b.push(Op::Load {
+    cx.builder.push(Op::Load {
         dst: r_dst,
         addr: r_addr,
     });
@@ -2425,7 +2424,7 @@ fn lower_load_ca(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 
     // first step
     let (dir0_reg, sib0_reg) = parse_dir_sib_pair(cx, &path_list[0])?;
-    cx.b.push(Op::MerkleStepFirst {
+    cx.builder.push(Op::MerkleStepFirst {
         leaf_reg: cx.val_reg(&leaf)?,
         dir_reg: dir0_reg,
         sib_reg: sib0_reg,
@@ -2440,7 +2439,7 @@ fn lower_load_ca(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
         .take(path_list.len().saturating_sub(2))
     {
         let (dir_r, sib_r) = parse_dir_sib_pair(cx, pair)?;
-        cx.b.push(Op::MerkleStep {
+        cx.builder.push(Op::MerkleStep {
             dir_reg: dir_r,
             sib_reg: sib_r,
         });
@@ -2453,7 +2452,7 @@ fn lower_load_ca(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // acc to PI root
     if path_list.len() > 1 {
         let (dir_l, sib_l) = parse_dir_sib_pair(cx, path_list.last().unwrap())?;
-        cx.b.push(Op::MerkleStepLast {
+        cx.builder.push(Op::MerkleStepLast {
             dir_reg: dir_l,
             sib_reg: sib_l,
         });
@@ -2485,7 +2484,7 @@ fn lower_store_ca(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     }
 
     let (dir0_reg, sib0_reg) = parse_dir_sib_pair(cx, &path_list[0])?;
-    cx.b.push(Op::MerkleStepFirst {
+    cx.builder.push(Op::MerkleStepFirst {
         leaf_reg: cx.val_reg(&leaf)?,
         dir_reg: dir0_reg,
         sib_reg: sib0_reg,
@@ -2498,7 +2497,7 @@ fn lower_store_ca(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     // to avoid binding to PI root.
     for pair in path_list.iter().skip(1) {
         let (dir_r, sib_r) = parse_dir_sib_pair(cx, pair)?;
-        cx.b.push(Op::MerkleStep {
+        cx.builder.push(Op::MerkleStep {
             dir_reg: dir_r,
             sib_reg: sib_r,
         });
@@ -2674,14 +2673,14 @@ fn assert_range_bits_for_reg(cx: &mut LowerCtx, r: u8, bits: u8) -> Result<(), E
     match bits {
         32 => {
             let dst = cx.alloc()?;
-            cx.b.push(Op::AssertRange { dst, r, bits: 32 });
+            cx.builder.push(Op::AssertRange { dst, r, bits: 32 });
 
             cx.free_reg(dst);
         }
         64 => {
             let dst = cx.alloc()?;
-            cx.b.push(Op::AssertRangeLo { dst, r });
-            cx.b.push(Op::AssertRangeHi { dst, r });
+            cx.builder.push(Op::AssertRangeLo { dst, r });
+            cx.builder.push(Op::AssertRangeHi { dst, r });
 
             cx.free_reg(dst);
         }
@@ -2717,7 +2716,7 @@ fn ensure_sp(cx: &mut LowerCtx) -> Result<u8, Error> {
     }
 
     let r = cx.alloc()?;
-    cx.b.push(Op::Const { dst: r, imm: 0 });
+    cx.builder.push(Op::Const { dst: r, imm: 0 });
     cx.sp_reg = Some(r);
 
     Ok(r)

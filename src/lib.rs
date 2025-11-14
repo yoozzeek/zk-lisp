@@ -7,6 +7,7 @@
 mod air;
 mod commit;
 mod preflight;
+mod schedule;
 mod trace;
 mod utils;
 
@@ -17,6 +18,8 @@ pub mod logging;
 pub mod pi;
 pub mod poseidon;
 pub mod prove;
-pub mod schedule;
 
-pub use preflight::PreflightMode;
+pub use preflight::{PreflightMode, run as run_preflight};
+pub use schedule::{build_periodic_selectors, is_round_pos, pos_final, pos_map};
+pub use trace::{TraceBuilderContext, build_trace};
+pub use utils::{be_from_le8, vm_output_from_trace};

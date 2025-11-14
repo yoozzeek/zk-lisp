@@ -6,31 +6,13 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
-use super::{AirBlock, BlockCtx};
+use super::{AirModule, AirSharedContext};
 use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
-pub struct PoseidonBlock;
+pub(super) struct PoseidonAir;
 
-impl PoseidonBlock {
-    pub fn push_degrees_vm_bind(out: &mut Vec<TransitionConstraintDegree>) {
-        // VM->lane binding at map row
-        // for sponge absorb lanes (0..9).
-        // base=3 (pa * b_sponge * (lane - sum sel_s*reg)),
-        // cycles=1 (p_map)
-        for _ in 0..10 {
-            out.push(TransitionConstraintDegree::with_cycles(
-                3,
-                vec![STEPS_PER_LEVEL_P2],
-            ));
-        }
-    }
-}
-
-impl<E> AirBlock<E> for PoseidonBlock
-where
-    E: FieldElement<BaseField = BE> + From<BE>,
-{
-    fn push_degrees(out: &mut Vec<TransitionConstraintDegree>) {
+impl AirModule for PoseidonAir {
+    fn push_degrees(ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
         // Per-round Poseidon transitions
         for _ in 0..POSEIDON_ROUNDS {
             for _ in 0..12 {
@@ -42,7 +24,7 @@ where
         }
 
         // Hold constraints on non-round rows:
-        // pad rows except last pad)
+        // pad rows except last pad
         // base=1 (linear), cycles=1
         for _ in 0..12 {
             out.push(TransitionConstraintDegree::with_cycles(
@@ -50,18 +32,35 @@ where
                 vec![STEPS_PER_LEVEL_P2],
             ));
         }
+
+        // When VM is enabled AND sponge ops
+        // are present enforce VM->lane bindings
+        // on map rows of absorb operations.
+        if ctx.features.vm && ctx.features.sponge {
+            // VM->lane binding at map row
+            // for sponge absorb lanes (0..9).
+            // base=3 (pa * b_sponge * (lane - sum sel_s*reg)),
+            // cycles=1 (p_map)
+            for _ in 0..10 {
+                out.push(TransitionConstraintDegree::with_cycles(
+                    3,
+                    vec![STEPS_PER_LEVEL_P2],
+                ));
+            }
+        }
     }
 
-    fn eval_block(
-        ctx: &BlockCtx<E>,
+    fn eval_block<E>(
+        ctx: &AirSharedContext,
         frame: &EvaluationFrame<E>,
         periodic: &[E],
         result: &mut [E],
         ix: &mut usize,
-    ) {
+    ) where
+        E: FieldElement<BaseField = BE> + From<BE>,
+    {
         let cur = frame.current();
         let next = frame.next();
-        let mm = ctx.poseidon_mds;
 
         // Gates
         let p_map = periodic[0];
@@ -78,10 +77,12 @@ where
             });
 
             // y = MDS * s^3 + rc
-            let rc = &ctx.poseidon_rc[j];
+            let rc_row = &ctx.poseidon_rc[j];
             let y: [E; 12] = core::array::from_fn(|i| {
-                let acc = (0..12).fold(E::ZERO, |acc, k| acc + E::from(mm[i][k]) * s3[k]);
-                acc + E::from(rc[i])
+                let acc = (0..12).fold(E::ZERO, |acc, k| {
+                    acc + E::from(ctx.poseidon_mds[i][k]) * s3[k]
+                });
+                acc + E::from(rc_row[i])
             });
 
             for (i, yi) in y.iter().enumerate() {
@@ -96,7 +97,7 @@ where
         let p_pad_last = periodic[1 + POSEIDON_ROUNDS + 2];
         let g_hold = p_pad - p_pad_last;
 
-        for (i, _) in (0..12).enumerate() {
+        for i in 0..12 {
             result[*ix] = g_hold * (next[ctx.cols.lane_index(i)] - cur[ctx.cols.lane_index(i)]);
             *ix += 1;
         }
@@ -105,7 +106,7 @@ where
         // (0..9) to VM-selected inputs
         // when sponge ops are enabled;
         // gate by p_map, b_sponge and pose_active.
-        if ctx.pub_inputs.get_features().vm && ctx.pub_inputs.get_features().sponge {
+        if ctx.features.vm && ctx.features.sponge {
             let b_sponge = cur[ctx.cols.op_sponge];
             let pa = cur[ctx.cols.pose_active];
 
@@ -126,14 +127,16 @@ where
                 let r6 = cur[ctx.cols.r_index(6)];
                 let r7 = cur[ctx.cols.r_index(7)];
 
-                let s0 = b0 * r1 + (E::ONE - b0) * r0;
-                let s1 = b0 * r3 + (E::ONE - b0) * r2;
-                let s2 = b0 * r5 + (E::ONE - b0) * r4;
-                let s3 = b0 * r7 + (E::ONE - b0) * r6;
-                let t0 = b1 * s1 + (E::ONE - b1) * s0;
-                let t1 = b1 * s3 + (E::ONE - b1) * s2;
+                let one = E::ONE;
 
-                let sel_val = b2 * t1 + (E::ONE - b2) * t0;
+                let s0 = b0 * r1 + (one - b0) * r0;
+                let s1 = b0 * r3 + (one - b0) * r2;
+                let s2 = b0 * r5 + (one - b0) * r4;
+                let s3 = b0 * r7 + (one - b0) * r6;
+                let t0 = b1 * s1 + (one - b1) * s0;
+                let t1 = b1 * s3 + (one - b1) * s2;
+
+                let sel_val = b2 * t1 + (one - b2) * t0;
                 let lane_expect = act * sel_val;
 
                 result[*ix] =
@@ -196,28 +199,25 @@ mod tests {
         let mut res = vec![BE::ZERO; 12 * POSEIDON_ROUNDS + 12];
         let mut ix = 0usize;
 
-        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
-        let w_enc0_box = Box::new([BE::ZERO; 59]);
-        let w_enc1_box = Box::new([BE::ZERO; 59]);
+        let rc3_box = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_box = [[BE::ZERO; 3]; 3];
+        let w_enc0_box = [BE::ZERO; 59];
+        let w_enc1_box = [BE::ZERO; 59];
 
-        PoseidonBlock::eval_block(
-            &BlockCtx::new(
-                &cols,
-                &Default::default(),
-                &rc_arr,
-                &ps.mds,
-                &ps.dom,
-                &rc3_box,
-                &mds3_box,
-                &w_enc0_box,
-                &w_enc1_box,
-            ),
-            &frame,
-            &periodic,
-            &mut res,
-            &mut ix,
-        );
+        let ctx = &AirSharedContext {
+            pub_inputs: Default::default(),
+            cols,
+            features: Default::default(),
+            poseidon_rc: rc_arr,
+            poseidon_mds: ps.mds,
+            poseidon_dom: ps.dom,
+            rom_rc: rc3_box,
+            rom_mds: mds3_box,
+            rom_w_enc0: w_enc0_box,
+            rom_w_enc1: w_enc1_box,
+        };
+
+        PoseidonAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
 
         assert!(res.iter().all(|v| *v == BE::ZERO));
     }
@@ -243,29 +243,26 @@ mod tests {
         let mut res = vec![BE::ZERO; 12 * POSEIDON_ROUNDS + 12];
         let mut ix = 0usize;
 
-        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
-        let w_enc0_box = Box::new([BE::ZERO; 59]);
-        let w_enc1_box = Box::new([BE::ZERO; 59]);
+        let rc_box = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let rc3_box = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_box = [[BE::ZERO; 3]; 3];
+        let w_enc0_box = [BE::ZERO; 59];
+        let w_enc1_box = [BE::ZERO; 59];
 
-        PoseidonBlock::eval_block(
-            &BlockCtx::new(
-                &cols,
-                &Default::default(),
-                &rc_box,
-                &[[BE::ZERO; 12]; 12],
-                &[BE::ZERO; 2],
-                &rc3_box,
-                &mds3_box,
-                &w_enc0_box,
-                &w_enc1_box,
-            ),
-            &frame,
-            &periodic,
-            &mut res,
-            &mut ix,
-        );
+        let ctx = &AirSharedContext {
+            pub_inputs: Default::default(),
+            cols,
+            features: Default::default(),
+            poseidon_rc: rc_box,
+            poseidon_mds: [[BE::ZERO; 12]; 12],
+            poseidon_dom: [BE::ZERO; 2],
+            rom_rc: rc3_box,
+            rom_mds: mds3_box,
+            rom_w_enc0: w_enc0_box,
+            rom_w_enc1: w_enc1_box,
+        };
+
+        PoseidonAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
 
         assert!(res.iter().all(|v| *v == BE::ZERO));
     }
@@ -297,29 +294,26 @@ mod tests {
         let mut res = vec![BE::ZERO; 12 * POSEIDON_ROUNDS + 12];
         let mut ix = 0usize;
 
-        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
-        let w_enc0_box = Box::new([BE::ZERO; 59]);
-        let w_enc1_box = Box::new([BE::ZERO; 59]);
+        let rc_box = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let rc3_box = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_box = [[BE::ZERO; 3]; 3];
+        let w_enc0_box = [BE::ZERO; 59];
+        let w_enc1_box = [BE::ZERO; 59];
 
-        PoseidonBlock::eval_block(
-            &BlockCtx::new(
-                &cols,
-                &Default::default(),
-                &rc_box,
-                &[[BE::ZERO; 12]; 12],
-                &[BE::ZERO; 2],
-                &rc3_box,
-                &mds3_box,
-                &w_enc0_box,
-                &w_enc1_box,
-            ),
-            &frame,
-            &periodic,
-            &mut res,
-            &mut ix,
-        );
+        let ctx = &AirSharedContext {
+            pub_inputs: Default::default(),
+            cols,
+            features: Default::default(),
+            poseidon_rc: rc_box,
+            poseidon_mds: [[BE::ZERO; 12]; 12],
+            poseidon_dom: [BE::ZERO; 2],
+            rom_rc: rc3_box,
+            rom_mds: mds3_box,
+            rom_w_enc0: w_enc0_box,
+            rom_w_enc1: w_enc1_box,
+        };
+
+        PoseidonAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
 
         assert!(res.iter().all(|v| *v == BE::ZERO));
     }
@@ -358,36 +352,34 @@ mod tests {
         // features to enable binding constraints
         let mut pi = crate::pi::PublicInputs::default();
         pi.feature_mask |= crate::pi::FM_VM | crate::pi::FM_SPONGE;
+        let features = pi.get_features();
 
-        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let mds_box = Box::new([[BE::ZERO; 12]; 12]);
-        let dom_box = Box::new([BE::ZERO; 2]);
+        let rc_box = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_box = [[BE::ZERO; 12]; 12];
+        let dom_box = [BE::ZERO; 2];
 
         let mut res = vec![BE::ZERO; 12 * POSEIDON_ROUNDS + 12 + 16];
         let mut ix = 0usize;
 
-        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
-        let w_enc0_box = Box::new([BE::ZERO; 59]);
-        let w_enc1_box = Box::new([BE::ZERO; 59]);
+        let rc3_box = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_box = [[BE::ZERO; 3]; 3];
+        let w_enc0_box = [BE::ZERO; 59];
+        let w_enc1_box = [BE::ZERO; 59];
 
-        PoseidonBlock::eval_block(
-            &BlockCtx::new(
-                &cols,
-                &pi,
-                &rc_box,
-                &mds_box,
-                &dom_box,
-                &rc3_box,
-                &mds3_box,
-                &w_enc0_box,
-                &w_enc1_box,
-            ),
-            &frame,
-            &periodic,
-            &mut res,
-            &mut ix,
-        );
+        let ctx = &AirSharedContext {
+            pub_inputs: pi,
+            cols,
+            features,
+            poseidon_rc: rc_box,
+            poseidon_mds: mds_box,
+            poseidon_dom: dom_box,
+            rom_rc: rc3_box,
+            rom_mds: mds3_box,
+            rom_w_enc0: w_enc0_box,
+            rom_w_enc1: w_enc1_box,
+        };
+
+        PoseidonAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
 
         assert!(res.iter().all(|v| *v == BE::ZERO));
     }
@@ -421,35 +413,33 @@ mod tests {
         let mut pi = crate::pi::PublicInputs::default();
         pi.feature_mask |= crate::pi::FM_VM | crate::pi::FM_SPONGE;
 
-        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let mds_box = Box::new([[BE::ZERO; 12]; 12]);
-        let dom_box = Box::new([BE::ZERO; 2]);
+        let rc_box = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_box = [[BE::ZERO; 12]; 12];
+        let dom_box = [BE::ZERO; 2];
 
         let mut res = vec![BE::ZERO; 12 * POSEIDON_ROUNDS + 12 + 16];
         let mut ix = 0usize;
 
-        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
-        let w_enc0_box = Box::new([BE::ZERO; 59]);
-        let w_enc1_box = Box::new([BE::ZERO; 59]);
+        let rc3_box = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_box = [[BE::ZERO; 3]; 3];
+        let w_enc0_box = [BE::ZERO; 59];
+        let w_enc1_box = [BE::ZERO; 59];
 
-        PoseidonBlock::eval_block(
-            &BlockCtx::new(
-                &cols,
-                &pi,
-                &rc_box,
-                &mds_box,
-                &dom_box,
-                &rc3_box,
-                &mds3_box,
-                &w_enc0_box,
-                &w_enc1_box,
-            ),
-            &frame,
-            &periodic,
-            &mut res,
-            &mut ix,
-        );
+        let features = pi.get_features();
+        let ctx = &AirSharedContext {
+            pub_inputs: pi,
+            cols,
+            features,
+            poseidon_rc: rc_box,
+            poseidon_mds: mds_box,
+            poseidon_dom: dom_box,
+            rom_rc: rc3_box,
+            rom_mds: mds3_box,
+            rom_w_enc0: w_enc0_box,
+            rom_w_enc1: w_enc1_box,
+        };
+
+        PoseidonAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
 
         assert!(res.iter().any(|v| *v != BE::ZERO));
     }

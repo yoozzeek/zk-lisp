@@ -4,9 +4,10 @@
 
 use std::panic;
 use winterfell::ProofOptions;
+use zk_lisp::build_trace;
 use zk_lisp::compiler::compile_entry;
 use zk_lisp::pi::PublicInputsBuilder;
-use zk_lisp::prove::{ZkProver, build_trace_with_pi, verify_proof};
+use zk_lisp::prove::{ZkProver, verify_proof};
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -40,13 +41,13 @@ fn enum_predicate_positive_verifies() {
     let program = compile_entry(src, &[t]).expect("compile");
 
     let expected = u128_to_bytes32(1);
-    let pi = PublicInputsBuilder::for_program(&program)
-        .vm_args(&[t])
-        .vm_expect_from_meta(&program, &expected)
+    let pi = PublicInputsBuilder::from_program(&program)
+        .with_args(&[t])
+        .with_expect(&expected)
         .build()
         .expect("pi");
 
-    let trace = build_trace_with_pi(&program, &pi).expect("trace");
+    let trace = build_trace(&program, &pi).expect("trace");
 
     let opts = opts();
     let prover = ZkProver::new(opts.clone(), pi.clone());
@@ -74,13 +75,13 @@ fn enum_predicate_negative_fails_verify() {
     let program = compile_entry(src, &[t]).expect("compile");
 
     let expected = u128_to_bytes32(1);
-    let pi = PublicInputsBuilder::for_program(&program)
-        .vm_args(&[t])
-        .vm_expect_from_meta(&program, &expected)
+    let pi = PublicInputsBuilder::from_program(&program)
+        .with_args(&[t])
+        .with_expect(&expected)
         .build()
         .expect("pi");
 
-    let trace = build_trace_with_pi(&program, &pi).expect("trace");
+    let trace = build_trace(&program, &pi).expect("trace");
 
     let opts = opts();
 

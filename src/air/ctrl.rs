@@ -6,14 +6,14 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
-use super::{AirBlock, BlockCtx};
-use crate::air::mixers;
+use crate::air::AirModule;
+use crate::air::{AirSharedContext, mixers};
 use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
-pub struct VmCtrlBlock;
+pub(super) struct VmCtrlAir;
 
-impl VmCtrlBlock {
-    pub fn push_degrees(out: &mut Vec<TransitionConstraintDegree>, sponge: bool) {
+impl AirModule for VmCtrlAir {
+    fn push_degrees(ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
         // selector bits booleanity
         // for ALU roles (dst0,a,b,c,dst1) => (5*NR)
         for _ in 0..(5 * NR) {
@@ -41,7 +41,7 @@ impl VmCtrlBlock {
             ));
         }
 
-        if sponge {
+        if ctx.features.sponge {
             // Sponge lane selectors
             // booleanity (10 * NR).
             for _ in 0..(10 * NR) {
@@ -100,21 +100,16 @@ impl VmCtrlBlock {
             vec![STEPS_PER_LEVEL_P2],
         ));
     }
-}
 
-impl<E> AirBlock<E> for VmCtrlBlock
-where
-    E: FieldElement<BaseField = BE> + From<BE>,
-{
-    fn push_degrees(_out: &mut Vec<TransitionConstraintDegree>) {}
-
-    fn eval_block(
-        ctx: &BlockCtx<E>,
+    fn eval_block<E>(
+        ctx: &AirSharedContext,
         frame: &EvaluationFrame<E>,
         periodic: &[E],
         result: &mut [E],
         ix: &mut usize,
-    ) {
+    ) where
+        E: FieldElement<BaseField = BE> + From<BE>,
+    {
         let cur = frame.current();
         let next = frame.next();
         let p_map = periodic[0];
@@ -246,7 +241,7 @@ where
         // Sponge selectors booleanity
         // and per-lane sum constraints
         // (only when sponge feature is enabled).
-        if ctx.pub_inputs.get_features().sponge {
+        if ctx.features.sponge {
             for lane in 0..10 {
                 // Booleanity for packed bits and active at map
                 for b in 0..crate::layout::SPONGE_IDX_BITS {
@@ -254,6 +249,7 @@ where
                     result[*ix] = p_map * b_sponge * bitv * (bitv - E::ONE) + s_high;
                     *ix += 1;
                 }
+
                 let act = cur[ctx.cols.sel_s_active_index(lane)];
                 result[*ix] = p_map * b_sponge * act * (act - E::ONE) + s_high;
                 *ix += 1;
@@ -408,34 +404,35 @@ mod tests {
         // Build ctx without SPONGE feature
         let pi_no_sponge = crate::pi::PublicInputs::default();
 
-        let rc_binding = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let mds_binding = Box::new([[BE::ZERO; 12]; 12]);
-        let dom_binding = Box::new([BE::ZERO; 2]);
+        let rc_binding = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_binding = [[BE::ZERO; 12]; 12];
+        let dom_binding = [BE::ZERO; 2];
 
-        let rc3_binding = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_binding = Box::new([[BE::ZERO; 3]; 3]);
-        let w_enc0_binding = Box::new([BE::ZERO; 59]);
-        let w_enc1_binding = Box::new([BE::ZERO; 59]);
+        let rc3_binding = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_binding = [[BE::ZERO; 3]; 3];
+        let w_enc0_binding = [BE::ZERO; 59];
+        let w_enc1_binding = [BE::ZERO; 59];
 
-        let ctx = BlockCtx::new(
-            &cols,
-            &pi_no_sponge,
-            &rc_binding,
-            &mds_binding,
-            &dom_binding,
-            &rc3_binding,
-            &mds3_binding,
-            &w_enc0_binding,
-            &w_enc1_binding,
-        );
+        let ctx = &AirSharedContext {
+            pub_inputs: pi_no_sponge,
+            cols,
+            features: Default::default(),
+            poseidon_rc: rc_binding,
+            poseidon_mds: mds_binding,
+            poseidon_dom: dom_binding,
+            rom_rc: rc3_binding,
+            rom_mds: mds3_binding,
+            rom_w_enc0: w_enc0_binding,
+            rom_w_enc1: w_enc1_binding,
+        };
 
         let mut ra = vec![BE::ZERO; 256];
         let mut rb = vec![BE::ZERO; 256];
         let mut ia = 0usize;
         let mut ib = 0usize;
 
-        VmCtrlBlock::eval_block(&ctx, &frame_a, &periodic, &mut ra, &mut ia);
-        VmCtrlBlock::eval_block(&ctx, &frame_b, &periodic, &mut rb, &mut ib);
+        VmCtrlAir::eval_block(ctx, &frame_a, &periodic, &mut ra, &mut ia);
+        VmCtrlAir::eval_block(ctx, &frame_b, &periodic, &mut rb, &mut ib);
 
         // With sponge disabled, changing sel_s
         // must not change evaluation.
@@ -468,33 +465,35 @@ mod tests {
         let mut pi = crate::pi::PublicInputs::default();
         pi.feature_mask |= crate::pi::FM_SPONGE | crate::pi::FM_VM;
 
-        let rc_binding = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let mds_binding = Box::new([[BE::ZERO; 12]; 12]);
-        let dom_binding = Box::new([BE::ZERO; 2]);
-        let rc3_binding = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_binding = Box::new([[BE::ZERO; 3]; 3]);
-        let w_enc0_binding = Box::new([BE::ZERO; 59]);
-        let w_enc1_binding = Box::new([BE::ZERO; 59]);
+        let rc_binding = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_binding = [[BE::ZERO; 12]; 12];
+        let dom_binding = [BE::ZERO; 2];
+        let rc3_binding = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_binding = [[BE::ZERO; 3]; 3];
+        let w_enc0_binding = [BE::ZERO; 59];
+        let w_enc1_binding = [BE::ZERO; 59];
 
-        let ctx = BlockCtx::new(
-            &cols,
-            &pi,
-            &rc_binding,
-            &mds_binding,
-            &dom_binding,
-            &rc3_binding,
-            &mds3_binding,
-            &w_enc0_binding,
-            &w_enc1_binding,
-        );
+        let features = pi.get_features();
+        let ctx = &AirSharedContext {
+            pub_inputs: pi,
+            cols,
+            features,
+            poseidon_rc: rc_binding,
+            poseidon_mds: mds_binding,
+            poseidon_dom: dom_binding,
+            rom_rc: rc3_binding,
+            rom_mds: mds3_binding,
+            rom_w_enc0: w_enc0_binding,
+            rom_w_enc1: w_enc1_binding,
+        };
 
         let mut ra = vec![BE::ZERO; 256];
         let mut rb = vec![BE::ZERO; 256];
         let mut ia = 0usize;
         let mut ib = 0usize;
 
-        VmCtrlBlock::eval_block(&ctx, &frame_a, &periodic, &mut ra, &mut ia);
-        VmCtrlBlock::eval_block(&ctx, &frame_b, &periodic, &mut rb, &mut ib);
+        VmCtrlAir::eval_block(ctx, &frame_a, &periodic, &mut ra, &mut ia);
+        VmCtrlAir::eval_block(ctx, &frame_b, &periodic, &mut rb, &mut ib);
 
         assert_eq!(ia, ib);
         assert_ne!(ra, rb);
@@ -517,38 +516,35 @@ mod tests {
         let mut res = vec![BE::ZERO; 256];
         let mut ix = 0usize;
 
-        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let mds_box = Box::new({
+        let rc_box = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_box = {
             let mut m = [[BE::ZERO; 12]; 12];
             for (i, row) in m.iter_mut().enumerate() {
                 row[i] = BE::ONE;
             }
 
             m
-        });
+        };
 
-        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
-        let w_enc0_box = Box::new([BE::ZERO; 59]);
-        let w_enc1_box = Box::new([BE::ZERO; 59]);
+        let rc3_box = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_box = [[BE::ZERO; 3]; 3];
+        let w_enc0_box = [BE::ZERO; 59];
+        let w_enc1_box = [BE::ZERO; 59];
 
-        VmCtrlBlock::eval_block(
-            &BlockCtx::new(
-                &cols,
-                &Default::default(),
-                &rc_box,
-                &mds_box,
-                &Box::new([BE::ZERO; 2]),
-                &rc3_box,
-                &mds3_box,
-                &w_enc0_box,
-                &w_enc1_box,
-            ),
-            &frame,
-            &periodic,
-            &mut res,
-            &mut ix,
-        );
+        let ctx = &AirSharedContext {
+            pub_inputs: Default::default(),
+            cols,
+            features: Default::default(),
+            poseidon_rc: rc_box,
+            poseidon_mds: mds_box,
+            poseidon_dom: [BE::ZERO; 2],
+            rom_rc: rc3_box,
+            rom_mds: mds3_box,
+            rom_w_enc0: w_enc0_box,
+            rom_w_enc1: w_enc1_box,
+        };
+
+        VmCtrlAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
 
         assert!(res.iter().any(|v| *v != BE::ZERO));
     }
@@ -574,36 +570,34 @@ mod tests {
         let mut res = vec![BE::ZERO; 256];
         let mut ix = 0usize;
 
-        let rc_box = Box::new([[BE::ZERO; 12]; POSEIDON_ROUNDS]);
-        let mds_box = Box::new([[BE::ZERO; 12]; 12]);
-        let dom_box = Box::new([BE::ZERO; 2]);
-        let rc3_box = Box::new([[BE::ZERO; 3]; POSEIDON_ROUNDS]);
-        let mds3_box = Box::new([[BE::ZERO; 3]; 3]);
-        let w_enc0_box = Box::new([BE::ZERO; 59]);
-        let w_enc1_box = Box::new([BE::ZERO; 59]);
+        let rc_box = [[BE::ZERO; 12]; POSEIDON_ROUNDS];
+        let mds_box = [[BE::ZERO; 12]; 12];
+        let dom_box = [BE::ZERO; 2];
+        let rc3_box = [[BE::ZERO; 3]; POSEIDON_ROUNDS];
+        let mds3_box = [[BE::ZERO; 3]; 3];
+        let w_enc0_box = [BE::ZERO; 59];
+        let w_enc1_box = [BE::ZERO; 59];
 
         // Enable SPONGE feature in PI
         // so booleanity constraints are active.
         let mut pi = crate::pi::PublicInputs::default();
         pi.feature_mask |= crate::pi::FM_SPONGE | crate::pi::FM_VM;
 
-        VmCtrlBlock::eval_block(
-            &BlockCtx::new(
-                &cols,
-                &pi,
-                &rc_box,
-                &mds_box,
-                &dom_box,
-                &rc3_box,
-                &mds3_box,
-                &w_enc0_box,
-                &w_enc1_box,
-            ),
-            &frame,
-            &periodic,
-            &mut res,
-            &mut ix,
-        );
+        let features = pi.get_features();
+        let ctx = &AirSharedContext {
+            pub_inputs: pi,
+            cols,
+            features,
+            poseidon_rc: rc_box,
+            poseidon_mds: mds_box,
+            poseidon_dom: dom_box,
+            rom_rc: rc3_box,
+            rom_mds: mds3_box,
+            rom_w_enc0: w_enc0_box,
+            rom_w_enc1: w_enc1_box,
+        };
+
+        VmCtrlAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
 
         assert!(res.iter().any(|v| *v != BE::ZERO));
     }

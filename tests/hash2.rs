@@ -3,20 +3,22 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::ProofOptions;
+use zk_lisp::build_trace;
 use zk_lisp::compiler::compile_str;
 use zk_lisp::pi::{self, PublicInputs};
-use zk_lisp::prove::{ZkProver, build_trace, verify_proof};
+use zk_lisp::prove::{ZkProver, verify_proof};
 
 #[test]
 fn hash2_prove_verify() {
     // Poseidon placeholder: choose left=1 to keep output stable (1)
     let src = "(let ((x 1) (y 2)) (hash2 x y))";
     let program = compile_str(src).expect("compile");
-    let trace = build_trace(&program).expect("trace");
 
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;
     pi.program_commitment = program.commitment;
+
+    let trace = build_trace(&program, &pi).expect("trace");
 
     let opts = ProofOptions::new(
         1,

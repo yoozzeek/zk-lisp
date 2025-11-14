@@ -5,7 +5,7 @@
 use crate::layout::POSEIDON_ROUNDS;
 use winterfell::math::FieldElement;
 
-pub(crate) fn low<E: FieldElement>(periodic: &[E]) -> E {
+pub(super) fn low<E: FieldElement>(periodic: &[E]) -> E {
     // s_low = p_last * p_map
     let p_map = periodic[0];
     let p_last = periodic[1 + POSEIDON_ROUNDS + 3];
@@ -14,12 +14,12 @@ pub(crate) fn low<E: FieldElement>(periodic: &[E]) -> E {
 }
 
 #[inline]
-pub(crate) fn pi1<E: FieldElement>(periodic: &[E], pi: E) -> E {
+pub(super) fn pi1<E: FieldElement>(periodic: &[E], pi: E) -> E {
     low(periodic) * pi
 }
 
 #[inline]
-pub(crate) fn pi4<E: FieldElement>(periodic: &[E], pi: E) -> E {
+pub(super) fn pi4<E: FieldElement>(periodic: &[E], pi: E) -> E {
     let pi2 = pi * pi;
     let pi4 = pi2 * pi2;
 
@@ -27,7 +27,7 @@ pub(crate) fn pi4<E: FieldElement>(periodic: &[E], pi: E) -> E {
 }
 
 #[inline]
-pub(crate) fn pi6<E: FieldElement>(periodic: &[E], pi: E) -> E {
+pub(super) fn pi6<E: FieldElement>(periodic: &[E], pi: E) -> E {
     // pi^6 = (pi^2)^3
     let pi2 = pi * pi;
     let pi4 = pi2 * pi2;

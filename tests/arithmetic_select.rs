@@ -3,9 +3,10 @@
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::ProofOptions;
+use zk_lisp::build_trace;
 use zk_lisp::compiler::compile_entry;
 use zk_lisp::pi::{self, PublicInputs};
-use zk_lisp::prove::{ZkProver, build_trace, verify_proof};
+use zk_lisp::prove::{ZkProver, verify_proof};
 
 #[test]
 fn arithmetic_select_prove_verify() {
@@ -17,12 +18,11 @@ fn arithmetic_select_prove_verify() {
  ";
     let program = compile_entry(src, &[]).expect("compile");
 
-    let trace = build_trace(&program).expect("trace");
-
     let mut pi = PublicInputs::default();
     pi.feature_mask = pi::FM_VM;
     pi.program_commitment = program.commitment;
 
+    let trace = build_trace(&program, &pi).expect("trace");
     let opts = ProofOptions::new(
         1,
         8,

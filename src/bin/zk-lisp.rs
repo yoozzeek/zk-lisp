@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 use winterfell::math::StarkField;
 use winterfell::{BatchingMethod, FieldExtension, Proof, ProofOptions, Trace};
-use zk_lisp::{PreflightMode, compiler, error, prove};
+use zk_lisp::{PreflightMode, build_trace, compiler, error, prove, run_preflight};
 
 // Max file size for REPL
 // operations (load/verify @PATH)
@@ -219,13 +219,13 @@ fn read_program(path: impl AsRef<std::path::Path>, max_bytes: usize) -> Result<S
 }
 
 fn build_pi_for_program(
-    program: &compiler::ir::Program,
+    program: &compiler::Program,
     args: &[u64],
 ) -> Result<zk_lisp::pi::PublicInputs, CliError> {
     // Build features from program ops and bind VM args.
     // Ensures Merkle/RAM/VM/POSEIDON/SPONGE flags are correct.
-    zk_lisp::pi::PublicInputsBuilder::for_program(program)
-        .vm_args(args)
+    zk_lisp::pi::PublicInputsBuilder::from_program(program)
+        .with_args(args)
         .build()
         .map_err(CliError::Build)
 }
@@ -233,26 +233,27 @@ fn build_pi_for_program(
 fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: PreflightArg) -> Result<(), CliError> {
     let src = read_program(&args.path, max_bytes)?;
     let program = compiler::compile_entry(&src, &args.args)?;
+    let pi = build_pi_for_program(&program, &args.args)?;
 
-    zk_lisp::poseidon::validate_poseidon_suite(&program.commitment)
+    zk_lisp::poseidon::validate_poseidon_suite(&pi.program_commitment)
         .map_err(|e| CliError::InvalidInput(format!("{e}")))?;
 
-    let pi = build_pi_for_program(&program, &args.args)?;
     // Build trace with VM args
-    let trace = prove::build_trace_with_pi(&program, &pi)?;
+    let trace = build_trace(&program, &pi)?;
 
     let pf_mode = resolve_preflight_mode(pf);
     if !matches!(pf_mode, PreflightMode::Off) {
         let opts = proof_opts(1, 8, 0);
-        prove::preflight_check(pf_mode, &opts, &pi, &trace)?;
+        run_preflight(pf_mode, &opts, &pi, &trace)?;
     }
 
     // Compute VM output position and value
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     let cols = zk_lisp::layout::Columns::baseline();
     let val = trace.get(cols.r_index(out_reg as usize), out_row as usize);
 
     let val_u128: u128 = val.as_int();
+    let metrics = program.compiler_metrics;
 
     if json {
         println!(
@@ -264,12 +265,12 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: PreflightArg) -> Res
                 "out_reg": out_reg,
                 "out_row": out_row,
                 "trace_len": trace.length(),
-                "compile_stats": {
-                    "peak_live": program.meta.peak_live,
-                    "reuse_dst": program.meta.reuse_dst_count,
-                    "su_reorders": program.meta.su_reorders_count,
-                    "balanced_chains": program.meta.balanced_chains_count,
-                    "mov_elided": program.meta.mov_elided_count
+                "compiler_metrics": {
+                    "peak_live": metrics.peak_live,
+                    "reuse_dst": metrics.reuse_dst,
+                    "su_reorders": metrics.su_reorders,
+                    "balanced_chains": metrics.balanced_chains,
+                    "mov_elided": metrics.mov_elided
                 }
             })
         );
@@ -280,12 +281,12 @@ fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: PreflightArg) -> Res
         );
 
         println!(
-            "stats: peak_live={} reuse_dst={} su_reorders={} balanced_chains={} mov_elided={}",
-            program.meta.peak_live,
-            program.meta.reuse_dst_count,
-            program.meta.su_reorders_count,
-            program.meta.balanced_chains_count,
-            program.meta.mov_elided_count
+            "metrics: peak_live={} reuse_dst={} su_reorders={} balanced_chains={} mov_elided={}",
+            metrics.peak_live,
+            metrics.reuse_dst,
+            metrics.su_reorders,
+            metrics.balanced_chains,
+            metrics.mov_elided
         );
     }
 
@@ -306,15 +307,15 @@ fn cmd_prove(
 
     let src = read_program(&args.path, max_bytes)?;
     let program = compiler::compile_entry(&src, &args.args)?;
+    let mut pi = build_pi_for_program(&program, &args.args)?;
 
     zk_lisp::poseidon::validate_poseidon_suite(&program.commitment)
         .map_err(|e| CliError::InvalidInput(format!("{e}")))?;
 
-    let mut pi = build_pi_for_program(&program, &args.args)?;
-    let trace = prove::build_trace_with_pi(&program, &pi)?;
+    let trace = build_trace(&program, &pi)?;
 
     // VM output position
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     pi.vm_out_reg = out_reg;
     pi.vm_out_row = out_row;
 
@@ -396,10 +397,10 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliE
 
     // Rebuild PI similarly to Prove
     let mut pi = build_pi_for_program(&program, &args.args)?;
-    let trace = prove::build_trace_with_pi(&program, &pi)?;
+    let trace = build_trace(&program, &pi)?;
 
     // VM output location
-    let (out_reg, out_row) = prove::compute_vm_output(&trace);
+    let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
     pi.vm_out_reg = out_reg;
     pi.vm_out_row = out_row;
 
@@ -661,12 +662,13 @@ fn cmd_repl() -> Result<(), CliError> {
                         }
                     };
 
-                    match prove::build_trace_with_pi(&program, &pi) {
+                    match build_trace(&program, &pi) {
                         Err(e) => println!("error: build trace: {e}"),
                         Ok(trace) => {
                             // cost metrics
                             let rows = trace.length();
                             let cost = compute_cost(&program);
+                            let metrics = program.compiler_metrics;
 
                             println!(
                                 "cost: rows={rows}, ops={}, sponge_absorb_calls={}, sponge_absorb_elems={}, squeeze_calls={}, merkle_steps={}",
@@ -678,12 +680,12 @@ fn cmd_repl() -> Result<(), CliError> {
                             );
 
                             println!(
-                                "stats: peak_live={} reuse_dst={} su_reorders={} balanced_chains={} mov_elided={}",
-                                program.meta.peak_live,
-                                program.meta.reuse_dst_count,
-                                program.meta.su_reorders_count,
-                                program.meta.balanced_chains_count,
-                                program.meta.mov_elided_count
+                                "metrics: peak_live={} reuse_dst={} su_reorders={} balanced_chains={} mov_elided={}",
+                                metrics.peak_live,
+                                metrics.reuse_dst,
+                                metrics.su_reorders,
+                                metrics.balanced_chains,
+                                metrics.mov_elided
                             );
 
                             let opts = proof_opts(1, 8, 0);
@@ -801,7 +803,7 @@ fn cmd_repl() -> Result<(), CliError> {
                     continue;
                 }
             };
-            let trace = match prove::build_trace_with_pi(&program, &pi) {
+            let trace = match build_trace(&program, &pi) {
                 Ok(t) => t,
                 Err(e) => {
                     println!("error: build trace: {e}");
@@ -809,7 +811,7 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
-            let (out_reg, out_row) = prove::compute_vm_output(&trace);
+            let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
             pi.vm_out_reg = out_reg;
             pi.vm_out_row = out_row;
 
@@ -868,10 +870,11 @@ fn cmd_repl() -> Result<(), CliError> {
                         continue;
                     }
                 };
-                match prove::build_trace_with_pi(&program, &pi) {
+
+                match build_trace(&program, &pi) {
                     Err(e) => println!("error: build trace: {e}"),
                     Ok(trace) => {
-                        let (out_reg, out_row) = prove::compute_vm_output(&trace);
+                        let (out_reg, out_row) = zk_lisp::vm_output_from_trace(&trace);
                         let cols = zk_lisp::layout::Columns::baseline();
                         let val = trace.get(cols.r_index(out_reg as usize), out_row as usize);
                         let v: u128 = val.as_int();
@@ -1092,8 +1095,8 @@ struct Cost {
     merkle_steps: usize,
 }
 
-fn compute_cost(program: &compiler::ir::Program) -> Cost {
-    use zk_lisp::compiler::ir::Op::*;
+fn compute_cost(program: &zk_lisp::compiler::Program) -> Cost {
+    use zk_lisp::compiler::builder::Op::*;
 
     let mut c = Cost {
         ops: program.ops.len(),
