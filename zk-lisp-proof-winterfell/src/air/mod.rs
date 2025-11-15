@@ -240,6 +240,13 @@ impl Air for ZkLispAir {
             if core.program_commitment.iter().any(|b| *b != 0) {
                 num_assertions += 1; // PC=0 at lvl0 map
             }
+
+            // Bind runtime public main_args slots to the
+            // tail of the register file at level 0 map row.
+            let main_slots_len = utils::encode_main_args_to_slots(&core.main_args).len();
+            if main_slots_len > 0 {
+                num_assertions += main_slots_len;
+            }
         }
         if features.vm && features.vm_expect {
             // one assertion for expected
