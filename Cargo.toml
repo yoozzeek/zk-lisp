@@ -1,5 +1,4 @@
 [workspace]
-name = "zk-lisp"
 resolver = "1"
 members = [
     "zk-lisp-compiler",
@@ -10,6 +9,7 @@ members = [
 ]
 
 [workspace.package]
+name = "zk-lisp"
 license = "AGPL-3.0-or-later"
 version = "0.11.0"
 edition = "2024"
