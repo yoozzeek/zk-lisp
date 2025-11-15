@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -144,10 +144,9 @@ impl ZkBackend for WinterfellBackend {
 
         let trace = build_trace(program, pub_inputs)?;
 
-        // Offline ROM accumulator
-        // from program.
+        // Offline ROM accumulator from program
         let rom_acc = if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-            crate::romacc::rom_acc_from_program(program)
+            romacc::rom_acc_from_program(program)
         } else {
             [BE::ZERO; 3]
         };
@@ -228,7 +227,7 @@ impl PreflightBackend for WinterfellBackend {
         );
 
         let trace = build_trace(program, pub_inputs)?;
-        crate::preflight::run(mode, &wf_opts, pub_inputs, &trace)
+        preflight::run(mode, &wf_opts, pub_inputs, &trace)
     }
 }
 
@@ -240,6 +239,6 @@ impl ProofCodec for WinterfellBackend {
     }
 
     fn proof_from_bytes(bytes: &[u8]) -> Result<Self::Proof, Self::CodecError> {
-        Proof::from_bytes(bytes).map_err(|e| crate::prove::Error::BackendSource(Box::new(e)))
+        Proof::from_bytes(bytes).map_err(|e| prove::Error::BackendSource(Box::new(e)))
     }
 }
