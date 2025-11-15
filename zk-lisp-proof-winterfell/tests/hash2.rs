@@ -41,7 +41,7 @@ fn hash2_prove_verify() {
     let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
-    match verify_proof(proof, pi, &opts) {
+    match verify_proof(proof, &program, pi, &opts) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {

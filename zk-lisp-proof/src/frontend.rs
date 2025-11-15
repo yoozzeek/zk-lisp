@@ -81,10 +81,11 @@ pub fn prove<B: ZkBackend>(
 /// Thin wrapper over [`ZkBackend::verify`].
 pub fn verify<B: ZkBackend>(
     proof: B::Proof,
+    program: &B::Program,
     pub_inputs: &B::PublicInputs,
     opts: &B::ProverOptions,
 ) -> Result<(), B::Error> {
-    B::verify(proof, pub_inputs, opts)
+    B::verify(proof, program, pub_inputs, opts)
 }
 
 /// Execute a program and obtain its VM output cell and

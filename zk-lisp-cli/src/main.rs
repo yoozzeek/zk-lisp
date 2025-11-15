@@ -165,10 +165,10 @@ enum CliError {
         source: io::Error,
         path: PathBuf,
     },
-    #[error("prove error")]
+    #[error("prove error: {0}")]
     Prover(#[from] prove::Error),
-    #[error("verify error")]
-    Verify(prove::Error),
+    #[error("verify error: {0}")]
+    Verify(#[source] prove::Error),
     #[error("build error")]
     Build(#[from] error::Error),
     #[error("hex error")]
@@ -400,7 +400,7 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliE
         .map_err(|e| CliError::InvalidInput(format!("invalid proof encoding: {e}")))?;
 
     let opts = proof_opts(args.queries, args.blowup, args.grind);
-    frontend::verify::<WinterfellBackend>(proof, &pi, &opts).map_err(CliError::Verify)?;
+    frontend::verify::<WinterfellBackend>(proof, &program, &pi, &opts).map_err(CliError::Verify)?;
 
     if json {
         println!(
@@ -787,7 +787,7 @@ fn cmd_repl() -> Result<(), CliError> {
             };
 
             let opts = proof_opts(1, 8, 0);
-            match frontend::verify::<WinterfellBackend>(proof, &pi, &opts) {
+            match frontend::verify::<WinterfellBackend>(proof, &program, &pi, &opts) {
                 Ok(()) => println!("OK"),
                 Err(e) => println!("verify error: {e}"),
             }

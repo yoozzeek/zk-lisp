@@ -76,6 +76,10 @@ struct AirSharedContext {
 
     /// Final ROM accumulator state lanes
     /// (t=3 sponge) as observed by the prover.
+    // Final ROM accumulator lanes (t=3 sponge). Currently
+    // kept only for backwards compatibility; ROM binding
+    // uses internal trace wiring and does not rely on this
+    // handle in the AIR.
     pub rom_acc: [BaseElement; 3],
 
     /// Field-level program commitment derived from the

@@ -65,7 +65,7 @@ fn safe_add_trace_and_prove() {
     let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     match prover.prove(trace) {
         Ok(proof) => {
-            let _ = verify_proof(proof, pi, &opts);
+            let _ = verify_proof(proof, &program, pi, &opts);
         }
         Err(e) => prove_or_allow_backend(e),
     }
@@ -93,7 +93,7 @@ fn safe_sub_trace_and_prove() {
     let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     match prover.prove(trace) {
         Ok(proof) => {
-            let _ = verify_proof(proof, pi, &opts);
+            let _ = verify_proof(proof, &program, pi, &opts);
         }
         Err(e) => prove_or_allow_backend(e),
     }
@@ -121,7 +121,7 @@ fn safe_mul_trace_and_prove() {
     let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     match prover.prove(trace) {
         Ok(proof) => {
-            let _ = verify_proof(proof, pi, &opts);
+            let _ = verify_proof(proof, &program, pi, &opts);
         }
         Err(e) => prove_or_allow_backend(e),
     }
@@ -192,7 +192,7 @@ fn divmod_q_r_e2e_more_cases_and_prove() {
             .with_preflight_mode(zk_lisp_proof::frontend::PreflightMode::Off);
         match prover.prove(trace) {
             Ok(proof) => {
-                let _ = verify_proof(proof, pi, &opts);
+                let _ = verify_proof(proof, &program, pi, &opts);
             }
             Err(e) => prove_or_allow_backend(e),
         }
@@ -225,7 +225,7 @@ fn divmod_q_r_e2e_more_cases_and_prove() {
             .with_preflight_mode(zk_lisp_proof::frontend::PreflightMode::Off);
         match prover.prove(trace) {
             Ok(proof) => {
-                let _ = verify_proof(proof, pi, &opts);
+                let _ = verify_proof(proof, &program, pi, &opts);
             }
             Err(e) => prove_or_allow_backend(e),
         }
@@ -255,7 +255,7 @@ fn divmod_divide_by_zero_proving_fails() {
             // In release builds, the prover
             // may succeed even for invalid traces;
             // verification must then fail.
-            let v = verify_proof(proof, pi, &opts);
+            let v = verify_proof(proof, &program, pi, &opts);
             assert!(
                 v.is_err(),
                 "verify unexpectedly succeeded for division by zero"
@@ -306,7 +306,7 @@ fn rom_one_hot_op_mismatch_proof_fails() {
             // In release builds, the prover may
             // succeed even for invalid traces;
             // verification must then fail.
-            let v = verify_proof(proof, pi, &opts);
+            let v = verify_proof(proof, &program, pi, &opts);
             assert!(
                 v.is_err(),
                 "verify unexpectedly succeeded despite ROM/op mismatch"

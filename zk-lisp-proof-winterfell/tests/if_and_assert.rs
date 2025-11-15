@@ -47,7 +47,7 @@ fn assert_positive() {
     let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
-    match verify_proof(proof, pi, &opts) {
+    match verify_proof(proof, &program, pi, &opts) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {
@@ -83,7 +83,7 @@ fn if_positive() {
     let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
-    match verify_proof(proof, pi, &opts) {
+    match verify_proof(proof, &program, pi, &opts) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {
@@ -135,7 +135,7 @@ fn assert_negative_may_fail_at_prove_or_verify() {
                 Ok(proof) => {
                     // In release, proving may succeed,
                     // but verification must fail.
-                    verify_proof(proof, pi, &opts).expect_err("verify must fail");
+                    verify_proof(proof, &program, pi, &opts).expect_err("verify must fail");
                 }
             }
         }

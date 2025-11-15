@@ -44,7 +44,7 @@ fn arithmetic_select_prove_verify() {
     let proof = prover.prove(trace).expect("prove");
 
     // Verify (allow insufficient conjectured security on tiny traces)
-    match verify_proof(proof, pi, &opts) {
+    match verify_proof(proof, &program, pi, &opts) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {

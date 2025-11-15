@@ -136,12 +136,11 @@ impl AirModule for RomAir {
         ));
 
         // Bind final ROM accumulator lanes to
-        // the prover-supplied rom_acc handle.
-        //
-        // At this stage rom_acc is populated from
-        // the last row of the ROM trace, making
-        // this a tautological self-binding that
-        // still enforces ROM↔VM consistency.
+        // the backend-supplied handle derived
+        // deterministically from the program.
+        // This ties the ROM trace to the offline
+        // accumulator and ensures ROM↔VM/program
+        // consistency across prove/verify.
         out.push(Assertion::single(
             ctx.cols.rom_s_index(0),
             last,

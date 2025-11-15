@@ -64,6 +64,7 @@ pub trait ZkBackend {
 
     fn verify(
         proof: Self::Proof,
+        program: &Self::Program,
         pub_inputs: &Self::PublicInputs,
         opts: &Self::ProverOptions,
     ) -> Result<(), Self::Error>;

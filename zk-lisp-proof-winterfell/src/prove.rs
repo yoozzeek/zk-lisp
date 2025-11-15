@@ -24,6 +24,7 @@ use winterfell::{
     math::fields::f128::BaseElement as BE,
     matrix::ColMatrix,
 };
+use zk_lisp_compiler::Program;
 use zk_lisp_proof::error;
 use zk_lisp_proof::frontend::PreflightMode;
 use zk_lisp_proof::pi as core_pi;
@@ -34,9 +35,9 @@ use crate::{preflight::run as run_preflight, utils};
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("backend error {0}")]
+    #[error("backend error: {0}")]
     Backend(String),
-    #[error("backend error")]
+    #[error("backend error: {0}")]
     BackendSource(#[source] Box<dyn StdError + Send + Sync + 'static>),
     #[error(transparent)]
     PublicInputs(#[from] error::Error),
@@ -217,19 +218,33 @@ impl WProver for ZkWinterfellProver {
 
 #[tracing::instrument(
     level = "info",
-    skip(proof, pi, opts),
+    skip(proof, program, pi, opts),
     fields(
         q = %opts.num_queries(),
         blowup = %opts.blowup_factor(),
         grind = %opts.grinding_factor(),
     )
 )]
-pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Result<(), Error> {
+pub fn verify_proof(
+    proof: Proof,
+    program: &Program,
+    pi: PublicInputs,
+    opts: &ProofOptions,
+) -> Result<(), Error> {
     pi.validate_flags()?;
 
     // Enforce a minimum conjectured security
     let min_bits = if cfg!(debug_assertions) { 64 } else { 128 };
     let acceptable = winterfell::AcceptableOptions::MinConjecturedSecurity(min_bits);
+
+    // Recompute offline ROM accumulator
+    // from the program when a non-zero
+    // program commitment is present.
+    let rom_acc = if pi.program_commitment.iter().any(|b| *b != 0) {
+        crate::romacc::rom_acc_from_program(program)
+    } else {
+        [BE::ZERO; 3]
+    };
 
     tracing::info!(
         target = "proof.verify",
@@ -248,10 +263,7 @@ pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Resu
             MerkleTree<Blake3_256<BE>>,
         >(
             proof,
-            crate::AirPublicInputs {
-                core: pi,
-                rom_acc: [BE::ZERO; 3],
-            },
+            crate::AirPublicInputs { core: pi, rom_acc },
             &acceptable,
         )
     }));
@@ -267,7 +279,21 @@ pub fn verify_proof(proof: Proof, pi: PublicInputs, opts: &ProofOptions) -> Resu
 
             Ok(())
         }
-        Ok(Err(e)) => Err(Error::BackendSource(Box::new(e))),
-        Err(_) => Err(Error::Backend("winterfell panic during verify".into())),
+        Ok(Err(e)) => {
+            tracing::error!(
+                target = "proof.verify",
+                error = %e,
+                debug_error = ?e,
+                min_bits,
+                "verify backend error",
+            );
+
+            Err(Error::BackendSource(Box::new(e)))
+        }
+        Err(_) => {
+            tracing::error!(target = "proof.verify", "winterfell panic during verify");
+
+            Err(Error::Backend("winterfell panic during verify".into()))
+        }
     }
 }

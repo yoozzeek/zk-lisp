@@ -147,6 +147,7 @@ impl ZkBackend for WinterfellBackend {
 
     fn verify(
         proof: Self::Proof,
+        program: &Self::Program,
         pub_inputs: &Self::PublicInputs,
         opts: &Self::ProverOptions,
     ) -> Result<(), Self::Error> {
@@ -161,7 +162,7 @@ impl ZkBackend for WinterfellBackend {
             BatchingMethod::Linear,
         );
 
-        prove::verify_proof(proof, pub_inputs.clone(), &wf_opts)
+        prove::verify_proof(proof, program, pub_inputs.clone(), &wf_opts)
     }
 }
 
