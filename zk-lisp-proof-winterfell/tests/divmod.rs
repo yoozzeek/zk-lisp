@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of zk-lisp.
-// Copyright (C) 2025  Andrei Kochergin
+// Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
