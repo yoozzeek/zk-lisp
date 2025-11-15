@@ -22,21 +22,41 @@ How it works:
   trace. AIR is predefined, you don't write constraints.
   Winterfell proves the trace satisfies AIR.
 
+Features:
+
+  Backend-agnostic Lisp DSL compiler.
+  Abstract traits for multiple STARK backends.
+  Winterfell-based STARK implementation.
+  zk-lisp CLI with run|prove|verify|repl command.
+  Interactive REPL with :prove and :verify commands.
+
+Roadmap:
+
+  [in progress] Typed public/secret args, functions, and variables
+  [in progress] Better DX in the REPL, code docs, and small DSL sugar
+  [planned] STARK-in-STARK incrementally verifiable computation
+  [planned] Website, docs, and an online playground/REPL
+  [planned] Cross-program invocations
+
 Quickstart:
 
   Run:
     cargo run --bin zk-lisp -- \
-      run examples/hello-zk.zlisp --arg 2 --arg 3
+      run examples/hello-zk.zlisp \
+        --arg u64:2 --arg u64:5 --secret u64:3
 
   Prove:
     cargo run --bin zk-lisp -- \
       prove examples/hello-zk.zlisp \
-        --out ./proof.bin --quiet --arg 2 --arg 3
+        --out ./proof.bin \
+        --arg u64:2 --arg u64:5 --secret u64:3
 
   Verify:
     cargo run --bin zk-lisp -- \
-      verify @./proof.bin examples/hello-zk.zlisp \
-        --arg 2 --arg 3
+      verify ./proof.bin examples/hello-zk.zlisp \
+        --arg u64:2 --arg u64:5
+
+    If you pass another args verification will fail.
 
 Testing:
 

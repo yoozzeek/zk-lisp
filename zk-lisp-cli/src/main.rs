@@ -278,10 +278,47 @@ fn build_pi_for_program(
     public_args: &[VmArg],
     secret_args: &[VmArg],
 ) -> Result<PublicInputs, CliError> {
+    let main_args = if let Some(schema) = program.type_schemas.fns.get("main") {
+        if schema.args.len() != public_args.len() {
+            return Err(CliError::InvalidInput(format!(
+                "main typed schema expects {} args, but CLI provided {}",
+                schema.args.len(),
+                public_args.len(),
+            )));
+        }
+
+        let mut out = Vec::new();
+        for (idx, ((role, ty), vmarg)) in schema.args.iter().zip(public_args).enumerate() {
+            if matches!(role, compiler::ArgRole::Let) {
+                if !matches!(ty, compiler::ScalarType::U64) {
+                    let pos = idx + 1;
+                    return Err(CliError::InvalidInput(format!(
+                        "main arg #{pos}: only u64 is supported for runtime public inputs",
+                    )));
+                }
+
+                match vmarg {
+                    VmArg::U64(_) => out.push(vmarg.clone()),
+                    _ => {
+                        let pos = idx + 1;
+                        return Err(CliError::InvalidInput(format!(
+                            "main arg #{pos}: CLI currently supports only u64 for public args",
+                        )));
+                    }
+                }
+            }
+        }
+
+        out
+    } else {
+        Vec::new()
+    };
+
     // Build features from program ops and bind typed VM args.
     // Ensures Merkle/RAM/VM/POSEIDON/SPONGE flags are correct.
     PublicInputsBuilder::from_program(program)
         .with_public_args(public_args)
+        .with_main_args(&main_args)
         .with_secret_args(secret_args)
         .build()
         .map_err(CliError::Build)
@@ -293,8 +330,11 @@ fn build_pi_for_program(
 ///
 /// Current policy:
 /// - if no schema for `main` is present, no extra checks;
-/// - if schema exists, all args must be `Const u64` and
-///   the arity must match the number of CLI args.
+/// - if schema exists, all args must be `u64` and
+///   the arity must match the number of CLI args;
+/// - roles `Const` and `Let` are allowed for `main`,
+///   but `Let` arguments are treated as runtime public
+///   inputs and currently must also be `u64`.
 fn validate_main_args_against_schema(
     program: &compiler::Program,
     public_args: &[VmArg],
@@ -314,29 +354,29 @@ fn validate_main_args_against_schema(
     for (idx, (role, ty)) in schema.args.iter().enumerate() {
         let pos = idx + 1;
 
-        if matches!(role, compiler::ArgRole::Let) {
+        if !matches!(ty, compiler::ScalarType::U64) {
+            let ty_str = match ty {
+                compiler::ScalarType::U64 => "u64",
+                compiler::ScalarType::U128 => "u128",
+                compiler::ScalarType::Bytes32 => "bytes32",
+                compiler::ScalarType::Str64 => "str64",
+            };
+
             return Err(CliError::InvalidInput(format!(
-                "main arg #{pos}: role 'let' is not supported for CLI yet; all main args must be const",
+                "main arg #{pos}: type '{ty_str}' is not supported for CLI public args yet; expected 'u64'",
             )));
         }
 
-        match ty {
-            compiler::ScalarType::U64 => {
-                // OK: public CLI args currently support only u64.
-            }
-            other => {
-                let ty_str = match other {
-                    compiler::ScalarType::U64 => "u64",
-                    compiler::ScalarType::U128 => "u128",
-                    compiler::ScalarType::Bytes32 => "bytes32",
-                    compiler::ScalarType::Str64 => "str64",
-                };
-
+        match public_args[idx] {
+            VmArg::U64(_) => {}
+            _ => {
                 return Err(CliError::InvalidInput(format!(
-                    "main arg #{pos}: type '{ty_str}' is not supported for CLI public args yet; expected 'u64'",
+                    "main arg #{pos}: CLI currently supports only u64 for public args",
                 )));
             }
         }
+
+        let _ = role;
     }
 
     Ok(())

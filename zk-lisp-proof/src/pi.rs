@@ -60,6 +60,13 @@ pub struct PublicInputs {
     /// the AIR public input vector.
     pub public_args: Vec<VmArg>,
 
+    /// Runtime public arguments for `main`.
+    ///
+    /// From the backend perspective these are
+    /// just typed values; the Const vs Let role
+    /// is enforced at the frontend via schemas.
+    pub main_args: Vec<VmArg>,
+
     /// Secret VM arguments (typed).
     ///
     /// These are witness values used
@@ -164,6 +171,13 @@ impl PublicInputsBuilder {
     /// directly to the AIR as public inputs.
     pub fn with_public_args(mut self, args: &[VmArg]) -> Self {
         self.pi.public_args = args.to_vec();
+        self
+    }
+
+    /// Attach typed `main` arguments that are
+    /// treated as runtime public inputs.
+    pub fn with_main_args(mut self, args: &[VmArg]) -> Self {
+        self.pi.main_args = args.to_vec();
         self
     }
 

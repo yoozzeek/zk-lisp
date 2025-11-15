@@ -132,7 +132,7 @@ fn run_too_big_file_limit() {
 }
 
 #[test]
-fn run_schema_with_let_role_rejected() {
+fn run_schema_with_let_role_accepted() {
     let src = r#"
 (typed-fn main ((let u64)) -> u64)
 (def (main x) x)
@@ -150,10 +150,6 @@ fn run_schema_with_let_role_rejected() {
         "--json",
     ]);
 
-    let assert = cmd.assert().failure();
-    assert
-        .stdout(predicate::str::contains("\"ok\":false"))
-        .stdout(predicate::str::contains(
-            "role 'let' is not supported for CLI yet",
-        ));
+    let assert = cmd.assert().success();
+    assert.stdout(predicate::str::contains("\"ok\":true"));
 }
