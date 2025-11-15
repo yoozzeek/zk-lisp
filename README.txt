@@ -22,18 +22,24 @@ How it works:
   trace. AIR is predefined, you don't write constraints.
   Winterfell proves the trace satisfies AIR.
 
+Example:
+
+  (typed-fn main ((let u64) (let u64)) -> u64)
+  (def (main x y)
+    (let ((s (secret-arg 0)))
+      (assert (= y (+ x s)))
+      1))
+
 Features:
 
-  Backend-agnostic Lisp DSL compiler.
-  Abstract traits for multiple STARK backends.
-  Winterfell-based STARK implementation.
-  zk-lisp CLI with run|prove|verify|repl command.
-  Interactive REPL with :prove and :verify commands.
+  Backend-agnostic Lisp DSL compiler
+  Abstract traits for plugging in multiple STARK backends
+  Winterfell-based STARK implementation
+  zk-lisp CLI with run | prove | verify | repl commands
+  Interactive REPL with :prove and :verify built-ins
 
 Roadmap:
 
-  [in progress] Typed public/secret args, functions, and variables
-  [in progress] Better DX in the REPL, code docs, and small DSL sugar
   [planned] STARK-in-STARK incrementally verifiable computation
   [planned] Website, docs, and an online playground/REPL
   [planned] Cross-program invocations
