@@ -153,3 +153,117 @@ fn run_schema_with_let_role_accepted() {
     let assert = cmd.assert().success();
     assert.stdout(predicate::str::contains("\"ok\":true"));
 }
+
+#[test]
+fn run_typed_main_mixed_const_and_let_ok() {
+    let src = r#"
+(typed-fn main ((const u64) (let u64) (let u64)) -> u64)
+(def (main a b c)
+  (+ a (+ b c)))
+"#;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), src).unwrap();
+
+    let mut cmd = bin();
+    cmd.args([
+        "run",
+        tmp.path().to_str().unwrap(),
+        "--arg",
+        "u64:1",
+        "--arg",
+        "u64:2",
+        "--arg",
+        "u64:3",
+        "--json",
+    ]);
+
+    let assert = cmd.assert().success();
+    assert
+        .stdout(predicate::str::contains("\"ok\":true"))
+        .stdout(predicate::str::contains("\"result_dec\":\"6\""));
+}
+
+#[test]
+fn run_typed_main_non_u64_const_schema_type_rejected() {
+    let src = r#"
+(typed-fn main ((const u128)) -> u64)
+(def (main x) x)
+"#;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), src).unwrap();
+
+    let mut cmd = bin();
+    cmd.args([
+        "run",
+        tmp.path().to_str().unwrap(),
+        "--arg",
+        "u64:7",
+        "--json",
+    ]);
+
+    let assert = cmd.assert().failure();
+    assert
+        .stdout(predicate::str::contains("\"ok\":false"))
+        .stdout(predicate::str::contains(
+            "const args of type 'u128' are not supported for CLI public args; expected 'u64'",
+        ));
+}
+
+#[test]
+fn run_typed_main_let_u128_and_bytes32_ok() {
+    let src = r#"
+(typed-fn main ((let u64) (let u128) (let bytes32)) -> u64)
+(def (main a b c)
+  a)
+"#;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), src).unwrap();
+
+    let mut cmd = bin();
+    cmd.args([
+        "run",
+        tmp.path().to_str().unwrap(),
+        "--arg",
+        "u64:1",
+        "--arg",
+        "u128:42",
+        "--arg",
+        "bytes32:0x0102030405060708",
+        "--json",
+    ]);
+
+    let assert = cmd.assert().success();
+    assert
+        .stdout(predicate::str::contains("\"ok\":true"))
+        .stdout(predicate::str::contains("\"result_dec\":\"1\""));
+}
+
+#[test]
+fn run_typed_main_arity_mismatch_rejected() {
+    let src = r#"
+(typed-fn main ((let u64) (let u64)) -> u64)
+(def (main a b)
+  (+ a b))
+"#;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), src).unwrap();
+
+    // Provide only one arg instead of two
+    let mut cmd = bin();
+    cmd.args([
+        "run",
+        tmp.path().to_str().unwrap(),
+        "--arg",
+        "u64:7",
+        "--json",
+    ]);
+
+    let assert = cmd.assert().failure();
+    assert
+        .stdout(predicate::str::contains("\"ok\":false"))
+        .stdout(predicate::str::contains("main expects 2 args (got 1)"));
+}

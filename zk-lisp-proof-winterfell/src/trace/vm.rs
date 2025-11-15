@@ -34,6 +34,7 @@ pub(super) struct VmTraceBuilder<'a> {
     ram_events: &'a mut Vec<RamEvent>,
     mem: &'a mut BTreeMap<u128, BE>,
     secret_args: &'a [VmArg],
+    main_args: &'a [VmArg],
 }
 
 impl<'a> VmTraceBuilder<'a> {
@@ -41,11 +42,13 @@ impl<'a> VmTraceBuilder<'a> {
         mem: &'a mut BTreeMap<u128, BE>,
         ram_events: &'a mut Vec<RamEvent>,
         secret_args: &'a [VmArg],
+        main_args: &'a [VmArg],
     ) -> Self {
         Self {
             mem,
             ram_events,
             secret_args,
+            main_args,
         }
     }
 }
@@ -58,9 +61,26 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
     ) -> error::Result<()> {
         let mut regs = [BE::ZERO; NR];
 
+        // Reserve tail of register
+        // file for runtime public
+        // main_args, flattened into slots.
+        let main_slots = crate::utils::encode_main_args_to_slots(self.main_args);
+        let slots_len = main_slots.len();
+        if slots_len > NR {
+            return Err(Error::InvalidInput(
+                "too many main_args for VM register file",
+            ));
+        }
+
+        let tail_start = NR - slots_len;
+
         // Seed initial register file from
         // secret VM arguments when present.
-        for (i, arg) in self.secret_args.iter().enumerate().take(NR) {
+        for (i, arg) in self.secret_args.iter().enumerate() {
+            if i >= tail_start {
+                break;
+            }
+
             let val_u64 = match arg {
                 VmArg::U64(v) => *v,
                 _ => {
@@ -71,6 +91,13 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
             };
 
             regs[i] = BE::from(val_u64);
+        }
+
+        // Seed reserved tail registers from
+        // runtime public main_args slots.
+        for (j, val) in main_slots.iter().enumerate() {
+            let idx = tail_start + j;
+            regs[idx] = *val;
         }
 
         // Buffer absorbed registers across

@@ -32,7 +32,7 @@ use zk_lisp_compiler::Program;
 use zk_lisp_proof::frontend::{
     PreflightBackend, PreflightMode, ProofCodec, VmBackend, VmRunResult,
 };
-use zk_lisp_proof::pi::{PublicInputs as CorePublicInputs, VmArg};
+use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
 use zk_lisp_proof::{ProverOptions, ZkBackend, ZkField};
 
 use crate::trace::build_trace;
@@ -85,7 +85,8 @@ impl Default for AirPublicInputs {
 
 impl ToElements<BE> for AirPublicInputs {
     fn to_elements(&self) -> Vec<BE> {
-        let mut out = Vec::with_capacity(5 + self.core.main_args.len());
+        // Encode feature mask + commitments first
+        let mut out = Vec::with_capacity(5);
 
         out.push(BE::from(self.core.feature_mask));
         out.push(utils::be_from_le8(&self.core.program_commitment));
@@ -100,15 +101,12 @@ impl ToElements<BE> for AirPublicInputs {
             out.push(BE::ZERO);
         }
 
-        // Encode main_args as field elements.
-        // For now only VmArg::U64 is supported.
-        for arg in &self.core.main_args {
-            let v = match arg {
-                VmArg::U64(x) => *x,
-                _ => panic!("main_args currently support only VmArg::U64"),
-            };
-            out.push(BE::from(v));
-        }
+        // Encode main_args as a flattened sequence of
+        // base-field elements using the same layout as
+        // VM registers / AIR assertions.
+        let main_slots = utils::encode_main_args_to_slots(&self.core.main_args);
+        out.reserve(main_slots.len());
+        out.extend_from_slice(&main_slots);
 
         out
     }

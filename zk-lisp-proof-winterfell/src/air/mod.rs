@@ -85,6 +85,15 @@ struct AirSharedContext {
     /// Field-level program commitment derived from the
     /// Blake3 program_commitment (two field elements).
     pub program_fe: [BaseElement; 2],
+
+    /// Runtime public arguments to `main` flattened
+    /// into base-field "slots" in the same order as
+    /// in `core.main_args` using
+    /// utils::encode_main_args_to_slots.
+    ///
+    /// Each slot corresponds to one VM register at
+    /// level 0 map row when the VM feature is enabled.
+    pub main_args: Vec<BaseElement>,
 }
 
 #[derive(Clone)]
@@ -165,6 +174,12 @@ impl Air for ZkLispAir {
         };
 
         let features = core.get_features();
+
+        // Flatten typed main_args into base-field
+        // slots using the same encoding as PI.
+        let main_args_fe: Vec<BaseElement> =
+            crate::utils::encode_main_args_to_slots(&core.main_args);
+
         let shared_ctx = Arc::new(AirSharedContext {
             pub_inputs: core.clone(),
             cols: Columns::baseline(),
@@ -178,6 +193,7 @@ impl Air for ZkLispAir {
             rom_w_enc1,
             rom_acc: pub_inputs.rom_acc,
             program_fe,
+            main_args: main_args_fe,
         });
 
         // Init AIR modules
@@ -324,7 +340,7 @@ impl Air for ZkLispAir {
 
         ScheduleAir::append_assertions(ctx, &mut out, last);
 
-        // VM PI binding assertions (outputs only)
+        // VM PI binding assertions
         if ctx.features.vm {
             // Expected output at selected row
             if ctx.features.vm_expect {
@@ -341,6 +357,23 @@ impl Air for ZkLispAir {
                 );
 
                 out.push(Assertion::single(ctx.cols.r_index(reg), row, exp));
+            }
+
+            // Bind runtime public main_args (already
+            // flattened into base-field slots) to the
+            // tail of the register file at level 0 map row.
+            if !ctx.main_args.is_empty() {
+                let slots = ctx.main_args.len();
+                assert!(slots <= NR, "main_args must fit into NR registers");
+
+                let tail_start = NR - slots;
+                let row0_map = schedule_core::pos_map();
+
+                for (j, val) in ctx.main_args.iter().enumerate() {
+                    let reg_idx = tail_start + j;
+                    let col = ctx.cols.r_index(reg_idx);
+                    out.push(Assertion::single(col, row0_map, *val));
+                }
             }
         }
 

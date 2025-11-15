@@ -90,8 +90,9 @@ pub fn build_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trace
     };
 
     // Init VM trace core, seeding secret VM args
-    // into the initial register file.
-    VmTraceBuilder::new(&mut mem, &mut ram_events, &pi.secret_args).fill_table(ctx, &mut trace)?;
+    // and main_args into the initial register file.
+    VmTraceBuilder::new(&mut mem, &mut ram_events, &pi.secret_args, &pi.main_args)
+        .fill_table(ctx, &mut trace)?;
 
     // Populate sorted RAM table across pad rows
     RamTraceBuilder::new(&ctx.prog.commitment, ram_events.as_mut_slice())

@@ -290,19 +290,35 @@ fn build_pi_for_program(
         let mut out = Vec::new();
         for (idx, ((role, ty), vmarg)) in schema.args.iter().zip(public_args).enumerate() {
             if matches!(role, compiler::ArgRole::Let) {
-                if !matches!(ty, compiler::ScalarType::U64) {
-                    let pos = idx + 1;
-                    return Err(CliError::InvalidInput(format!(
-                        "main arg #{pos}: only u64 is supported for runtime public inputs",
-                    )));
-                }
-
-                match vmarg {
-                    VmArg::U64(_) => out.push(vmarg.clone()),
-                    _ => {
-                        let pos = idx + 1;
+                let pos = idx + 1;
+                match ty {
+                    compiler::ScalarType::U64 => match vmarg {
+                        VmArg::U64(_) => out.push(vmarg.clone()),
+                        _ => {
+                            return Err(CliError::InvalidInput(format!(
+                                "main arg #{pos}: expected u64 value for type 'u64'",
+                            )));
+                        }
+                    },
+                    compiler::ScalarType::U128 => match vmarg {
+                        VmArg::U128(_) => out.push(vmarg.clone()),
+                        _ => {
+                            return Err(CliError::InvalidInput(format!(
+                                "main arg #{pos}: expected u128 value for type 'u128'",
+                            )));
+                        }
+                    },
+                    compiler::ScalarType::Bytes32 => match vmarg {
+                        VmArg::Bytes32(_) => out.push(vmarg.clone()),
+                        _ => {
+                            return Err(CliError::InvalidInput(format!(
+                                "main arg #{pos}: expected bytes32 value for type 'bytes32'",
+                            )));
+                        }
+                    },
+                    compiler::ScalarType::Str64 => {
                         return Err(CliError::InvalidInput(format!(
-                            "main arg #{pos}: CLI currently supports only u64 for public args",
+                            "main arg #{pos}: type 'str64' is not supported as runtime public input",
                         )));
                     }
                 }
@@ -330,11 +346,12 @@ fn build_pi_for_program(
 ///
 /// Current policy:
 /// - if no schema for `main` is present, no extra checks;
-/// - if schema exists, all args must be `u64` and
-///   the arity must match the number of CLI args;
-/// - roles `Const` and `Let` are allowed for `main`,
-///   but `Let` arguments are treated as runtime public
-///   inputs and currently must also be `u64`.
+/// - arity of schema and CLI args must match;
+/// - for `ArgRole::Const`, only `u64` is supported at CLI level
+///   (both in schema type and actual value);
+/// - for `ArgRole::Let`, the following types are supported
+///   as runtime public inputs and CLI values: `u64`, `u128`,
+///   `bytes32`; `str64` is rejected for now.
 fn validate_main_args_against_schema(
     program: &compiler::Program,
     public_args: &[VmArg],
@@ -353,30 +370,66 @@ fn validate_main_args_against_schema(
 
     for (idx, (role, ty)) in schema.args.iter().enumerate() {
         let pos = idx + 1;
+        let vmarg = &public_args[idx];
 
-        if !matches!(ty, compiler::ScalarType::U64) {
-            let ty_str = match ty {
-                compiler::ScalarType::U64 => "u64",
-                compiler::ScalarType::U128 => "u128",
-                compiler::ScalarType::Bytes32 => "bytes32",
-                compiler::ScalarType::Str64 => "str64",
-            };
+        match role {
+            compiler::ArgRole::Const => {
+                // For now, const args must stay as u64 so
+                // they can be passed to the compiler entry.
+                if !matches!(ty, compiler::ScalarType::U64) {
+                    let ty_str = match ty {
+                        compiler::ScalarType::U64 => "u64",
+                        compiler::ScalarType::U128 => "u128",
+                        compiler::ScalarType::Bytes32 => "bytes32",
+                        compiler::ScalarType::Str64 => "str64",
+                    };
 
-            return Err(CliError::InvalidInput(format!(
-                "main arg #{pos}: type '{ty_str}' is not supported for CLI public args yet; expected 'u64'",
-            )));
-        }
+                    return Err(CliError::InvalidInput(format!(
+                        "main arg #{pos}: const args of type '{ty_str}' are not supported for CLI public args; expected 'u64'",
+                    )));
+                }
 
-        match public_args[idx] {
-            VmArg::U64(_) => {}
-            _ => {
-                return Err(CliError::InvalidInput(format!(
-                    "main arg #{pos}: CLI currently supports only u64 for public args",
-                )));
+                match vmarg {
+                    VmArg::U64(_) => {}
+                    _ => {
+                        return Err(CliError::InvalidInput(format!(
+                            "main arg #{pos}: const args currently support only u64 values",
+                        )));
+                    }
+                }
             }
+            compiler::ArgRole::Let => match ty {
+                compiler::ScalarType::U64 => match vmarg {
+                    VmArg::U64(_) => {}
+                    _ => {
+                        return Err(CliError::InvalidInput(format!(
+                            "main arg #{pos}: expected u64 value for type 'u64'",
+                        )));
+                    }
+                },
+                compiler::ScalarType::U128 => match vmarg {
+                    VmArg::U128(_) => {}
+                    _ => {
+                        return Err(CliError::InvalidInput(format!(
+                            "main arg #{pos}: expected u128 value for type 'u128'",
+                        )));
+                    }
+                },
+                compiler::ScalarType::Bytes32 => match vmarg {
+                    VmArg::Bytes32(_) => {}
+                    _ => {
+                        return Err(CliError::InvalidInput(format!(
+                            "main arg #{pos}: expected bytes32 value for type 'bytes32'",
+                        )));
+                    }
+                },
+                compiler::ScalarType::Str64 => {
+                    return Err(CliError::InvalidInput(format!(
+                        "main arg #{pos}: type 'str64' is not supported for CLI public args",
+                    )));
+                }
+            },
         }
-
-        let _ = role;
     }
 
     Ok(())
@@ -455,10 +508,37 @@ fn parse_public_args(raws: &[String]) -> Result<(Vec<VmArg>, Vec<u64>), CliError
                 vmargs.push(VmArg::U64(v));
                 u64s.push(v);
             }
-            _ => {
-                return Err(CliError::InvalidInput(format!(
-                    "main arguments currently support only u64; got '{raw}'",
-                )));
+            VmArg::U128(v128) => {
+                // For now, compile-time entry supports only
+                // 64-bit immediates. Allow u128 values that
+                // fit into u64 and reject larger ones so we
+                // never silently truncate.
+                if v128 > u64::MAX as u128 {
+                    return Err(CliError::InvalidInput(format!(
+                        "u128 public arg '{raw}' does not fit into 64 bits; full 128-bit compile-time args are not supported yet",
+                    )));
+                }
+
+                let v64 = v128 as u64;
+                vmargs.push(VmArg::U128(v128));
+                u64s.push(v64);
+            }
+            VmArg::Bytes32(bytes) => {
+                // Map bytes32 to a u64 parameter for now by
+                // requiring that high bytes are zero and using
+                // the first 8 bytes as little-endian integer.
+                if bytes[8..].iter().any(|b| *b != 0) {
+                    return Err(CliError::InvalidInput(format!(
+                        "bytes32 public arg '{raw}' must have bytes[8..32]=0 for now; full 32-byte compile-time args are not supported yet",
+                    )));
+                }
+
+                let mut lo = [0u8; 8];
+                lo.copy_from_slice(&bytes[0..8]);
+
+                let v64 = u64::from_le_bytes(lo);
+                vmargs.push(VmArg::Bytes32(bytes));
+                u64s.push(v64);
             }
         }
     }
@@ -1614,16 +1694,46 @@ mod tests {
     }
 
     #[test]
-    fn parse_public_args_only_accepts_u64() {
-        // u64 is fine
+    fn parse_public_args_u64_ok() {
         let (vmargs, u64s) = parse_public_args(&["u64:7".to_string()]).unwrap();
         assert_eq!(u64s, vec![7]);
         assert!(matches!(vmargs[0], VmArg::U64(7)));
+    }
 
-        // non-u64 should fail
-        let err = parse_public_args(&["u128:7".to_string()]).unwrap_err();
+    #[test]
+    fn parse_public_args_u128_fits_into_u64_ok() {
+        let (vmargs, u64s) = parse_public_args(&["u128:7".to_string()]).unwrap();
+        assert_eq!(u64s, vec![7]);
+        assert!(matches!(vmargs[0], VmArg::U128(7)));
+    }
+
+    #[test]
+    fn parse_public_args_bytes32_low_ok() {
+        let (vmargs, u64s) =
+            parse_public_args(&["bytes32:0x0100000000000000".to_string()]).unwrap();
+        assert_eq!(u64s, vec![1]);
+
+        match vmargs[0] {
+            VmArg::Bytes32(arr) => {
+                assert_eq!(arr[0], 0x01);
+                assert!(arr[1..].iter().all(|b| *b == 0));
+            }
+            _ => panic!("expected bytes32"),
+        }
+    }
+
+    #[test]
+    fn parse_public_args_u128_overflow_fails() {
+        let err = parse_public_args(&["u128:18446744073709551616".to_string()]).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("only u64"), "msg={msg}");
+        assert!(msg.contains("does not fit into 64 bits"), "msg={msg}");
+    }
+
+    #[test]
+    fn parse_public_args_bytes32_high_nonzero_fails() {
+        let err = parse_public_args(&["bytes32:0x01000000000000000100".to_string()]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("must have bytes[8..32]=0"), "msg={msg}");
     }
 
     #[test]
