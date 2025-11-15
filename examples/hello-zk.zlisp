@@ -1,3 +1,4 @@
+(typed-fn main ((let u64) (let u64)) -> u64)
 (def (main pub_x pub_y)
   (let ((s (secret-arg 0)))
     (assert (= pub_y (+ pub_x s)))
