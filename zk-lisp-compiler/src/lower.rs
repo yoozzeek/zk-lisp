@@ -13,9 +13,9 @@
 //! bindings and functions, and lowers them into VM ops using
 //! a small register allocator and compiler metrics tracking.
 
-use crate::Error;
 use crate::builder::{Op, ProgramBuilder};
 use crate::metrics::CompilerMetrics;
+use crate::{ArgRole, Error, FnTypeSchema, LetTypeSchema, ScalarType};
 
 use std::collections::BTreeMap;
 
@@ -202,6 +202,8 @@ pub fn lower_top(cx: &mut LowerCtx, ast: Ast) -> Result<(), Error> {
             match &items[0] {
                 Ast::Atom(Atom::Sym(s)) if s == "def" => lower_def(cx, &items[1..]),
                 Ast::Atom(Atom::Sym(s)) if s == "deftype" => lower_deftype(cx, &items[1..]),
+                Ast::Atom(Atom::Sym(s)) if s == "deftype-fn" => lower_deftype_fn(cx, &items[1..]),
+                Ast::Atom(Atom::Sym(s)) if s == "deftype-let" => lower_deftype_let(cx, &items[1..]),
                 _ => {
                     // treat as expression; compute and discard
                     let v = lower_expr(cx, ast)?;
@@ -298,6 +300,7 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "push*" => lower_push_star(cx, tail),
                     "pop*" => lower_pop_star(cx, tail),
                     "hex-to-bytes32" => lower_hex_to_bytes32(cx, tail),
+                    "secret-arg" => lower_secret_arg(cx, tail),
                     "begin" => lower_begin(cx, tail),
                     _ => lower_call(cx, s, tail),
                 }
@@ -2532,6 +2535,118 @@ fn lower_store_ca(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     Ok(RVal::Imm(0))
 }
 
+fn lower_secret_arg(_cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    // (secret-arg idx) reads a secret VM argument
+    // previously seeded into register idx.
+    if rest.len() != 1 {
+        return Err(Error::InvalidForm("secret-arg".into()));
+    }
+
+    let idx_ast = &rest[0];
+    let idx_u64 = match idx_ast {
+        Ast::Atom(Atom::Int(v)) => *v,
+        _ => {
+            return Err(Error::InvalidForm(
+                "secret-arg: index must be integer literal".into(),
+            ));
+        }
+    };
+
+    let idx_u8 = u8::try_from(idx_u64).map_err(|_| {
+        Error::InvalidForm("secret-arg: index out of range for register file".into())
+    })?;
+
+    if (idx_u8 as usize) >= NR {
+        return Err(Error::InvalidForm(
+            "secret-arg: index out of range for register file".into(),
+        ));
+    }
+
+    Ok(RVal::Borrowed(idx_u8))
+}
+
+fn lower_deftype_fn(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
+    // (deftype-fn name (arg-type ...) -> ret-type)
+    if rest.len() != 4 {
+        return Err(Error::InvalidForm("deftype-fn".into()));
+    }
+
+    let name = match &rest[0] {
+        Ast::Atom(Atom::Sym(s)) => s.clone(),
+        _ => return Err(Error::InvalidForm("deftype-fn: name".into())),
+    };
+
+    let args_list = match &rest[1] {
+        Ast::List(items) => items,
+        _ => return Err(Error::InvalidForm("deftype-fn: args".into())),
+    };
+
+    let mut args: Vec<(ArgRole, ScalarType)> = Vec::with_capacity(args_list.len());
+    for a in args_list {
+        args.push(parse_arg_spec(a)?);
+    }
+
+    match &rest[2] {
+        Ast::Atom(Atom::Sym(s)) if s == "->" => {}
+        _ => return Err(Error::InvalidForm("deftype-fn: expected '->'".into())),
+    }
+
+    let ret_ty_sym = match &rest[3] {
+        Ast::Atom(Atom::Sym(s)) => s.as_str(),
+        _ => return Err(Error::InvalidForm("deftype-fn: return type".into())),
+    };
+    let ret_ty = parse_scalar_type(ret_ty_sym)?;
+
+    let schema = FnTypeSchema {
+        name: name.clone(),
+        args,
+        ret: ret_ty,
+    };
+
+    cx.builder.add_fn_schema(schema);
+
+    Ok(())
+}
+
+fn lower_deftype_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
+    // (deftype-let name type)
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("deftype-let".into()));
+    }
+
+    let name = match &rest[0] {
+        Ast::Atom(Atom::Sym(s)) => s.clone(),
+        _ => return Err(Error::InvalidForm("deftype-let: name".into())),
+    };
+
+    let ty_sym = match &rest[1] {
+        Ast::Atom(Atom::Sym(s)) => s.as_str(),
+        Ast::List(items) if items.len() == 2 => {
+            // Allow (role type) but
+            // ignore the role here.
+            match &items[1] {
+                Ast::Atom(Atom::Sym(s)) => s.as_str(),
+                _ => {
+                    return Err(Error::InvalidForm(
+                        "deftype-let: type must be symbol".into(),
+                    ));
+                }
+            }
+        }
+        _ => return Err(Error::InvalidForm("deftype-let: type".into())),
+    };
+
+    let ty = parse_scalar_type(ty_sym)?;
+
+    let schema = LetTypeSchema {
+        name: name.clone(),
+        ty,
+    };
+    cx.builder.add_let_schema(schema);
+
+    Ok(())
+}
+
 // Determine if subtree is pure arithmetic
 fn is_pure_arith(ast: &Ast) -> bool {
     match ast {
@@ -2754,4 +2869,61 @@ fn implicit_begin(forms: &[Ast]) -> Ast {
     v.extend_from_slice(forms);
 
     Ast::List(v)
+}
+
+fn parse_scalar_type(sym: &str) -> Result<ScalarType, Error> {
+    match sym {
+        "u64" => Ok(ScalarType::U64),
+        "u128" => Ok(ScalarType::U128),
+        "bytes32" => Ok(ScalarType::Bytes32),
+        "str64" => Ok(ScalarType::Str64),
+        _ => Err(Error::InvalidForm(format!(
+            "deftype-fn: unknown type '{sym}'",
+        ))),
+    }
+}
+
+fn parse_arg_spec(ast: &Ast) -> Result<(ArgRole, ScalarType), Error> {
+    match ast {
+        // Shorthand: just the type symbol => Const
+        Ast::Atom(Atom::Sym(t)) => {
+            let ty = parse_scalar_type(t)?;
+            Ok((ArgRole::Const, ty))
+        }
+        // (role type) with role in {const, let}
+        Ast::List(items) if items.len() == 2 => {
+            let role_sym = match &items[0] {
+                Ast::Atom(Atom::Sym(s)) => s.as_str(),
+                _ => {
+                    return Err(Error::InvalidForm(
+                        "deftype-fn: arg role must be symbol".into(),
+                    ));
+                }
+            };
+            let ty_sym = match &items[1] {
+                Ast::Atom(Atom::Sym(s)) => s.as_str(),
+                _ => {
+                    return Err(Error::InvalidForm(
+                        "deftype-fn: arg type must be symbol".into(),
+                    ));
+                }
+            };
+
+            let role = match role_sym {
+                "const" => ArgRole::Const,
+                "let" => ArgRole::Let,
+                _ => {
+                    return Err(Error::InvalidForm(format!(
+                        "deftype-fn: unknown arg role '{role_sym}'",
+                    )));
+                }
+            };
+            let ty = parse_scalar_type(ty_sym)?;
+
+            Ok((role, ty))
+        }
+        _ => Err(Error::InvalidForm(
+            "deftype-fn: arg spec must be type or (role type)".into(),
+        )),
+    }
 }

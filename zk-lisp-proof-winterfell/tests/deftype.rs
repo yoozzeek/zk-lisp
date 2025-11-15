@@ -48,7 +48,6 @@ fn enum_predicate_positive_verifies() {
 
     let expected = u128_to_bytes32(1);
     let pi = PublicInputsBuilder::from_program(&program)
-        .with_args(&[t])
         .with_expect(&expected)
         .build()
         .expect("pi");
@@ -83,7 +82,6 @@ fn enum_predicate_negative_fails_verify() {
 
     let expected = u128_to_bytes32(1);
     let pi = PublicInputsBuilder::from_program(&program)
-        .with_args(&[t])
         .with_expect(&expected)
         .build()
         .expect("pi");

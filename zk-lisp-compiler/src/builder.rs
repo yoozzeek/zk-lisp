@@ -17,8 +17,8 @@
 //! [`ProgramBuilder`] used by lowering to construct the
 //! final instruction stream and track register usage.
 
-use crate::Program;
 use crate::metrics::CompilerMetrics;
+use crate::{FnTypeSchema, LetTypeSchema, Program, TypeSchemas};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -160,6 +160,7 @@ pub enum Op {
 pub struct ProgramBuilder {
     ops: Vec<Op>,
     reg_max: u8,
+    type_schemas: TypeSchemas,
 }
 
 impl Default for ProgramBuilder {
@@ -173,6 +174,7 @@ impl ProgramBuilder {
         Self {
             ops: Vec::new(),
             reg_max: 0,
+            type_schemas: TypeSchemas::default(),
         }
     }
 
@@ -300,12 +302,20 @@ impl ProgramBuilder {
         self.ops.push(op);
     }
 
+    pub fn add_fn_schema(&mut self, schema: FnTypeSchema) {
+        self.type_schemas.fns.insert(schema.name.clone(), schema);
+    }
+
+    pub fn add_let_schema(&mut self, schema: LetTypeSchema) {
+        self.type_schemas.lets.insert(schema.name.clone(), schema);
+    }
+
     pub fn finalize(self, metrics: CompilerMetrics) -> Program {
         let reg_count = self.reg_max;
         let bytes = encode_ops(&self.ops);
         let commitment = program_commitment(&bytes);
 
-        Program::new(commitment, self.ops, reg_count, metrics)
+        Program::new(commitment, self.ops, reg_count, metrics, self.type_schemas)
     }
 
     #[inline]

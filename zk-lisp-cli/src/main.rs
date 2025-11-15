@@ -26,7 +26,7 @@ use thiserror::Error;
 
 use zk_lisp_compiler as compiler;
 use zk_lisp_proof::frontend::{self, PreflightMode};
-use zk_lisp_proof::pi::{PublicInputs, PublicInputsBuilder};
+use zk_lisp_proof::pi::{PublicInputs, PublicInputsBuilder, VmArg};
 use zk_lisp_proof::{ProverOptions, ZkField, error};
 use zk_lisp_proof_winterfell::{WinterfellBackend, prove};
 
@@ -90,18 +90,36 @@ enum Command {
 struct RunArgs {
     /// Path to .zlisp file
     path: PathBuf,
-    /// Arguments for main (repeat or comma-separated via --args)
+    /// Arguments for main (repeat or comma-separated via --arg)
+    ///
+    /// Each argument is typed as `<kind>:<value>`, e.g.
+    /// `u64:3`, `u64:0x10`. Currently only `u64` is
+    /// supported for main; use --secret for other types.
     #[arg(long = "arg", value_delimiter = ',')]
-    args: Vec<u64>,
+    args: Vec<String>,
+    /// Secret arguments for main (prove/run only).
+    ///
+    /// Each item is `<kind>:<value>` (u64|u128|bytes32).
+    #[arg(long = "secret", value_delimiter = ',')]
+    secrets: Vec<String>,
 }
 
 #[derive(clap::Args, Debug, Clone)]
 struct ProveArgs {
     /// Path to .zlisp file
     path: PathBuf,
-    /// Arguments for main
+    /// Public arguments for main
+    ///
+    /// Each argument is typed as `<kind>:<value>`, e.g.
+    /// `u64:3`, `u64:0x10`. Currently only `u64` is
+    /// supported for main; use --secret for other types.
     #[arg(long = "arg", value_delimiter = ',')]
-    args: Vec<u64>,
+    args: Vec<String>,
+    /// Secret arguments for main (prove only).
+    ///
+    /// Each item is `<kind>:<value>` (u64|u128|bytes32).
+    #[arg(long = "secret", value_delimiter = ',')]
+    secrets: Vec<String>,
     /// Number of FRI queries
     #[arg(long, default_value_t = 64)]
     queries: u8,
@@ -129,10 +147,13 @@ struct VerifyArgs {
     proof: String,
     /// Path to .zlisp file
     path: PathBuf,
-    /// Arguments for main must match the ones
-    /// used for proof (except secrets).
+    /// Arguments for main must match
+    /// the ones used for proof.
+    ///
+    /// Each argument is typed as `<kind>:<value>`;
+    /// currently only `u64` is supported for main here.
     #[arg(long = "arg", value_delimiter = ',')]
-    args: Vec<u64>,
+    args: Vec<String>,
 
     /// Number of FRI queries
     #[arg(long, default_value_t = 64)]
@@ -254,14 +275,109 @@ fn read_program(path: impl AsRef<std::path::Path>, max_bytes: usize) -> Result<S
 
 fn build_pi_for_program(
     program: &compiler::Program,
-    args: &[u64],
+    public_args: &[VmArg],
+    secret_args: &[VmArg],
 ) -> Result<PublicInputs, CliError> {
-    // Build features from program ops and bind VM args.
+    // Build features from program ops and bind typed VM args.
     // Ensures Merkle/RAM/VM/POSEIDON/SPONGE flags are correct.
     PublicInputsBuilder::from_program(program)
-        .with_args(args)
+        .with_public_args(public_args)
+        .with_secret_args(secret_args)
         .build()
         .map_err(CliError::Build)
+}
+
+fn parse_u64_literal(s: &str) -> Result<u64, CliError> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(rest, 16)
+            .map_err(|e| CliError::InvalidInput(format!("invalid u64 hex '{s}': {e}")))
+    } else {
+        s.parse::<u64>()
+            .map_err(|e| CliError::InvalidInput(format!("invalid u64 '{s}': {e}")))
+    }
+}
+
+fn parse_u128_literal(s: &str) -> Result<u128, CliError> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u128::from_str_radix(rest, 16)
+            .map_err(|e| CliError::InvalidInput(format!("invalid u128 hex '{s}': {e}")))
+    } else {
+        s.parse::<u128>()
+            .map_err(|e| CliError::InvalidInput(format!("invalid u128 '{s}': {e}")))
+    }
+}
+
+fn parse_bytes32_literal(s: &str) -> Result<[u8; 32], CliError> {
+    let s = s.trim();
+    let hex_str = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+
+    let decoded = hex::decode(hex_str)?;
+    if decoded.len() > 32 {
+        return Err(CliError::InvalidInput(format!(
+            "bytes32 literal too long: {} bytes (max 32)",
+            decoded.len()
+        )));
+    }
+
+    // Little-endian-style layout
+    let mut out = [0u8; 32];
+    out[..decoded.len()].copy_from_slice(&decoded);
+
+    Ok(out)
+}
+
+fn parse_vm_arg(raw: &str) -> Result<VmArg, CliError> {
+    let raw = raw.trim();
+    let (ty, val) = raw.split_once(':').ok_or_else(|| {
+        CliError::InvalidInput(format!(
+            "invalid arg '{raw}': expected <type>:<value>, e.g. u64:3"
+        ))
+    })?;
+
+    match ty {
+        "u64" => Ok(VmArg::U64(parse_u64_literal(val)?)),
+        "u128" => Ok(VmArg::U128(parse_u128_literal(val)?)),
+        "bytes32" => Ok(VmArg::Bytes32(parse_bytes32_literal(val)?)),
+        other => Err(CliError::InvalidInput(format!(
+            "invalid arg type '{other}'; expected u64,u128,bytes32",
+        ))),
+    }
+}
+
+fn parse_public_args(raws: &[String]) -> Result<(Vec<VmArg>, Vec<u64>), CliError> {
+    let mut vmargs = Vec::with_capacity(raws.len());
+    let mut u64s = Vec::with_capacity(raws.len());
+
+    for raw in raws {
+        let arg = parse_vm_arg(raw)?;
+        match arg {
+            VmArg::U64(v) => {
+                vmargs.push(VmArg::U64(v));
+                u64s.push(v);
+            }
+            _ => {
+                return Err(CliError::InvalidInput(format!(
+                    "main arguments currently support only u64; got '{raw}'",
+                )));
+            }
+        }
+    }
+
+    Ok((vmargs, u64s))
+}
+
+fn parse_secret_args(raws: &[String]) -> Result<Vec<VmArg>, CliError> {
+    let mut out = Vec::with_capacity(raws.len());
+    for raw in raws {
+        out.push(parse_vm_arg(raw)?);
+    }
+
+    Ok(out)
 }
 
 fn cmd_run(
@@ -272,8 +388,12 @@ fn cmd_run(
     security_bits: Option<u32>,
 ) -> Result<(), CliError> {
     let src = read_program(&args.path, max_bytes)?;
-    let program = compiler::compile_entry(&src, &args.args)?;
-    let pi = build_pi_for_program(&program, &args.args)?;
+
+    let (public_vmargs, public_u64) = parse_public_args(&args.args)?;
+    let secret_vmargs = parse_secret_args(&args.secrets)?;
+
+    let program = compiler::compile_entry(&src, &public_u64)?;
+    let pi = build_pi_for_program(&program, &public_vmargs, &secret_vmargs)?;
 
     let pf_mode = resolve_preflight_mode(pf);
     if !matches!(pf_mode, PreflightMode::Off) {
@@ -342,8 +462,11 @@ fn cmd_prove(
     }
 
     let src = read_program(&args.path, max_bytes)?;
-    let program = compiler::compile_entry(&src, &args.args)?;
-    let pi = build_pi_for_program(&program, &args.args)?;
+    let (public_vmargs, public_u64) = parse_public_args(&args.args)?;
+    let secret_vmargs = parse_secret_args(&args.secrets)?;
+
+    let program = compiler::compile_entry(&src, &public_u64)?;
+    let pi = build_pi_for_program(&program, &public_vmargs, &secret_vmargs)?;
 
     let opts = proof_opts(args.queries, args.blowup, args.grind, security_bits);
     let pf_mode = resolve_preflight_mode(pf);
@@ -442,10 +565,12 @@ fn cmd_verify(
     };
 
     let src = read_program(&args.path, max_bytes)?;
-    let program = compiler::compile_entry(&src, &args.args)?;
+    let (public_vmargs, public_u64) = parse_public_args(&args.args)?;
+
+    let program = compiler::compile_entry(&src, &public_u64)?;
 
     // Rebuild PI similarly to Prove
-    let pi = build_pi_for_program(&program, &args.args)?;
+    let pi = build_pi_for_program(&program, &public_vmargs, &[])?;
     let proof = frontend::decode_proof::<WinterfellBackend>(&proof_bytes)
         .map_err(|e| CliError::InvalidInput(format!("invalid proof encoding: {e}")))?;
 
@@ -735,8 +860,8 @@ fn cmd_repl() -> Result<(), CliError> {
             match compiler::compile_entry(&wrapped, &[]) {
                 Err(e) => println!("error: compile: {e}"),
                 Ok(program) => {
-                    // Build PI
-                    let pi = match build_pi_for_program(&program, &[]) {
+                    // Build PI (no external args in REPL yet)
+                    let pi = match build_pi_for_program(&program, &[], &[]) {
                         Ok(p) => p,
                         Err(e) => {
                             println!("error: pi: {e}");
@@ -891,7 +1016,7 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
-            let pi = match build_pi_for_program(&program, &[]) {
+            let pi = match build_pi_for_program(&program, &[], &[]) {
                 Ok(p) => p,
                 Err(e) => {
                     println!("error: pi: {e}");
@@ -947,7 +1072,7 @@ fn cmd_repl() -> Result<(), CliError> {
         match compiler::compile_entry(&wrapped, &[]) {
             Err(e) => println!("error: compile: {e}"),
             Ok(program) => {
-                let pi = match build_pi_for_program(&program, &[]) {
+                let pi = match build_pi_for_program(&program, &[], &[]) {
                     Ok(p) => p,
                     Err(e) => {
                         println!("error: pi: {e}");
@@ -1360,4 +1485,53 @@ fn main() {
     };
 
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_vm_arg_u64_dec_and_hex() {
+        let a = parse_vm_arg("u64:10").unwrap();
+        assert!(matches!(a, VmArg::U64(10)));
+
+        let b = parse_vm_arg("u64:0xa").unwrap();
+        assert!(matches!(b, VmArg::U64(10)));
+    }
+
+    #[test]
+    fn parse_vm_arg_u128_and_bytes32() {
+        let a = parse_vm_arg("u128:340282366920938463463374607431768211455").unwrap();
+        assert!(matches!(a, VmArg::U128(_)));
+
+        let b = parse_vm_arg("bytes32:0x01ff").unwrap();
+        match b {
+            VmArg::Bytes32(arr) => {
+                assert_eq!(arr[0], 0x01);
+                assert_eq!(arr[1], 0xff);
+            }
+            _ => panic!("expected bytes32"),
+        }
+    }
+
+    #[test]
+    fn parse_public_args_only_accepts_u64() {
+        // u64 is fine
+        let (vmargs, u64s) = parse_public_args(&["u64:7".to_string()]).unwrap();
+        assert_eq!(u64s, vec![7]);
+        assert!(matches!(vmargs[0], VmArg::U64(7)));
+
+        // non-u64 should fail
+        let err = parse_public_args(&["u128:7".to_string()]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("only u64"), "msg={msg}");
+    }
+
+    #[test]
+    fn parse_vm_arg_invalid_type_fails() {
+        let err = parse_vm_arg("foo:1").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid arg type"), "msg={msg}");
+    }
 }

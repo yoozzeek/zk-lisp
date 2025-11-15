@@ -1,2 +1,4 @@
-(def (main x y)
-  (+ x y))
+(def (main pub_x pub_y)
+  (let ((s (secret-arg 0)))
+    (assert (= pub_y (+ pub_x s)))
+    1))

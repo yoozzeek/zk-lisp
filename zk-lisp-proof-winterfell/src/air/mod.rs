@@ -224,9 +224,6 @@ impl Air for ZkLispAir {
             if core.program_commitment.iter().any(|b| *b != 0) {
                 num_assertions += 1; // PC=0 at lvl0 map
             }
-
-            // bind VM args at lvl0 map row
-            num_assertions += core.vm_args.len();
         }
         if features.vm && features.vm_expect {
             // one assertion for expected
@@ -327,20 +324,8 @@ impl Air for ZkLispAir {
 
         ScheduleAir::append_assertions(ctx, &mut out, last);
 
-        // VM PI binding assertions (inputs/outputs)
+        // VM PI binding assertions (outputs only)
         if ctx.features.vm {
-            // Bind inputs at level 0 map row
-            let row_map0 = schedule_core::pos_map();
-            for (i, &a) in ctx.pub_inputs.vm_args.iter().enumerate() {
-                if i < NR {
-                    out.push(Assertion::single(
-                        ctx.cols.r_index(i),
-                        row_map0,
-                        BE::from(a),
-                    ));
-                }
-            }
-
             // Expected output at selected row
             if ctx.features.vm_expect {
                 let row = (ctx.pub_inputs.vm_out_row as usize).min(last);

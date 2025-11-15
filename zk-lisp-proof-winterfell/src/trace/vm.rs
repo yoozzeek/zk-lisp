@@ -28,15 +28,25 @@ use winterfell::math::{FieldElement, StarkField};
 use zk_lisp_compiler::builder;
 use zk_lisp_compiler::builder::Op;
 use zk_lisp_proof::error::{self, Error};
+use zk_lisp_proof::pi::VmArg;
 
 pub(super) struct VmTraceBuilder<'a> {
     ram_events: &'a mut Vec<RamEvent>,
     mem: &'a mut BTreeMap<u128, BE>,
+    secret_args: &'a [VmArg],
 }
 
 impl<'a> VmTraceBuilder<'a> {
-    pub fn new(mem: &'a mut BTreeMap<u128, BE>, ram_events: &'a mut Vec<RamEvent>) -> Self {
-        Self { mem, ram_events }
+    pub fn new(
+        mem: &'a mut BTreeMap<u128, BE>,
+        ram_events: &'a mut Vec<RamEvent>,
+        secret_args: &'a [VmArg],
+    ) -> Self {
+        Self {
+            mem,
+            ram_events,
+            secret_args,
+        }
     }
 }
 
@@ -47,6 +57,21 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
         trace: &mut TraceTable<BE>,
     ) -> error::Result<()> {
         let mut regs = [BE::ZERO; NR];
+
+        // Seed initial register file from
+        // secret VM arguments when present.
+        for (i, arg) in self.secret_args.iter().enumerate().take(NR) {
+            let val_u64 = match arg {
+                VmArg::U64(v) => *v,
+                _ => {
+                    return Err(Error::InvalidInput(
+                        "non-u64 secret arg not yet supported for VM registers",
+                    ));
+                }
+            };
+
+            regs[i] = BE::from(val_u64);
+        }
 
         // Buffer absorbed registers across
         // levels until SSqueeze up to 10.

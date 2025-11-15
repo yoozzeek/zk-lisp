@@ -30,14 +30,16 @@ fn run_add_json_ok() {
         "run",
         "examples/hello-zk.zlisp",
         "--arg",
-        "2",
+        "u64:2",
         "--arg",
-        "3",
+        "u64:5",
+        "--secret",
+        "u64:3",
         "--json",
     ]);
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("\"result_dec\":\"5\""));
+        .stdout(predicate::str::contains("\"result_dec\":\"1\""));
 }
 
 #[test]
@@ -51,9 +53,11 @@ fn prove_and_verify_ok() {
         "prove",
         "examples/hello-zk.zlisp",
         "--arg",
-        "2",
+        "u64:2",
         "--arg",
-        "3",
+        "u64:5",
+        "--secret",
+        "u64:3",
         "--out",
         &path,
         "--quiet",
@@ -67,9 +71,9 @@ fn prove_and_verify_ok() {
         &path,
         "examples/hello-zk.zlisp",
         "--arg",
-        "2",
+        "u64:2",
         "--arg",
-        "3",
+        "u64:5",
         "--json",
     ]);
     let assert = cmd2.assert();
@@ -96,9 +100,9 @@ fn verify_bad_proof_path_fails_json() {
         "/this/does/not/exist.bin",
         "examples/hello-zk.zlisp",
         "--arg",
-        "2",
+        "u64:2",
         "--arg",
-        "3",
+        "u64:5",
         "--json",
     ]);
     let assert = cmd.assert().failure();
