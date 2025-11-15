@@ -875,7 +875,7 @@ mod tests {
         b.push(Op::Add { dst: 2, a: 0, b: 1 });
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();
@@ -926,7 +926,7 @@ mod tests {
 
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();
@@ -964,7 +964,7 @@ mod tests {
         b.push(Op::SSqueeze { dst: 3 });
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();
@@ -992,7 +992,7 @@ mod tests {
         b.push(Op::Const { dst: 0, imm: 1 });
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();
@@ -1013,7 +1013,7 @@ mod tests {
         b.push(Op::Add { dst: 2, a: 0, b: 1 });
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();

@@ -277,7 +277,7 @@ fn rom_one_hot_op_mismatch_proof_fails() {
     b.push(Op::Const { dst: 0, imm: 7 });
     b.push(Op::End);
 
-    let program = b.finalize(metrics);
+    let program = b.finalize(metrics).expect("finalize must succeed");
 
     // Build PI and trace
     let pi = PublicInputsBuilder::from_program(&program)

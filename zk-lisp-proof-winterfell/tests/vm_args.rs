@@ -123,13 +123,9 @@ fn secret_arg_non_u64_rejected() {
 
     let err = build_trace(&program, &pi).expect_err("must reject non-u64 secret arg");
 
-    match err {
-        CoreError::InvalidInput(msg) => {
-            assert!(
-                msg.contains("non-u64 secret arg"),
-                "unexpected message: {msg}"
-            );
-        }
-        other => panic!("unexpected error: {other}"),
-    }
+    let CoreError::InvalidInput(msg) = err;
+    assert!(
+        msg.contains("non-u64 secret arg"),
+        "unexpected message: {msg}"
+    );
 }

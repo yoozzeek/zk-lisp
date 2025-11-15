@@ -11,11 +11,12 @@ use zk_lisp_compiler::{ArgRole, ScalarType, compile_str};
 
 fn compile_with_schemas() -> zk_lisp_compiler::Program {
     let src = r#"
-(deftype-fn main (u64 (let u128) (const bytes32)) -> u64)
-(deftype-let total u128)
+(typed-fn main (u64 (let u128) (const bytes32)) -> u64)
+(typed-let total u128)
 
 (def (main x y z)
-  (+ x x))
+  (let ((total 42))
+    (+ x x)))
 "#;
 
     compile_str(src).expect("compile")
@@ -44,7 +45,110 @@ fn deftype_fn_records_return_type() {
 #[test]
 fn deftype_let_records_binding_type() {
     let p = compile_with_schemas();
-    let total_schema = p.type_schemas.lets.get("total").expect("total schema");
+    let total_schema = p
+        .type_schemas
+        .get_let_schema(None, "total")
+        .expect("total schema");
 
     assert!(matches!(total_schema.ty, ScalarType::U128));
+}
+
+#[test]
+fn deftype_let_missing_binding_errors() {
+    let src = r#"
+(typed-let missing u64)
+
+(def (main)
+  0)
+"#;
+
+    let err = compile_str(src).expect_err("compile must fail");
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("typed-let: no let binding found for 'missing'"),
+        "msg={msg}",
+    );
+}
+
+#[test]
+fn deftype_let_conflicting_types_error() {
+    let src = r#"
+(typed-let total u64)
+
+(def (main)
+  (typed-let total u128)
+  (let ((total 42))
+    total))
+"#;
+
+    let err = compile_str(src).expect_err("compile must fail");
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("typed-let: conflicting type for 'total'"),
+        "msg={msg}",
+    );
+}
+
+#[test]
+fn deftype_fn_missing_def_errors() {
+    let src = r#"
+(typed-fn main (u64) -> u64)
+"#;
+
+    let err = compile_str(src).expect_err("compile must fail");
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("typed-fn: no function definition found for 'main'"),
+        "msg={msg}",
+    );
+}
+
+#[test]
+fn deftype_fn_arity_mismatch_errors() {
+    let src = r#"
+(typed-fn main (u64) -> u64)
+
+(def (main x y)
+  (+ x y))
+"#;
+
+    let err = compile_str(src).expect_err("compile must fail");
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("typed-fn: function 'main' is defined with 2 args but schema declares 1"),
+        "msg={msg}",
+    );
+}
+
+#[test]
+fn typed_let_same_name_different_types_across_functions_ok() {
+    let src = r#"
+(def (f1)
+  (typed-let total u64)
+  (let ((total 1))
+    total))
+
+(def (f2)
+  (typed-let total u128)
+  (let ((total 2))
+    total))
+"#;
+
+    let p = compile_str(src).expect("compile must succeed");
+
+    let total_f1 = p
+        .type_schemas
+        .get_let_schema(Some("f1"), "total")
+        .expect("f1 total schema");
+    assert!(matches!(total_f1.ty, ScalarType::U64));
+
+    let total_f2 = p
+        .type_schemas
+        .get_let_schema(Some("f2"), "total")
+        .expect("f2 total schema");
+    assert!(matches!(total_f2.ty, ScalarType::U128));
 }

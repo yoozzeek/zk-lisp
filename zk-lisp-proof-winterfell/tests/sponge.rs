@@ -133,7 +133,7 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
     b.push(Op::SSqueeze { dst: 0 });
     b.push(Op::End);
 
-    let program = b.finalize(metrics);
+    let program = b.finalize(metrics).expect("finalize must succeed");
 
     // Compute expected digest on host
     let expected_inputs: Vec<BE> = vec![
@@ -208,7 +208,7 @@ fn sponge_overflow_more_than_10_inputs_errors() {
     b.push(Op::SSqueeze { dst: 0 });
     b.push(Op::End);
 
-    let program = b.finalize(metrics);
+    let program = b.finalize(metrics).expect("finalize must succeed");
     let res = build_trace(&program, &PublicInputs::default());
     assert!(res.is_err(), "expected sponge rate overflow error");
 }
@@ -292,7 +292,7 @@ fn negative_vm_expected_mismatch() {
     b.push(Op::SSqueeze { dst: 0 });
     b.push(Op::End);
 
-    let program = b.finalize(metrics);
+    let program = b.finalize(metrics).expect("finalize must succeed");
 
     // Compute correct expected to locate row/reg
     let expected_inputs = vec![BE::from(1u64), BE::from(2u64)];

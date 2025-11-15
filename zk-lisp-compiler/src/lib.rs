@@ -106,7 +106,7 @@ pub fn compile_str(src: &str) -> Result<Program, Error> {
 
     builder.push(Op::End);
 
-    let program = builder.finalize(metrics);
+    let program = builder.finalize(metrics)?;
 
     debug!(
         ops = program.ops.len(),
@@ -202,7 +202,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     builder.push(Op::End);
 
     // Finalize program
-    let program = builder.finalize(metrics);
+    let program = builder.finalize(metrics)?;
 
     debug!(
         ops = program.ops.len(),

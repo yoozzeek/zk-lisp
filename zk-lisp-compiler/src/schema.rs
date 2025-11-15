@@ -10,10 +10,13 @@
 //! Simple type/schema definitions for functions and
 //! variables in the zk-lisp DSL.
 //!
-//! These schemas are currently metadata only; they
-//! are not enforced by the compiler yet but are
-//! attached to [`Program`] so frontends and future
-//! passes can inspect them.
+//! These schemas are currently metadata for the
+//! lowering pipeline. Function schemas are partially
+//! enforced when finalizing [`Program`]: if a
+//! `typed-fn` exists, there must be a matching
+//! function definition with the same arity.
+//! They are also attached to [`Program`] so
+//! frontends and future passes can inspect them.
 
 use std::collections::BTreeMap;
 
@@ -46,10 +49,14 @@ pub struct FnTypeSchema {
     pub ret: ScalarType,
 }
 
-/// Type schema for a named
-/// variable (e.g. top-level `let`).
+/// Type schema for a named variable.
+///
+/// `owner` identifies the function this
+/// binding belongs to; `None` means
+/// global scope.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LetTypeSchema {
+    pub owner: Option<String>,
     pub name: String,
     pub ty: ScalarType,
 }
@@ -59,5 +66,18 @@ pub struct LetTypeSchema {
 #[derive(Clone, Debug, Default)]
 pub struct TypeSchemas {
     pub fns: BTreeMap<String, FnTypeSchema>,
-    pub lets: BTreeMap<String, LetTypeSchema>,
+    /// Map:
+    /// owner -> (variable name -> schema)
+    /// owner == "" represents global scope.
+    pub lets: BTreeMap<String, BTreeMap<String, LetTypeSchema>>,
+}
+
+impl TypeSchemas {
+    /// Lookup a `typed-let` schema by owner and name.
+    ///
+    /// `owner == None` queries the global scope.
+    pub fn get_let_schema(&self, owner: Option<&str>, name: &str) -> Option<&LetTypeSchema> {
+        let owner_key = owner.unwrap_or_default();
+        self.lets.get(owner_key).and_then(|m| m.get(name))
+    }
 }

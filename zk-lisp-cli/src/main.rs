@@ -31,7 +31,7 @@ use zk_lisp_proof::{ProverOptions, ZkField, error};
 use zk_lisp_proof_winterfell::{WinterfellBackend, prove};
 
 // Max file size for REPL
-// operations (load/verify @PATH)
+// operations (load/verify [PATH])
 const REPL_MAX_BYTES: usize = 1_048_576; // 1 MiB
 
 static INIT_LOGGING: std::sync::Once = std::sync::Once::new();
@@ -287,6 +287,61 @@ fn build_pi_for_program(
         .map_err(CliError::Build)
 }
 
+/// Validate that CLI-provided public arguments
+/// for `main` are consistent with the optional
+/// `typed-fn` schema.
+///
+/// Current policy:
+/// - if no schema for `main` is present, no extra checks;
+/// - if schema exists, all args must be `Const u64` and
+///   the arity must match the number of CLI args.
+fn validate_main_args_against_schema(
+    program: &compiler::Program,
+    public_args: &[VmArg],
+) -> Result<(), CliError> {
+    let Some(schema) = program.type_schemas.fns.get("main") else {
+        return Ok(());
+    };
+
+    if schema.args.len() != public_args.len() {
+        return Err(CliError::InvalidInput(format!(
+            "main typed schema expects {} args, but CLI provided {}",
+            schema.args.len(),
+            public_args.len(),
+        )));
+    }
+
+    for (idx, (role, ty)) in schema.args.iter().enumerate() {
+        let pos = idx + 1;
+
+        if matches!(role, compiler::ArgRole::Let) {
+            return Err(CliError::InvalidInput(format!(
+                "main arg #{pos}: role 'let' is not supported for CLI yet; all main args must be const",
+            )));
+        }
+
+        match ty {
+            compiler::ScalarType::U64 => {
+                // OK: public CLI args currently support only u64.
+            }
+            other => {
+                let ty_str = match other {
+                    compiler::ScalarType::U64 => "u64",
+                    compiler::ScalarType::U128 => "u128",
+                    compiler::ScalarType::Bytes32 => "bytes32",
+                    compiler::ScalarType::Str64 => "str64",
+                };
+
+                return Err(CliError::InvalidInput(format!(
+                    "main arg #{pos}: type '{ty_str}' is not supported for CLI public args yet; expected 'u64'",
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn parse_u64_literal(s: &str) -> Result<u64, CliError> {
     let s = s.trim();
     if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
@@ -393,6 +448,7 @@ fn cmd_run(
     let secret_vmargs = parse_secret_args(&args.secrets)?;
 
     let program = compiler::compile_entry(&src, &public_u64)?;
+    validate_main_args_against_schema(&program, &public_vmargs)?;
     let pi = build_pi_for_program(&program, &public_vmargs, &secret_vmargs)?;
 
     let pf_mode = resolve_preflight_mode(pf);
@@ -466,6 +522,7 @@ fn cmd_prove(
     let secret_vmargs = parse_secret_args(&args.secrets)?;
 
     let program = compiler::compile_entry(&src, &public_u64)?;
+    validate_main_args_against_schema(&program, &public_vmargs)?;
     let pi = build_pi_for_program(&program, &public_vmargs, &secret_vmargs)?;
 
     let opts = proof_opts(args.queries, args.blowup, args.grind, security_bits);
@@ -568,6 +625,7 @@ fn cmd_verify(
     let (public_vmargs, public_u64) = parse_public_args(&args.args)?;
 
     let program = compiler::compile_entry(&src, &public_u64)?;
+    validate_main_args_against_schema(&program, &public_vmargs)?;
 
     // Rebuild PI similarly to Prove
     let pi = build_pi_for_program(&program, &public_vmargs, &[])?;

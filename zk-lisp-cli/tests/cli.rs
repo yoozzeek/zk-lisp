@@ -130,3 +130,30 @@ fn run_too_big_file_limit() {
         .stdout(predicate::str::contains("\"ok\":false"))
         .stdout(predicate::str::contains("file too large"));
 }
+
+#[test]
+fn run_schema_with_let_role_rejected() {
+    let src = r#"
+(typed-fn main ((let u64)) -> u64)
+(def (main x) x)
+"#;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), src).unwrap();
+
+    let mut cmd = bin();
+    cmd.args([
+        "run",
+        tmp.path().to_str().unwrap(),
+        "--arg",
+        "u64:7",
+        "--json",
+    ]);
+
+    let assert = cmd.assert().failure();
+    assert
+        .stdout(predicate::str::contains("\"ok\":false"))
+        .stdout(predicate::str::contains(
+            "role 'let' is not supported for CLI yet",
+        ));
+}
