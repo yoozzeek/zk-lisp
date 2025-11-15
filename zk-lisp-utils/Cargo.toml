@@ -1,0 +1,7 @@
+[package]
+name = "zk-lisp-utils"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

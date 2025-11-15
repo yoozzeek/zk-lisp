@@ -1,0 +1,11 @@
+[package]
+name = "zk-lisp-compiler"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }

@@ -1,0 +1,29 @@
+[package]
+name = "zk-lisp-cli"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "zk-lisp"
+path = "src/main.rs"
+
+[dependencies]
+zk-lisp-compiler = { path = "../zk-lisp-compiler" }
+zk-lisp-proof = { path = "../zk-lisp-proof" }
+zk-lisp-proof-winterfell = { path = "../zk-lisp-proof-winterfell" }
+thiserror = { workspace = true }
+base64 = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rustyline = { workspace = true }
+winterfell = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }

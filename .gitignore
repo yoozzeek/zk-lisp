@@ -2,3 +2,4 @@
 .idea
 *.bin
 .zk-lisp_history
+.DS_Store
