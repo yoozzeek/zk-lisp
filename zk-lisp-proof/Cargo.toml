@@ -1,7 +1,8 @@
 [package]
 name = "zk-lisp-proof"
-version = "0.1.0"
-edition = "2024"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 zk-lisp-compiler = { path = "../zk-lisp-compiler" }

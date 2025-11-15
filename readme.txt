@@ -44,5 +44,7 @@ Testing:
 
 License:
 
-  This project is licensed under the GPL v3 License.
+  This project is licensed under the GNU Affero
+  General Public License v3.0 or any later version.
+
   See LICENSE for details.
