@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -64,7 +64,7 @@ fn prove_and_verify_ok() {
     let mut cmd2 = bin();
     cmd2.args([
         "verify",
-        &format!("@{}", &path),
+        &path,
         "examples/hello-zk.zlisp",
         "--arg",
         "2",
@@ -89,11 +89,11 @@ fn prove_and_verify_ok() {
 }
 
 #[test]
-fn verify_bad_hex_fails_json() {
+fn verify_bad_proof_path_fails_json() {
     let mut cmd = bin();
     cmd.args([
         "verify",
-        "zzzz",
+        "/this/does/not/exist.bin",
         "examples/hello-zk.zlisp",
         "--arg",
         "2",
@@ -103,12 +103,10 @@ fn verify_bad_hex_fails_json() {
     ]);
     let assert = cmd.assert().failure();
 
-    // exit code 2 mapped by our harness;
-    // cannot assert exact code
-    // via assert_cmd portable API
+    // IO error path, mapped to code 5 by our harness.
     assert
         .stdout(predicate::str::contains("\"ok\":false"))
-        .stdout(predicate::str::contains("\"code\":2"));
+        .stdout(predicate::str::contains("\"code\":5"));
 }
 
 #[test]

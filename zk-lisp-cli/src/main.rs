@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -125,7 +125,7 @@ struct ProveArgs {
 
 #[derive(clap::Args, Debug, Clone)]
 struct VerifyArgs {
-    /// Proof base64 string or @path to binary proof file
+    /// Proof file path
     proof: String,
     /// Path to .zlisp file
     path: PathBuf,
@@ -160,7 +160,7 @@ enum PreflightArg {
 enum CliError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
-    #[error("compile error")]
+    #[error("compile error: {0}")]
     Compile(#[from] compiler::Error),
     #[error("io error")]
     Io(#[from] io::Error),
@@ -359,30 +359,55 @@ fn cmd_prove(
     // Serialize proof to bytes
     let proof_bytes =
         frontend::encode_proof::<WinterfellBackend>(&proof).map_err(CliError::Prover)?;
-    if let Some(path) = args.out {
-        if let Err(e) = fs::write(&path, &proof_bytes) {
-            return Err(CliError::IoPath { source: e, path });
-        }
+
+    // Determine output path:
+    // use --out if provided, otherwise
+    // derive a readable name from source path.
+    let out_path = if let Some(path) = args.out {
+        path
+    } else {
+        let file_name = proof_basename_from_program_path(&args.path);
+        PathBuf::from(file_name)
+    };
+
+    if let Err(e) = fs::write(&out_path, &proof_bytes) {
+        return Err(CliError::IoPath {
+            source: e,
+            path: out_path,
+        });
     }
 
     if !args.quiet {
         let proof_b64 = base64::engine::general_purpose::STANDARD.encode(&proof_bytes);
+        let len_b64 = proof_b64.len();
+
+        let preview_core = if len_b64 <= 128 {
+            proof_b64
+        } else {
+            let head = &proof_b64[..64];
+            let tail = &proof_b64[len_b64 - 64..];
+            format!("{head}...{tail}")
+        };
 
         if json {
             println!(
                 "{}",
                 serde_json::json!({
                     "ok": true,
-                    "proof_b64": proof_b64,
+                    "proof_path": out_path.to_string_lossy(),
+                    "proof_preview_b64": preview_core,
                     "opts": {"queries": args.queries, "blowup": args.blowup, "grind": args.grind},
                     "commitment": format!("0x{:02x?}", program.commitment),
                 })
             );
         } else {
-            // Print a short preview
-            // to avoid huge stdout.
-            let preview = format!("{} (len={} bytes)", proof_b64, proof_bytes.len());
-            println!("proof: {preview}");
+            println!("proof saved to {}", out_path.display());
+            println!(
+                "preview: {} (len={} bytes, b64_len={})",
+                preview_core,
+                proof_bytes.len(),
+                len_b64
+            );
         }
     }
 
@@ -395,10 +420,12 @@ fn cmd_verify(
     max_bytes: usize,
     security_bits: Option<u32>,
 ) -> Result<(), CliError> {
-    let proof_bytes = if let Some(path) = args.proof.strip_prefix('@') {
-        let meta = fs::metadata(path).map_err(|e| CliError::IoPath {
+    let proof_path_str = args.proof.as_str();
+
+    let proof_bytes = {
+        let meta = fs::metadata(proof_path_str).map_err(|e| CliError::IoPath {
             source: e,
-            path: PathBuf::from(path),
+            path: PathBuf::from(proof_path_str),
         })?;
         if meta.len() as usize > max_bytes {
             return Err(CliError::InvalidInput(format!(
@@ -408,22 +435,10 @@ fn cmd_verify(
             )));
         }
 
-        fs::read(path).map_err(|e| CliError::IoPath {
+        fs::read(proof_path_str).map_err(|e| CliError::IoPath {
             source: e,
-            path: PathBuf::from(path),
+            path: PathBuf::from(proof_path_str),
         })?
-    } else {
-        // Base64 only
-        let approx = (args.proof.len() / 4) * 3;
-        if approx > max_bytes {
-            return Err(CliError::InvalidInput(format!(
-                "proof base64 too large: approx {approx} bytes (limit {max_bytes})"
-            )));
-        }
-
-        base64::engine::general_purpose::STANDARD
-            .decode(args.proof.as_bytes())
-            .map_err(|e| CliError::InvalidInput(format!("invalid base64: {e}")))?
     };
 
     let src = read_program(&args.path, max_bytes)?;
@@ -588,11 +603,12 @@ fn cmd_repl() -> Result<(), CliError> {
                 r"Commands:
   :help              - this help
   :quit, :q          - exit
-  :load PATH         - load file into session (base)
+  :load [PATH]       - load file into session (base)
+  :save [PATH]       - save current session to file
   :reset             - clear session
   :docs               - list defined functions (best-effort)
   :prove [EXPR]      - build proof for EXPR (or last expr)
-  :verify B64|@PATH  - verify proof against last expr and current session
+  :verify [PATH]     - verify proof file against last expr and current session
   EXPR               - evaluate EXPR with current session defs
   (def ...)          - define function or constant form into session
   (deftype ...)      - define type helpers into session"
@@ -639,6 +655,50 @@ fn cmd_repl() -> Result<(), CliError> {
                 for n in all {
                     println!("{n}");
                 }
+            }
+
+            let _ = rl.add_history_entry(s);
+            let _ = rl.save_history(&hist_path);
+
+            continue;
+        }
+
+        // Save current session to a file
+        if let Some(rest) = s.strip_prefix(":save ") {
+            let arg = rest.trim();
+
+            if arg.is_empty() {
+                println!("error: usage: :save PATH");
+                continue;
+            }
+
+            let mut file_name = arg.to_string();
+
+            // If user did not specify any
+            // extension, append .zlisp.
+            if !file_name.ends_with(".zlisp") && !file_name.contains('.') {
+                file_name.push_str(".zlisp");
+            }
+
+            let mut out = String::new();
+
+            if !session.base_src.trim().is_empty() {
+                out.push_str(&session.base_src);
+                if !session.base_src.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+
+            for f in &session.forms {
+                out.push_str(f);
+                if !f.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+
+            match fs::write(&file_name, out) {
+                Ok(()) => println!("OK saved session to {file_name}"),
+                Err(e) => println!("error: save session: {e}"),
             }
 
             let _ = rl.add_history_entry(s);
@@ -716,17 +776,50 @@ fn cmd_repl() -> Result<(), CliError> {
                         metrics.mov_elided
                     );
 
-                    let opts = proof_opts(1, 8, 0, None);
+                    let opts = proof_opts(64, 8, 0, None);
                     match frontend::prove::<WinterfellBackend>(&program, &pi, &opts) {
                         Err(e) => println!("error: prove: {e}"),
                         Ok(proof) => match frontend::encode_proof::<WinterfellBackend>(&proof) {
                             Err(e) => println!("error: serialize proof: {e}"),
                             Ok(bytes) => {
-                                let proof_b64 =
-                                    base64::engine::general_purpose::STANDARD.encode(&bytes);
-                                let preview = format!("{} (len={} bytes)", proof_b64, bytes.len());
+                                let file_name = proof_basename_from_expr(expr);
+                                let path = std::path::PathBuf::from(&file_name);
 
-                                println!("proof: {preview}");
+                                match fs::write(&path, &bytes) {
+                                    Err(e) => {
+                                        println!("error: write proof file: {e}");
+                                    }
+                                    Ok(()) => {
+                                        let proof_b64 = base64::engine::general_purpose::STANDARD
+                                            .encode(&bytes);
+                                        let len_b64 = proof_b64.len();
+
+                                        let preview_core = if len_b64 <= 128 {
+                                            proof_b64
+                                        } else {
+                                            let head = &proof_b64[..64];
+                                            let tail = &proof_b64[len_b64 - 64..];
+
+                                            format!("{head}...{tail}")
+                                        };
+
+                                        println!("proof saved to {}", path.display());
+                                        println!(
+                                            "preview: {} (len={} bytes, b64_len={})",
+                                            preview_core,
+                                            bytes.len(),
+                                            len_b64
+                                        );
+                                        println!("hint: verify in REPL with `:verify {file_name}`");
+                                        println!(
+                                            "hint: verify via CLI with `zk-lisp verify {file_name} <program.zlisp> --arg ...`"
+                                        );
+
+                                        // Remember last expression
+                                        // for subsequent :verify
+                                        session.last_expr = Some(expr.to_string());
+                                    }
+                                }
                             }
                         },
                     }
@@ -741,13 +834,13 @@ fn cmd_repl() -> Result<(), CliError> {
 
         // Verify proof for last expression
         if let Some(rest) = s.strip_prefix(":verify ") {
-            let arg = rest.trim();
-            if arg.is_empty() {
-                println!("error: usage: :verify B64|@PATH");
+            let path = rest.trim();
+            if path.is_empty() {
+                println!("error: usage: :verify PATH");
                 continue;
             }
 
-            let bytes = if let Some(path) = arg.strip_prefix('@') {
+            let bytes = {
                 match fs::metadata(path) {
                     Ok(meta) => {
                         if meta.len() as usize > REPL_MAX_BYTES {
@@ -769,21 +862,6 @@ fn cmd_repl() -> Result<(), CliError> {
                     Ok(b) => b,
                     Err(e) => {
                         println!("error: read proof: {e}");
-                        continue;
-                    }
-                }
-            } else {
-                // Bound base64 size before decoding
-                let approx = (arg.len() / 4) * 3;
-                if approx > REPL_MAX_BYTES {
-                    println!("error: proof base64 too large: limit {REPL_MAX_BYTES} bytes");
-                    continue;
-                }
-
-                match base64::engine::general_purpose::STANDARD.decode(arg) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        println!("error: invalid base64: {e}");
                         continue;
                     }
                 }
@@ -821,7 +899,7 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
-            let opts = proof_opts(1, 8, 0, None);
+            let opts = proof_opts(64, 8, 0, None);
             match frontend::verify::<WinterfellBackend>(proof, &program, &pi, &opts) {
                 Ok(()) => println!("OK"),
                 Err(e) => println!("verify error: {e}"),
@@ -1109,6 +1187,125 @@ fn compute_cost(program: &compiler::Program) -> Cost {
     }
 
     c
+}
+
+fn proof_basename_from_program_path(path: &std::path::Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("program");
+
+    let mut tag = String::new();
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            tag.push(ch);
+        } else if ch.is_whitespace() {
+            tag.push('_');
+        }
+
+        if tag.len() >= 32 {
+            break;
+        }
+    }
+
+    if tag.is_empty() {
+        tag.push_str("program");
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let ts_str = ts.to_string();
+
+    let prefix = "proof_";
+    let suffix_extra = 1 + ts_str.len() + 4; // "_" + ts + ".bin"
+    let max_len = 64usize;
+
+    let mut tag_trunc = tag.clone();
+    if prefix.len() + tag_trunc.len() + suffix_extra > max_len {
+        let allowed = max_len.saturating_sub(prefix.len() + suffix_extra);
+        if allowed == 0 {
+            tag_trunc.clear();
+        } else if tag_trunc.len() > allowed {
+            tag_trunc.truncate(allowed);
+        }
+
+        if tag_trunc.is_empty() {
+            tag_trunc.push('x');
+        }
+    }
+
+    format!("{prefix}{tag_trunc}_{ts_str}.bin")
+}
+
+fn proof_tag_from_expr(expr: &str) -> String {
+    let s = expr.trim_start();
+    if let Some(rest) = s.strip_prefix('(') {
+        let inner = rest.trim_start();
+        let mut name = String::new();
+
+        for ch in inner.chars() {
+            if ch.is_whitespace() || ch == '(' || ch == ')' {
+                break;
+            }
+
+            name.push(ch);
+        }
+
+        if !name.is_empty() {
+            return name;
+        }
+    }
+
+    "expr".to_string()
+}
+
+fn proof_basename_from_expr(expr: &str) -> String {
+    let raw_tag = proof_tag_from_expr(expr);
+    let mut tag = String::new();
+
+    for ch in raw_tag.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            tag.push(ch);
+        } else if ch.is_whitespace() {
+            tag.push('_');
+        }
+
+        if tag.len() >= 32 {
+            break;
+        }
+    }
+
+    if tag.is_empty() {
+        tag.push_str("expr");
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let ts_str = ts.to_string();
+
+    let prefix = "proof_";
+    let suffix_extra = 1 + ts_str.len() + 4; // "_" + ts + ".bin"
+    let max_len = 64usize;
+
+    let mut tag_trunc = tag.clone();
+    if prefix.len() + tag_trunc.len() + suffix_extra > max_len {
+        let allowed = max_len.saturating_sub(prefix.len() + suffix_extra);
+        if allowed == 0 {
+            tag_trunc.clear();
+        } else if tag_trunc.len() > allowed {
+            tag_trunc.truncate(allowed);
+        }
+
+        if tag_trunc.is_empty() {
+            tag_trunc.push('x');
+        }
+    }
+
+    format!("{prefix}{tag_trunc}_{ts_str}.bin")
 }
 
 fn init_logging(level: Option<&str>) {
