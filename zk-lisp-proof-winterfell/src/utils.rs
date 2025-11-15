@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -20,6 +20,7 @@ use std::sync::OnceLock;
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{Trace, TraceTable};
+use zk_lisp_proof::pi::VmArg;
 
 pub const ROM_W_SEED_0: u32 = 17;
 pub const ROM_W_SEED_1: u32 = 1037;
@@ -39,6 +40,84 @@ pub fn pow2_64() -> BE {
 
         acc
     })
+}
+
+/// Encode a 128-bit unsigned integer into the base
+/// field by interpreting it as a binary polynomial
+/// over F and reducing modulo the field modulus.
+///
+/// This works for all `u128` values without needing
+/// to know the modulus explicitly; the mapping is
+/// `n -> sum_i bit_i * 2^i (mod p)`.
+#[inline]
+pub fn be_from_u128(n: u128) -> BE {
+    let mut x = n;
+    let mut cur = BE::ONE;
+    let mut acc = BE::ZERO;
+
+    while x > 0 {
+        if (x & 1) != 0 {
+            acc += cur;
+        }
+
+        // multiply by 2 in the field
+        cur += cur;
+        x >>= 1;
+    }
+
+    acc
+}
+
+/// Encode 16 bytes (little-endian) into a single
+/// base-field element by first interpreting them
+/// as a `u128` and then calling [`be_from_u128`].
+#[inline]
+pub fn be_from_le_bytes16(b16: &[u8; 16]) -> BE {
+    let n = u128::from_le_bytes(*b16);
+    be_from_u128(n)
+}
+
+/// Expand a typed VM argument into one or more
+/// base-field elements used for public-input
+/// encoding or VM register seeding.
+///
+/// Layout:
+/// - `VmArg::U64`   -> 1 element (value as u64)
+/// - `VmArg::U128`  -> 1 element (binary embedding)
+/// - `VmArg::Bytes32` -> 2 elements (lo,hi 16-byte
+///   chunks, each embedded via [`be_from_le_bytes16`]).
+#[inline]
+pub fn encode_vmarg_to_elements(arg: &VmArg, out: &mut Vec<BE>) {
+    match arg {
+        VmArg::U64(x) => {
+            out.push(BE::from(*x));
+        }
+        VmArg::U128(x) => {
+            out.push(be_from_u128(*x));
+        }
+        VmArg::Bytes32(bytes) => {
+            let mut lo = [0u8; 16];
+            let mut hi = [0u8; 16];
+            lo.copy_from_slice(&bytes[0..16]);
+            hi.copy_from_slice(&bytes[16..32]);
+
+            out.push(be_from_le_bytes16(&lo));
+            out.push(be_from_le_bytes16(&hi));
+        }
+    }
+}
+
+/// Flatten a slice of VmArgs into a sequence of
+/// base-field elements in argument order using
+/// [`encode_vmarg_to_elements`].
+#[inline]
+pub fn encode_main_args_to_slots(args: &[VmArg]) -> Vec<BE> {
+    let mut out = Vec::new();
+    for arg in args {
+        encode_vmarg_to_elements(arg, &mut out);
+    }
+
+    out
 }
 
 // ROM helpers:

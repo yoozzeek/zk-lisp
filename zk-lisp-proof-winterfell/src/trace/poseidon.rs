@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -241,7 +241,7 @@ mod tests {
         b.push(Op::Add { dst: 2, a: 0, b: 1 });
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -48,7 +48,6 @@ fn enum_predicate_positive_verifies() {
 
     let expected = u128_to_bytes32(1);
     let pi = PublicInputsBuilder::from_program(&program)
-        .with_args(&[t])
         .with_expect(&expected)
         .build()
         .expect("pi");
@@ -83,7 +82,6 @@ fn enum_predicate_negative_fails_verify() {
 
     let expected = u128_to_bytes32(1);
     let pi = PublicInputsBuilder::from_program(&program)
-        .with_args(&[t])
         .with_expect(&expected)
         .build()
         .expect("pi");

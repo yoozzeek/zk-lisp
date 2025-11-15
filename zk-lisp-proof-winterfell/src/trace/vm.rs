@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -28,15 +28,28 @@ use winterfell::math::{FieldElement, StarkField};
 use zk_lisp_compiler::builder;
 use zk_lisp_compiler::builder::Op;
 use zk_lisp_proof::error::{self, Error};
+use zk_lisp_proof::pi::VmArg;
 
 pub(super) struct VmTraceBuilder<'a> {
     ram_events: &'a mut Vec<RamEvent>,
     mem: &'a mut BTreeMap<u128, BE>,
+    secret_args: &'a [VmArg],
+    main_args: &'a [VmArg],
 }
 
 impl<'a> VmTraceBuilder<'a> {
-    pub fn new(mem: &'a mut BTreeMap<u128, BE>, ram_events: &'a mut Vec<RamEvent>) -> Self {
-        Self { mem, ram_events }
+    pub fn new(
+        mem: &'a mut BTreeMap<u128, BE>,
+        ram_events: &'a mut Vec<RamEvent>,
+        secret_args: &'a [VmArg],
+        main_args: &'a [VmArg],
+    ) -> Self {
+        Self {
+            mem,
+            ram_events,
+            secret_args,
+            main_args,
+        }
     }
 }
 
@@ -47,6 +60,45 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
         trace: &mut TraceTable<BE>,
     ) -> error::Result<()> {
         let mut regs = [BE::ZERO; NR];
+
+        // Reserve tail of register
+        // file for runtime public
+        // main_args, flattened into slots.
+        let main_slots = crate::utils::encode_main_args_to_slots(self.main_args);
+        let slots_len = main_slots.len();
+        if slots_len > NR {
+            return Err(Error::InvalidInput(
+                "too many main_args for VM register file",
+            ));
+        }
+
+        let tail_start = NR - slots_len;
+
+        // Seed initial register file from
+        // secret VM arguments when present.
+        for (i, arg) in self.secret_args.iter().enumerate() {
+            if i >= tail_start {
+                break;
+            }
+
+            let val_u64 = match arg {
+                VmArg::U64(v) => *v,
+                _ => {
+                    return Err(Error::InvalidInput(
+                        "non-u64 secret arg not yet supported for VM registers",
+                    ));
+                }
+            };
+
+            regs[i] = BE::from(val_u64);
+        }
+
+        // Seed reserved tail registers from
+        // runtime public main_args slots.
+        for (j, val) in main_slots.iter().enumerate() {
+            let idx = tail_start + j;
+            regs[idx] = *val;
+        }
 
         // Buffer absorbed registers across
         // levels until SSqueeze up to 10.
@@ -850,7 +902,7 @@ mod tests {
         b.push(Op::Add { dst: 2, a: 0, b: 1 });
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();
@@ -901,7 +953,7 @@ mod tests {
 
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();
@@ -939,7 +991,7 @@ mod tests {
         b.push(Op::SSqueeze { dst: 3 });
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();
@@ -967,7 +1019,7 @@ mod tests {
         b.push(Op::Const { dst: 0, imm: 1 });
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();
@@ -988,7 +1040,7 @@ mod tests {
         b.push(Op::Add { dst: 2, a: 0, b: 1 });
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
 
         let trace = build_trace(&p, &PublicInputs::default()).unwrap();
         let cols = Columns::baseline();

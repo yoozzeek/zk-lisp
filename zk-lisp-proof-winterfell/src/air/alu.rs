@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -377,6 +377,7 @@ mod tests {
             rom_w_enc1: w_enc1_box,
             rom_acc: [BE::ZERO; 3],
             program_fe: [BE::ZERO; 2],
+            main_args: Vec::new(),
         };
 
         VmAluAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);

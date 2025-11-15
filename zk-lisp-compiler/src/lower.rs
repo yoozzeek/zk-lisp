@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -13,9 +13,9 @@
 //! bindings and functions, and lowers them into VM ops using
 //! a small register allocator and compiler metrics tracking.
 
-use crate::Error;
 use crate::builder::{Op, ProgramBuilder};
 use crate::metrics::CompilerMetrics;
+use crate::{ArgRole, Error, FnTypeSchema, LetTypeSchema, ScalarType};
 
 use std::collections::BTreeMap;
 
@@ -161,6 +161,10 @@ impl<'a> LowerCtx<'a> {
     }
 
     fn define_fun(&mut self, name: &str, params: Vec<String>, body: Ast) {
+        // Record function declaration on the builder
+        // so that type schemas can be cross-checked
+        // during finalize.
+        self.builder.add_fn_decl(name.to_string(), params.len());
         self.env.funs.insert(name.to_string(), (params, body));
     }
 
@@ -202,6 +206,8 @@ pub fn lower_top(cx: &mut LowerCtx, ast: Ast) -> Result<(), Error> {
             match &items[0] {
                 Ast::Atom(Atom::Sym(s)) if s == "def" => lower_def(cx, &items[1..]),
                 Ast::Atom(Atom::Sym(s)) if s == "deftype" => lower_deftype(cx, &items[1..]),
+                Ast::Atom(Atom::Sym(s)) if s == "typed-fn" => lower_typed_fn(cx, &items[1..]),
+                Ast::Atom(Atom::Sym(s)) if s == "typed-let" => lower_typed_let(cx, &items[1..]),
                 _ => {
                     // treat as expression; compute and discard
                     let v = lower_expr(cx, ast)?;
@@ -298,6 +304,13 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "push*" => lower_push_star(cx, tail),
                     "pop*" => lower_pop_star(cx, tail),
                     "hex-to-bytes32" => lower_hex_to_bytes32(cx, tail),
+                    "secret-arg" => lower_secret_arg(cx, tail),
+                    "typed-let" => {
+                        // typed-let inside expressions is a schema-only
+                        // form; it is collected during the AST pass in
+                        // lower_def. At runtime it behaves as a no-op.
+                        Ok(RVal::Imm(0))
+                    }
                     "begin" => lower_begin(cx, tail),
                     _ => lower_call(cx, s, tail),
                 }
@@ -337,6 +350,9 @@ fn lower_def(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
 
             let body = implicit_begin(&rest[1..]);
 
+            collect_let_names(&body, cx.builder);
+            collect_typed_lets(&fname, &body, cx.builder)?;
+
             (fname, ps, body)
         }
         Ast::Atom(Atom::Sym(s)) => {
@@ -345,6 +361,9 @@ fn lower_def(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
             }
 
             let body = implicit_begin(&rest[1..]);
+
+            collect_let_names(&body, cx.builder);
+            collect_typed_lets(s, &body, cx.builder)?;
 
             (s.clone(), Vec::new(), body)
         }
@@ -376,6 +395,10 @@ fn lower_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
                     Ast::Atom(Atom::Sym(s)) => s.clone(),
                     _ => return Err(Error::InvalidForm("let: name".into())),
                 };
+
+                // Record that this name has a concrete
+                // `let` binding in the lowered program.
+                cx.builder.add_let_name(name.clone());
 
                 let v = lower_expr(cx, kv[1].clone())?;
 
@@ -2532,6 +2555,122 @@ fn lower_store_ca(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     Ok(RVal::Imm(0))
 }
 
+fn lower_secret_arg(_cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    // (secret-arg idx) reads a secret VM argument
+    // previously seeded into register idx.
+    if rest.len() != 1 {
+        return Err(Error::InvalidForm("secret-arg".into()));
+    }
+
+    let idx_ast = &rest[0];
+    let idx_u64 = match idx_ast {
+        Ast::Atom(Atom::Int(v)) => *v,
+        _ => {
+            return Err(Error::InvalidForm(
+                "secret-arg: index must be integer literal".into(),
+            ));
+        }
+    };
+
+    let idx_u8 = u8::try_from(idx_u64).map_err(|_| {
+        Error::InvalidForm("secret-arg: index out of range for register file".into())
+    })?;
+
+    if (idx_u8 as usize) >= NR {
+        return Err(Error::InvalidForm(
+            "secret-arg: index out of range for register file".into(),
+        ));
+    }
+
+    Ok(RVal::Borrowed(idx_u8))
+}
+
+fn lower_typed_fn(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
+    // (typed-fn name (arg-type ...) -> ret-type)
+    if rest.len() != 4 {
+        return Err(Error::InvalidForm("typed-fn".into()));
+    }
+
+    let name = match &rest[0] {
+        Ast::Atom(Atom::Sym(s)) => s.clone(),
+        _ => return Err(Error::InvalidForm("typed-fn: name".into())),
+    };
+
+    let args_list = match &rest[1] {
+        Ast::List(items) => items,
+        _ => return Err(Error::InvalidForm("typed-fn: args".into())),
+    };
+
+    let mut args: Vec<(ArgRole, ScalarType)> = Vec::with_capacity(args_list.len());
+    for a in args_list {
+        args.push(parse_arg_spec(a)?);
+    }
+
+    match &rest[2] {
+        Ast::Atom(Atom::Sym(s)) if s == "->" => {}
+        _ => return Err(Error::InvalidForm("typed-fn: expected '->'".into())),
+    }
+
+    let ret_ty_sym = match &rest[3] {
+        Ast::Atom(Atom::Sym(s)) => s.as_str(),
+        _ => return Err(Error::InvalidForm("typed-fn: return type".into())),
+    };
+    let ret_ty = parse_scalar_type(ret_ty_sym)?;
+
+    let schema = FnTypeSchema {
+        name: name.clone(),
+        args,
+        ret: ret_ty,
+    };
+
+    cx.builder.add_fn_schema(schema);
+
+    Ok(())
+}
+
+fn lower_typed_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
+    // Global typed-let (top-level).
+    let schema = parse_typed_let(None, rest)?;
+    cx.builder.add_let_schema(schema)?;
+
+    Ok(())
+}
+
+fn parse_typed_let(owner: Option<&str>, rest: &[Ast]) -> Result<LetTypeSchema, Error> {
+    // (typed-let name type)
+    if rest.len() != 2 {
+        return Err(Error::InvalidForm("typed-let".into()));
+    }
+
+    let name = match &rest[0] {
+        Ast::Atom(Atom::Sym(s)) => s.clone(),
+        _ => return Err(Error::InvalidForm("typed-let: name".into())),
+    };
+
+    let ty_sym = match &rest[1] {
+        Ast::Atom(Atom::Sym(s)) => s.as_str(),
+        Ast::List(items) if items.len() == 2 => {
+            // Allow (role type) but
+            // ignore the role here.
+            match &items[1] {
+                Ast::Atom(Atom::Sym(s)) => s.as_str(),
+                _ => {
+                    return Err(Error::InvalidForm("typed-let: type must be symbol".into()));
+                }
+            }
+        }
+        _ => return Err(Error::InvalidForm("typed-let: type".into())),
+    };
+
+    let ty = parse_scalar_type(ty_sym)?;
+
+    Ok(LetTypeSchema {
+        owner: owner.map(|s| s.to_string()),
+        name,
+        ty,
+    })
+}
+
 // Determine if subtree is pure arithmetic
 fn is_pure_arith(ast: &Ast) -> bool {
     match ast {
@@ -2754,4 +2893,110 @@ fn implicit_begin(forms: &[Ast]) -> Ast {
     v.extend_from_slice(forms);
 
     Ast::List(v)
+}
+
+fn parse_scalar_type(sym: &str) -> Result<ScalarType, Error> {
+    match sym {
+        "u64" => Ok(ScalarType::U64),
+        "u128" => Ok(ScalarType::U128),
+        "bytes32" => Ok(ScalarType::Bytes32),
+        "str64" => Ok(ScalarType::Str64),
+        _ => Err(Error::InvalidForm(format!(
+            "typed-fn: unknown type '{sym}'",
+        ))),
+    }
+}
+
+fn parse_arg_spec(ast: &Ast) -> Result<(ArgRole, ScalarType), Error> {
+    match ast {
+        // Shorthand: just the type symbol => Const
+        Ast::Atom(Atom::Sym(t)) => {
+            let ty = parse_scalar_type(t)?;
+            Ok((ArgRole::Const, ty))
+        }
+        // (role type) with role in {const, let}
+        Ast::List(items) if items.len() == 2 => {
+            let role_sym = match &items[0] {
+                Ast::Atom(Atom::Sym(s)) => s.as_str(),
+                _ => {
+                    return Err(Error::InvalidForm(
+                        "typed-fn: arg role must be symbol".into(),
+                    ));
+                }
+            };
+            let ty_sym = match &items[1] {
+                Ast::Atom(Atom::Sym(s)) => s.as_str(),
+                _ => {
+                    return Err(Error::InvalidForm(
+                        "typed-fn: arg type must be symbol".into(),
+                    ));
+                }
+            };
+
+            let role = match role_sym {
+                "const" => ArgRole::Const,
+                "let" => ArgRole::Let,
+                _ => {
+                    return Err(Error::InvalidForm(format!(
+                        "typed-fn: unknown arg role '{role_sym}'",
+                    )));
+                }
+            };
+            let ty = parse_scalar_type(ty_sym)?;
+
+            Ok((role, ty))
+        }
+        _ => Err(Error::InvalidForm(
+            "typed-fn: arg spec must be type or (role type)".into(),
+        )),
+    }
+}
+
+fn collect_let_names(ast: &Ast, builder: &mut ProgramBuilder) {
+    match ast {
+        Ast::List(items) if !items.is_empty() => {
+            // Detect (let ((name expr) ...) body...)
+            if let Ast::Atom(Atom::Sym(head)) = &items[0] {
+                if head == "let" {
+                    if let Some(Ast::List(pairs)) = items.get(1) {
+                        for b in pairs {
+                            if let Ast::List(kv) = b {
+                                if kv.len() == 2 {
+                                    if let Ast::Atom(Atom::Sym(name)) = &kv[0] {
+                                        builder.add_let_name(name.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Recurse into children
+            for sub in &items[1..] {
+                collect_let_names(sub, builder);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_typed_lets(owner: &str, ast: &Ast, builder: &mut ProgramBuilder) -> Result<(), Error> {
+    match ast {
+        Ast::List(items) if !items.is_empty() => {
+            if let Ast::Atom(Atom::Sym(head)) = &items[0] {
+                if head == "typed-let" {
+                    let schema = parse_typed_let(Some(owner), &items[1..])?;
+                    builder.add_let_schema(schema)?;
+                }
+            }
+
+            for sub in &items[1..] {
+                collect_typed_lets(owner, sub, builder)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
 }

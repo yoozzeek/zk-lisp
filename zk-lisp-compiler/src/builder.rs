@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -17,8 +17,9 @@
 //! [`ProgramBuilder`] used by lowering to construct the
 //! final instruction stream and track register usage.
 
-use crate::Program;
 use crate::metrics::CompilerMetrics;
+use crate::{Error, FnTypeSchema, LetTypeSchema, Program, TypeSchemas};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -160,6 +161,18 @@ pub enum Op {
 pub struct ProgramBuilder {
     ops: Vec<Op>,
     reg_max: u8,
+    type_schemas: TypeSchemas,
+
+    // Collected function declarations
+    // from `def`/generated defs.
+    // Maps function name to its
+    // arity (number of parameters).
+    fn_decls: BTreeMap<String, usize>,
+
+    // Names that were bound via `let`
+    // inside function bodies or
+    // top-level expressions.
+    let_names: BTreeSet<String>,
 }
 
 impl Default for ProgramBuilder {
@@ -173,6 +186,9 @@ impl ProgramBuilder {
         Self {
             ops: Vec::new(),
             reg_max: 0,
+            type_schemas: TypeSchemas::default(),
+            fn_decls: BTreeMap::new(),
+            let_names: BTreeSet::new(),
         }
     }
 
@@ -300,12 +316,135 @@ impl ProgramBuilder {
         self.ops.push(op);
     }
 
-    pub fn finalize(self, metrics: CompilerMetrics) -> Program {
+    pub fn add_fn_schema(&mut self, schema: FnTypeSchema) {
+        self.type_schemas.fns.insert(schema.name.clone(), schema);
+    }
+
+    pub fn add_let_schema(&mut self, schema: LetTypeSchema) -> Result<(), Error> {
+        let owner_key = schema.owner.clone().unwrap_or_default();
+
+        // Check for conflicts within
+        // the same owner scope.
+        if let Some(scope) = self.type_schemas.lets.get(&owner_key) {
+            if let Some(existing) = scope.get(&schema.name) {
+                if existing.ty != schema.ty {
+                    return Err(Error::InvalidForm(format!(
+                        "typed-let: conflicting type for '{}'",
+                        schema.name,
+                    )));
+                }
+
+                // Same name and type
+                return Ok(());
+            }
+        }
+
+        // Check for conflicts between
+        // global and function scopes.
+        match &schema.owner {
+            // Function-local schema:
+            // ensure it does not conflict
+            // with a global schema of
+            // the same name.
+            Some(_) => {
+                if let Some(global_scope) = self.type_schemas.lets.get("") {
+                    if let Some(global_schema) = global_scope.get(&schema.name) {
+                        if global_schema.ty != schema.ty {
+                            return Err(Error::InvalidForm(format!(
+                                "typed-let: conflicting type for '{}'",
+                                schema.name,
+                            )));
+                        }
+                    }
+                }
+            }
+            // Global schema:
+            // ensure it does not conflict
+            // with any existing function-local
+            // schemas of the same name.
+            None => {
+                for (owner, scope) in &self.type_schemas.lets {
+                    if owner.is_empty() {
+                        continue;
+                    }
+
+                    if let Some(existing) = scope.get(&schema.name) {
+                        if existing.ty != schema.ty {
+                            return Err(Error::InvalidForm(format!(
+                                "typed-let: conflicting type for '{}'",
+                                schema.name,
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        // No conflicts;
+        // insert into owner scope
+        let scope = self.type_schemas.lets.entry(owner_key).or_default();
+        scope.insert(schema.name.clone(), schema);
+
+        Ok(())
+    }
+
+    /// Record a function declaration with its arity.
+    ///
+    /// This is later cross-checked against any `typed-fn`
+    /// schemas during [`ProgramBuilder::finalize`].
+    pub fn add_fn_decl(&mut self, name: String, arity: usize) {
+        self.fn_decls.insert(name, arity);
+    }
+
+    /// Record a variable name that was introduced by
+    /// a `let` binding somewhere in the program.
+    pub fn add_let_name(&mut self, name: String) {
+        self.let_names.insert(name);
+    }
+
+    pub fn finalize(self, metrics: CompilerMetrics) -> Result<Program, Error> {
+        // Enforce that all function type
+        // schemas have a matching function
+        // definition with the same arity.
+        for (name, schema) in &self.type_schemas.fns {
+            let Some(arity) = self.fn_decls.get(name) else {
+                return Err(Error::InvalidForm(format!(
+                    "typed-fn: no function definition found for '{name}'",
+                )));
+            };
+
+            let schema_arity = schema.args.len();
+            if *arity != schema_arity {
+                return Err(Error::InvalidForm(format!(
+                    "typed-fn: function '{name}' is defined with {arity} args but schema declares {schema_arity}",
+                )));
+            }
+        }
+
+        // Enforce that every `typed-let` has
+        // at least one matching `let` binding
+        // somewhere in the program.
+        for scope in self.type_schemas.lets.values() {
+            for name in scope.keys() {
+                if !self.let_names.contains(name) {
+                    return Err(Error::InvalidForm(format!(
+                        "typed-let: no let binding found for '{name}'",
+                    )));
+                }
+            }
+        }
+
         let reg_count = self.reg_max;
         let bytes = encode_ops(&self.ops);
         let commitment = program_commitment(&bytes);
 
-        Program::new(commitment, self.ops, reg_count, metrics)
+        Ok(Program::new(
+            commitment,
+            self.ops,
+            reg_count,
+            metrics,
+            self.type_schemas,
+        ))
     }
 
     #[inline]
@@ -499,7 +638,7 @@ mod tests {
         b.push(Op::Add { dst: 2, a: 0, b: 1 });
         b.push(Op::End);
 
-        let p = b.finalize(metrics);
+        let p = b.finalize(metrics).expect("finalize must succeed");
         assert_eq!(p.reg_count, 3);
         assert_eq!(p.ops.len(), 4);
         assert_eq!(p.commitment.len(), 32);

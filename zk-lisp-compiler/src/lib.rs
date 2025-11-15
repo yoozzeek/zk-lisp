@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -16,9 +16,12 @@
 
 mod lower;
 mod metrics;
+mod schema;
+
+pub mod builder;
 
 pub use metrics::CompilerMetrics;
-pub mod builder;
+pub use schema::{ArgRole, FnTypeSchema, LetTypeSchema, ScalarType, TypeSchemas};
 
 use crate::builder::{Op, ProgramBuilder};
 
@@ -60,6 +63,7 @@ pub struct Program {
     pub out_reg: u8,
     pub out_row: u32,
     pub compiler_metrics: CompilerMetrics,
+    pub type_schemas: TypeSchemas,
 }
 
 impl Program {
@@ -68,6 +72,7 @@ impl Program {
         ops: Vec<Op>,
         reg_count: u8,
         compiler_metrics: CompilerMetrics,
+        type_schemas: TypeSchemas,
     ) -> Self {
         Self {
             ops,
@@ -76,6 +81,7 @@ impl Program {
             out_reg: 0,
             out_row: 0,
             compiler_metrics,
+            type_schemas,
         }
     }
 }
@@ -100,7 +106,7 @@ pub fn compile_str(src: &str) -> Result<Program, Error> {
 
     builder.push(Op::End);
 
-    let program = builder.finalize(metrics);
+    let program = builder.finalize(metrics)?;
 
     debug!(
         ops = program.ops.len(),
@@ -196,7 +202,7 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     builder.push(Op::End);
 
     // Finalize program
-    let program = builder.finalize(metrics);
+    let program = builder.finalize(metrics)?;
 
     debug!(
         ops = program.ops.len(),

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -26,9 +26,17 @@ pub const FM_SPONGE: u64 = 1 << 5;
 pub const FM_MERKLE: u64 = 1 << 6;
 pub const FM_RAM: u64 = 1 << 7;
 
-/// Maximum number of
-/// VM argument registers.
-const VM_REG_COUNT: usize = 8;
+/// Typed VM argument value.
+///
+/// This enum is shared between public and secret
+/// arguments so frontends can keep a single
+/// representation for CLI/DSL inputs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VmArg {
+    U64(u64),
+    U128(u128),
+    Bytes32([u8; 32]),
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FeaturesMap {
@@ -44,7 +52,30 @@ pub struct FeaturesMap {
 pub struct PublicInputs {
     pub program_commitment: [u8; 32],
     pub merkle_root: [u8; 32],
-    pub vm_args: Vec<u64>,
+
+    /// Public VM arguments (typed).
+    ///
+    /// These are currently metadata
+    /// only and are not encoded into
+    /// the AIR public input vector.
+    pub public_args: Vec<VmArg>,
+
+    /// Runtime public arguments for `main`.
+    ///
+    /// From the backend perspective these are
+    /// just typed values; the Const vs Let role
+    /// is enforced at the frontend via schemas.
+    pub main_args: Vec<VmArg>,
+
+    /// Secret VM arguments (typed).
+    ///
+    /// These are witness values used
+    /// to seed the VM register file
+    /// for the first level and are
+    /// intentionally not exposed via
+    /// AIR public inputs.
+    pub secret_args: Vec<VmArg>,
+
     pub vm_out_reg: u8,
     pub vm_out_row: u32,
     pub vm_expected_bytes: [u8; 32],
@@ -133,8 +164,30 @@ impl PublicInputsBuilder {
         }
     }
 
-    pub fn with_args(mut self, args: &[u64]) -> Self {
-        self.pi.vm_args = args.to_vec();
+    /// Attach typed public VM arguments.
+    ///
+    /// These arguments are kept for metadata and
+    /// future schema/typing, but are not exposed
+    /// directly to the AIR as public inputs.
+    pub fn with_public_args(mut self, args: &[VmArg]) -> Self {
+        self.pi.public_args = args.to_vec();
+        self
+    }
+
+    /// Attach typed `main` arguments that are
+    /// treated as runtime public inputs.
+    pub fn with_main_args(mut self, args: &[VmArg]) -> Self {
+        self.pi.main_args = args.to_vec();
+        self
+    }
+
+    /// Attach typed secret VM arguments.
+    ///
+    /// These arguments seed the VM register file
+    /// in the backend trace builder but remain
+    /// witness-only from the AIR perspective.
+    pub fn with_secret_args(mut self, args: &[VmArg]) -> Self {
+        self.pi.secret_args = args.to_vec();
         self.pi.feature_mask |= FM_VM;
 
         self
@@ -153,9 +206,6 @@ impl PublicInputsBuilder {
             return Err(Error::InvalidInput(
                 "program_commitment (Blake3) must be non-zero",
             ));
-        }
-        if self.pi.vm_args.len() > VM_REG_COUNT {
-            return Err(Error::InvalidInput("too many vm_args for register file"));
         }
 
         self.pi.validate_flags()?;
@@ -185,9 +235,6 @@ impl PublicInputs {
         }
         if (self.feature_mask & FM_VM_EXPECT) != 0 && (self.feature_mask & FM_VM) == 0 {
             return Err(Error::InvalidInput("FM_VM_EXPECT requires FM_VM"));
-        }
-        if self.vm_args.len() > VM_REG_COUNT {
-            return Err(Error::InvalidInput("too many vm_args for register file"));
         }
 
         Ok(())

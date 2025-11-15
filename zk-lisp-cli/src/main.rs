@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -26,12 +26,12 @@ use thiserror::Error;
 
 use zk_lisp_compiler as compiler;
 use zk_lisp_proof::frontend::{self, PreflightMode};
-use zk_lisp_proof::pi::{PublicInputs, PublicInputsBuilder};
+use zk_lisp_proof::pi::{PublicInputs, PublicInputsBuilder, VmArg};
 use zk_lisp_proof::{ProverOptions, ZkField, error};
 use zk_lisp_proof_winterfell::{WinterfellBackend, prove};
 
 // Max file size for REPL
-// operations (load/verify @PATH)
+// operations (load/verify [PATH])
 const REPL_MAX_BYTES: usize = 1_048_576; // 1 MiB
 
 static INIT_LOGGING: std::sync::Once = std::sync::Once::new();
@@ -90,18 +90,36 @@ enum Command {
 struct RunArgs {
     /// Path to .zlisp file
     path: PathBuf,
-    /// Arguments for main (repeat or comma-separated via --args)
+    /// Arguments for main (repeat or comma-separated via --arg)
+    ///
+    /// Each argument is typed as `<kind>:<value>`, e.g.
+    /// `u64:3`, `u64:0x10`. Currently only `u64` is
+    /// supported for main; use --secret for other types.
     #[arg(long = "arg", value_delimiter = ',')]
-    args: Vec<u64>,
+    args: Vec<String>,
+    /// Secret arguments for main (prove/run only).
+    ///
+    /// Each item is `<kind>:<value>` (u64|u128|bytes32).
+    #[arg(long = "secret", value_delimiter = ',')]
+    secrets: Vec<String>,
 }
 
 #[derive(clap::Args, Debug, Clone)]
 struct ProveArgs {
     /// Path to .zlisp file
     path: PathBuf,
-    /// Arguments for main
+    /// Public arguments for main
+    ///
+    /// Each argument is typed as `<kind>:<value>`, e.g.
+    /// `u64:3`, `u64:0x10`. Currently only `u64` is
+    /// supported for main; use --secret for other types.
     #[arg(long = "arg", value_delimiter = ',')]
-    args: Vec<u64>,
+    args: Vec<String>,
+    /// Secret arguments for main (prove only).
+    ///
+    /// Each item is `<kind>:<value>` (u64|u128|bytes32).
+    #[arg(long = "secret", value_delimiter = ',')]
+    secrets: Vec<String>,
     /// Number of FRI queries
     #[arg(long, default_value_t = 64)]
     queries: u8,
@@ -125,14 +143,17 @@ struct ProveArgs {
 
 #[derive(clap::Args, Debug, Clone)]
 struct VerifyArgs {
-    /// Proof base64 string or @path to binary proof file
+    /// Proof file path
     proof: String,
     /// Path to .zlisp file
     path: PathBuf,
-    /// Arguments for main must match the ones
-    /// used for proof (except secrets).
+    /// Arguments for main must match
+    /// the ones used for proof.
+    ///
+    /// Each argument is typed as `<kind>:<value>`;
+    /// currently only `u64` is supported for main here.
     #[arg(long = "arg", value_delimiter = ',')]
-    args: Vec<u64>,
+    args: Vec<String>,
 
     /// Number of FRI queries
     #[arg(long, default_value_t = 64)]
@@ -160,7 +181,7 @@ enum PreflightArg {
 enum CliError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
-    #[error("compile error")]
+    #[error("compile error: {0}")]
     Compile(#[from] compiler::Error),
     #[error("io error")]
     Io(#[from] io::Error),
@@ -254,14 +275,284 @@ fn read_program(path: impl AsRef<std::path::Path>, max_bytes: usize) -> Result<S
 
 fn build_pi_for_program(
     program: &compiler::Program,
-    args: &[u64],
+    public_args: &[VmArg],
+    secret_args: &[VmArg],
 ) -> Result<PublicInputs, CliError> {
-    // Build features from program ops and bind VM args.
+    let main_args = if let Some(schema) = program.type_schemas.fns.get("main") {
+        if schema.args.len() != public_args.len() {
+            return Err(CliError::InvalidInput(format!(
+                "main typed schema expects {} args, but CLI provided {}",
+                schema.args.len(),
+                public_args.len(),
+            )));
+        }
+
+        let mut out = Vec::new();
+        for (idx, ((role, ty), vmarg)) in schema.args.iter().zip(public_args).enumerate() {
+            if matches!(role, compiler::ArgRole::Let) {
+                let pos = idx + 1;
+                match ty {
+                    compiler::ScalarType::U64 => match vmarg {
+                        VmArg::U64(_) => out.push(vmarg.clone()),
+                        _ => {
+                            return Err(CliError::InvalidInput(format!(
+                                "main arg #{pos}: expected u64 value for type 'u64'",
+                            )));
+                        }
+                    },
+                    compiler::ScalarType::U128 => match vmarg {
+                        VmArg::U128(_) => out.push(vmarg.clone()),
+                        _ => {
+                            return Err(CliError::InvalidInput(format!(
+                                "main arg #{pos}: expected u128 value for type 'u128'",
+                            )));
+                        }
+                    },
+                    compiler::ScalarType::Bytes32 => match vmarg {
+                        VmArg::Bytes32(_) => out.push(vmarg.clone()),
+                        _ => {
+                            return Err(CliError::InvalidInput(format!(
+                                "main arg #{pos}: expected bytes32 value for type 'bytes32'",
+                            )));
+                        }
+                    },
+                    compiler::ScalarType::Str64 => {
+                        return Err(CliError::InvalidInput(format!(
+                            "main arg #{pos}: type 'str64' is not supported as runtime public input",
+                        )));
+                    }
+                }
+            }
+        }
+
+        out
+    } else {
+        Vec::new()
+    };
+
+    // Build features from program ops and bind typed VM args.
     // Ensures Merkle/RAM/VM/POSEIDON/SPONGE flags are correct.
     PublicInputsBuilder::from_program(program)
-        .with_args(args)
+        .with_public_args(public_args)
+        .with_main_args(&main_args)
+        .with_secret_args(secret_args)
         .build()
         .map_err(CliError::Build)
+}
+
+/// Validate that CLI-provided public arguments
+/// for `main` are consistent with the optional
+/// `typed-fn` schema.
+///
+/// Current policy:
+/// - if no schema for `main` is present, no extra checks;
+/// - arity of schema and CLI args must match;
+/// - for `ArgRole::Const`, only `u64` is supported at CLI level
+///   (both in schema type and actual value);
+/// - for `ArgRole::Let`, the following types are supported
+///   as runtime public inputs and CLI values: `u64`, `u128`,
+///   `bytes32`; `str64` is rejected for now.
+fn validate_main_args_against_schema(
+    program: &compiler::Program,
+    public_args: &[VmArg],
+) -> Result<(), CliError> {
+    let Some(schema) = program.type_schemas.fns.get("main") else {
+        return Ok(());
+    };
+
+    if schema.args.len() != public_args.len() {
+        return Err(CliError::InvalidInput(format!(
+            "main typed schema expects {} args, but CLI provided {}",
+            schema.args.len(),
+            public_args.len(),
+        )));
+    }
+
+    for (idx, (role, ty)) in schema.args.iter().enumerate() {
+        let pos = idx + 1;
+        let vmarg = &public_args[idx];
+
+        match role {
+            compiler::ArgRole::Const => {
+                // For now, const args must stay as u64 so
+                // they can be passed to the compiler entry.
+                if !matches!(ty, compiler::ScalarType::U64) {
+                    let ty_str = match ty {
+                        compiler::ScalarType::U64 => "u64",
+                        compiler::ScalarType::U128 => "u128",
+                        compiler::ScalarType::Bytes32 => "bytes32",
+                        compiler::ScalarType::Str64 => "str64",
+                    };
+
+                    return Err(CliError::InvalidInput(format!(
+                        "main arg #{pos}: const args of type '{ty_str}' are not supported for CLI public args; expected 'u64'",
+                    )));
+                }
+
+                match vmarg {
+                    VmArg::U64(_) => {}
+                    _ => {
+                        return Err(CliError::InvalidInput(format!(
+                            "main arg #{pos}: const args currently support only u64 values",
+                        )));
+                    }
+                }
+            }
+            compiler::ArgRole::Let => match ty {
+                compiler::ScalarType::U64 => match vmarg {
+                    VmArg::U64(_) => {}
+                    _ => {
+                        return Err(CliError::InvalidInput(format!(
+                            "main arg #{pos}: expected u64 value for type 'u64'",
+                        )));
+                    }
+                },
+                compiler::ScalarType::U128 => match vmarg {
+                    VmArg::U128(_) => {}
+                    _ => {
+                        return Err(CliError::InvalidInput(format!(
+                            "main arg #{pos}: expected u128 value for type 'u128'",
+                        )));
+                    }
+                },
+                compiler::ScalarType::Bytes32 => match vmarg {
+                    VmArg::Bytes32(_) => {}
+                    _ => {
+                        return Err(CliError::InvalidInput(format!(
+                            "main arg #{pos}: expected bytes32 value for type 'bytes32'",
+                        )));
+                    }
+                },
+                compiler::ScalarType::Str64 => {
+                    return Err(CliError::InvalidInput(format!(
+                        "main arg #{pos}: type 'str64' is not supported for CLI public args",
+                    )));
+                }
+            },
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_u64_literal(s: &str) -> Result<u64, CliError> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(rest, 16)
+            .map_err(|e| CliError::InvalidInput(format!("invalid u64 hex '{s}': {e}")))
+    } else {
+        s.parse::<u64>()
+            .map_err(|e| CliError::InvalidInput(format!("invalid u64 '{s}': {e}")))
+    }
+}
+
+fn parse_u128_literal(s: &str) -> Result<u128, CliError> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u128::from_str_radix(rest, 16)
+            .map_err(|e| CliError::InvalidInput(format!("invalid u128 hex '{s}': {e}")))
+    } else {
+        s.parse::<u128>()
+            .map_err(|e| CliError::InvalidInput(format!("invalid u128 '{s}': {e}")))
+    }
+}
+
+fn parse_bytes32_literal(s: &str) -> Result<[u8; 32], CliError> {
+    let s = s.trim();
+    let hex_str = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+
+    let decoded = hex::decode(hex_str)?;
+    if decoded.len() > 32 {
+        return Err(CliError::InvalidInput(format!(
+            "bytes32 literal too long: {} bytes (max 32)",
+            decoded.len()
+        )));
+    }
+
+    // Little-endian-style layout
+    let mut out = [0u8; 32];
+    out[..decoded.len()].copy_from_slice(&decoded);
+
+    Ok(out)
+}
+
+fn parse_vm_arg(raw: &str) -> Result<VmArg, CliError> {
+    let raw = raw.trim();
+    let (ty, val) = raw.split_once(':').ok_or_else(|| {
+        CliError::InvalidInput(format!(
+            "invalid arg '{raw}': expected <type>:<value>, e.g. u64:3"
+        ))
+    })?;
+
+    match ty {
+        "u64" => Ok(VmArg::U64(parse_u64_literal(val)?)),
+        "u128" => Ok(VmArg::U128(parse_u128_literal(val)?)),
+        "bytes32" => Ok(VmArg::Bytes32(parse_bytes32_literal(val)?)),
+        other => Err(CliError::InvalidInput(format!(
+            "invalid arg type '{other}'; expected u64,u128,bytes32",
+        ))),
+    }
+}
+
+fn parse_public_args(raws: &[String]) -> Result<(Vec<VmArg>, Vec<u64>), CliError> {
+    let mut vmargs = Vec::with_capacity(raws.len());
+    let mut u64s = Vec::with_capacity(raws.len());
+
+    for raw in raws {
+        let arg = parse_vm_arg(raw)?;
+        match arg {
+            VmArg::U64(v) => {
+                vmargs.push(VmArg::U64(v));
+                u64s.push(v);
+            }
+            VmArg::U128(v128) => {
+                // For now, compile-time entry supports only
+                // 64-bit immediates. Allow u128 values that
+                // fit into u64 and reject larger ones so we
+                // never silently truncate.
+                if v128 > u64::MAX as u128 {
+                    return Err(CliError::InvalidInput(format!(
+                        "u128 public arg '{raw}' does not fit into 64 bits; full 128-bit compile-time args are not supported yet",
+                    )));
+                }
+
+                let v64 = v128 as u64;
+                vmargs.push(VmArg::U128(v128));
+                u64s.push(v64);
+            }
+            VmArg::Bytes32(bytes) => {
+                // Map bytes32 to a u64 parameter for now by
+                // requiring that high bytes are zero and using
+                // the first 8 bytes as little-endian integer.
+                if bytes[8..].iter().any(|b| *b != 0) {
+                    return Err(CliError::InvalidInput(format!(
+                        "bytes32 public arg '{raw}' must have bytes[8..32]=0 for now; full 32-byte compile-time args are not supported yet",
+                    )));
+                }
+
+                let mut lo = [0u8; 8];
+                lo.copy_from_slice(&bytes[0..8]);
+
+                let v64 = u64::from_le_bytes(lo);
+                vmargs.push(VmArg::Bytes32(bytes));
+                u64s.push(v64);
+            }
+        }
+    }
+
+    Ok((vmargs, u64s))
+}
+
+fn parse_secret_args(raws: &[String]) -> Result<Vec<VmArg>, CliError> {
+    let mut out = Vec::with_capacity(raws.len());
+    for raw in raws {
+        out.push(parse_vm_arg(raw)?);
+    }
+
+    Ok(out)
 }
 
 fn cmd_run(
@@ -272,8 +563,13 @@ fn cmd_run(
     security_bits: Option<u32>,
 ) -> Result<(), CliError> {
     let src = read_program(&args.path, max_bytes)?;
-    let program = compiler::compile_entry(&src, &args.args)?;
-    let pi = build_pi_for_program(&program, &args.args)?;
+
+    let (public_vmargs, public_u64) = parse_public_args(&args.args)?;
+    let secret_vmargs = parse_secret_args(&args.secrets)?;
+
+    let program = compiler::compile_entry(&src, &public_u64)?;
+    validate_main_args_against_schema(&program, &public_vmargs)?;
+    let pi = build_pi_for_program(&program, &public_vmargs, &secret_vmargs)?;
 
     let pf_mode = resolve_preflight_mode(pf);
     if !matches!(pf_mode, PreflightMode::Off) {
@@ -342,8 +638,12 @@ fn cmd_prove(
     }
 
     let src = read_program(&args.path, max_bytes)?;
-    let program = compiler::compile_entry(&src, &args.args)?;
-    let pi = build_pi_for_program(&program, &args.args)?;
+    let (public_vmargs, public_u64) = parse_public_args(&args.args)?;
+    let secret_vmargs = parse_secret_args(&args.secrets)?;
+
+    let program = compiler::compile_entry(&src, &public_u64)?;
+    validate_main_args_against_schema(&program, &public_vmargs)?;
+    let pi = build_pi_for_program(&program, &public_vmargs, &secret_vmargs)?;
 
     let opts = proof_opts(args.queries, args.blowup, args.grind, security_bits);
     let pf_mode = resolve_preflight_mode(pf);
@@ -359,30 +659,55 @@ fn cmd_prove(
     // Serialize proof to bytes
     let proof_bytes =
         frontend::encode_proof::<WinterfellBackend>(&proof).map_err(CliError::Prover)?;
-    if let Some(path) = args.out {
-        if let Err(e) = fs::write(&path, &proof_bytes) {
-            return Err(CliError::IoPath { source: e, path });
-        }
+
+    // Determine output path:
+    // use --out if provided, otherwise
+    // derive a readable name from source path.
+    let out_path = if let Some(path) = args.out {
+        path
+    } else {
+        let file_name = proof_basename_from_program_path(&args.path);
+        PathBuf::from(file_name)
+    };
+
+    if let Err(e) = fs::write(&out_path, &proof_bytes) {
+        return Err(CliError::IoPath {
+            source: e,
+            path: out_path,
+        });
     }
 
     if !args.quiet {
         let proof_b64 = base64::engine::general_purpose::STANDARD.encode(&proof_bytes);
+        let len_b64 = proof_b64.len();
+
+        let preview_core = if len_b64 <= 128 {
+            proof_b64
+        } else {
+            let head = &proof_b64[..64];
+            let tail = &proof_b64[len_b64 - 64..];
+            format!("{head}...{tail}")
+        };
 
         if json {
             println!(
                 "{}",
                 serde_json::json!({
                     "ok": true,
-                    "proof_b64": proof_b64,
+                    "proof_path": out_path.to_string_lossy(),
+                    "proof_preview_b64": preview_core,
                     "opts": {"queries": args.queries, "blowup": args.blowup, "grind": args.grind},
                     "commitment": format!("0x{:02x?}", program.commitment),
                 })
             );
         } else {
-            // Print a short preview
-            // to avoid huge stdout.
-            let preview = format!("{} (len={} bytes)", proof_b64, proof_bytes.len());
-            println!("proof: {preview}");
+            println!("proof saved to {}", out_path.display());
+            println!(
+                "preview: {} (len={} bytes, b64_len={})",
+                preview_core,
+                proof_bytes.len(),
+                len_b64
+            );
         }
     }
 
@@ -395,10 +720,12 @@ fn cmd_verify(
     max_bytes: usize,
     security_bits: Option<u32>,
 ) -> Result<(), CliError> {
-    let proof_bytes = if let Some(path) = args.proof.strip_prefix('@') {
-        let meta = fs::metadata(path).map_err(|e| CliError::IoPath {
+    let proof_path_str = args.proof.as_str();
+
+    let proof_bytes = {
+        let meta = fs::metadata(proof_path_str).map_err(|e| CliError::IoPath {
             source: e,
-            path: PathBuf::from(path),
+            path: PathBuf::from(proof_path_str),
         })?;
         if meta.len() as usize > max_bytes {
             return Err(CliError::InvalidInput(format!(
@@ -408,29 +735,20 @@ fn cmd_verify(
             )));
         }
 
-        fs::read(path).map_err(|e| CliError::IoPath {
+        fs::read(proof_path_str).map_err(|e| CliError::IoPath {
             source: e,
-            path: PathBuf::from(path),
+            path: PathBuf::from(proof_path_str),
         })?
-    } else {
-        // Base64 only
-        let approx = (args.proof.len() / 4) * 3;
-        if approx > max_bytes {
-            return Err(CliError::InvalidInput(format!(
-                "proof base64 too large: approx {approx} bytes (limit {max_bytes})"
-            )));
-        }
-
-        base64::engine::general_purpose::STANDARD
-            .decode(args.proof.as_bytes())
-            .map_err(|e| CliError::InvalidInput(format!("invalid base64: {e}")))?
     };
 
     let src = read_program(&args.path, max_bytes)?;
-    let program = compiler::compile_entry(&src, &args.args)?;
+    let (public_vmargs, public_u64) = parse_public_args(&args.args)?;
+
+    let program = compiler::compile_entry(&src, &public_u64)?;
+    validate_main_args_against_schema(&program, &public_vmargs)?;
 
     // Rebuild PI similarly to Prove
-    let pi = build_pi_for_program(&program, &args.args)?;
+    let pi = build_pi_for_program(&program, &public_vmargs, &[])?;
     let proof = frontend::decode_proof::<WinterfellBackend>(&proof_bytes)
         .map_err(|e| CliError::InvalidInput(format!("invalid proof encoding: {e}")))?;
 
@@ -588,11 +906,12 @@ fn cmd_repl() -> Result<(), CliError> {
                 r"Commands:
   :help              - this help
   :quit, :q          - exit
-  :load PATH         - load file into session (base)
+  :load [PATH]       - load file into session (base)
+  :save [PATH]       - save current session to file
   :reset             - clear session
   :docs               - list defined functions (best-effort)
   :prove [EXPR]      - build proof for EXPR (or last expr)
-  :verify B64|@PATH  - verify proof against last expr and current session
+  :verify [PATH]     - verify proof file against last expr and current session
   EXPR               - evaluate EXPR with current session defs
   (def ...)          - define function or constant form into session
   (deftype ...)      - define type helpers into session"
@@ -647,6 +966,50 @@ fn cmd_repl() -> Result<(), CliError> {
             continue;
         }
 
+        // Save current session to a file
+        if let Some(rest) = s.strip_prefix(":save ") {
+            let arg = rest.trim();
+
+            if arg.is_empty() {
+                println!("error: usage: :save PATH");
+                continue;
+            }
+
+            let mut file_name = arg.to_string();
+
+            // If user did not specify any
+            // extension, append .zlisp.
+            if !file_name.ends_with(".zlisp") && !file_name.contains('.') {
+                file_name.push_str(".zlisp");
+            }
+
+            let mut out = String::new();
+
+            if !session.base_src.trim().is_empty() {
+                out.push_str(&session.base_src);
+                if !session.base_src.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+
+            for f in &session.forms {
+                out.push_str(f);
+                if !f.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+
+            match fs::write(&file_name, out) {
+                Ok(()) => println!("OK saved session to {file_name}"),
+                Err(e) => println!("error: save session: {e}"),
+            }
+
+            let _ = rl.add_history_entry(s);
+            let _ = rl.save_history(&hist_path);
+
+            continue;
+        }
+
         // Build proof for expression
         if let Some(rest) = s.strip_prefix(":prove") {
             if let Some(msg) = diagnose_non_ascii(rest) {
@@ -675,8 +1038,8 @@ fn cmd_repl() -> Result<(), CliError> {
             match compiler::compile_entry(&wrapped, &[]) {
                 Err(e) => println!("error: compile: {e}"),
                 Ok(program) => {
-                    // Build PI
-                    let pi = match build_pi_for_program(&program, &[]) {
+                    // Build PI (no external args in REPL yet)
+                    let pi = match build_pi_for_program(&program, &[], &[]) {
                         Ok(p) => p,
                         Err(e) => {
                             println!("error: pi: {e}");
@@ -716,17 +1079,50 @@ fn cmd_repl() -> Result<(), CliError> {
                         metrics.mov_elided
                     );
 
-                    let opts = proof_opts(1, 8, 0, None);
+                    let opts = proof_opts(64, 8, 0, None);
                     match frontend::prove::<WinterfellBackend>(&program, &pi, &opts) {
                         Err(e) => println!("error: prove: {e}"),
                         Ok(proof) => match frontend::encode_proof::<WinterfellBackend>(&proof) {
                             Err(e) => println!("error: serialize proof: {e}"),
                             Ok(bytes) => {
-                                let proof_b64 =
-                                    base64::engine::general_purpose::STANDARD.encode(&bytes);
-                                let preview = format!("{} (len={} bytes)", proof_b64, bytes.len());
+                                let file_name = proof_basename_from_expr(expr);
+                                let path = std::path::PathBuf::from(&file_name);
 
-                                println!("proof: {preview}");
+                                match fs::write(&path, &bytes) {
+                                    Err(e) => {
+                                        println!("error: write proof file: {e}");
+                                    }
+                                    Ok(()) => {
+                                        let proof_b64 = base64::engine::general_purpose::STANDARD
+                                            .encode(&bytes);
+                                        let len_b64 = proof_b64.len();
+
+                                        let preview_core = if len_b64 <= 128 {
+                                            proof_b64
+                                        } else {
+                                            let head = &proof_b64[..64];
+                                            let tail = &proof_b64[len_b64 - 64..];
+
+                                            format!("{head}...{tail}")
+                                        };
+
+                                        println!("proof saved to {}", path.display());
+                                        println!(
+                                            "preview: {} (len={} bytes, b64_len={})",
+                                            preview_core,
+                                            bytes.len(),
+                                            len_b64
+                                        );
+                                        println!("hint: verify in REPL with `:verify {file_name}`");
+                                        println!(
+                                            "hint: verify via CLI with `zk-lisp verify {file_name} <program.zlisp> --arg ...`"
+                                        );
+
+                                        // Remember last expression
+                                        // for subsequent :verify
+                                        session.last_expr = Some(expr.to_string());
+                                    }
+                                }
                             }
                         },
                     }
@@ -741,13 +1137,13 @@ fn cmd_repl() -> Result<(), CliError> {
 
         // Verify proof for last expression
         if let Some(rest) = s.strip_prefix(":verify ") {
-            let arg = rest.trim();
-            if arg.is_empty() {
-                println!("error: usage: :verify B64|@PATH");
+            let path = rest.trim();
+            if path.is_empty() {
+                println!("error: usage: :verify PATH");
                 continue;
             }
 
-            let bytes = if let Some(path) = arg.strip_prefix('@') {
+            let bytes = {
                 match fs::metadata(path) {
                     Ok(meta) => {
                         if meta.len() as usize > REPL_MAX_BYTES {
@@ -769,21 +1165,6 @@ fn cmd_repl() -> Result<(), CliError> {
                     Ok(b) => b,
                     Err(e) => {
                         println!("error: read proof: {e}");
-                        continue;
-                    }
-                }
-            } else {
-                // Bound base64 size before decoding
-                let approx = (arg.len() / 4) * 3;
-                if approx > REPL_MAX_BYTES {
-                    println!("error: proof base64 too large: limit {REPL_MAX_BYTES} bytes");
-                    continue;
-                }
-
-                match base64::engine::general_purpose::STANDARD.decode(arg) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        println!("error: invalid base64: {e}");
                         continue;
                     }
                 }
@@ -813,7 +1194,7 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
-            let pi = match build_pi_for_program(&program, &[]) {
+            let pi = match build_pi_for_program(&program, &[], &[]) {
                 Ok(p) => p,
                 Err(e) => {
                     println!("error: pi: {e}");
@@ -821,7 +1202,7 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
-            let opts = proof_opts(1, 8, 0, None);
+            let opts = proof_opts(64, 8, 0, None);
             match frontend::verify::<WinterfellBackend>(proof, &program, &pi, &opts) {
                 Ok(()) => println!("OK"),
                 Err(e) => println!("verify error: {e}"),
@@ -869,7 +1250,7 @@ fn cmd_repl() -> Result<(), CliError> {
         match compiler::compile_entry(&wrapped, &[]) {
             Err(e) => println!("error: compile: {e}"),
             Ok(program) => {
-                let pi = match build_pi_for_program(&program, &[]) {
+                let pi = match build_pi_for_program(&program, &[], &[]) {
                     Ok(p) => p,
                     Err(e) => {
                         println!("error: pi: {e}");
@@ -1111,6 +1492,125 @@ fn compute_cost(program: &compiler::Program) -> Cost {
     c
 }
 
+fn proof_basename_from_program_path(path: &std::path::Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("program");
+
+    let mut tag = String::new();
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            tag.push(ch);
+        } else if ch.is_whitespace() {
+            tag.push('_');
+        }
+
+        if tag.len() >= 32 {
+            break;
+        }
+    }
+
+    if tag.is_empty() {
+        tag.push_str("program");
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let ts_str = ts.to_string();
+
+    let prefix = "proof_";
+    let suffix_extra = 1 + ts_str.len() + 4; // "_" + ts + ".bin"
+    let max_len = 64usize;
+
+    let mut tag_trunc = tag.clone();
+    if prefix.len() + tag_trunc.len() + suffix_extra > max_len {
+        let allowed = max_len.saturating_sub(prefix.len() + suffix_extra);
+        if allowed == 0 {
+            tag_trunc.clear();
+        } else if tag_trunc.len() > allowed {
+            tag_trunc.truncate(allowed);
+        }
+
+        if tag_trunc.is_empty() {
+            tag_trunc.push('x');
+        }
+    }
+
+    format!("{prefix}{tag_trunc}_{ts_str}.bin")
+}
+
+fn proof_tag_from_expr(expr: &str) -> String {
+    let s = expr.trim_start();
+    if let Some(rest) = s.strip_prefix('(') {
+        let inner = rest.trim_start();
+        let mut name = String::new();
+
+        for ch in inner.chars() {
+            if ch.is_whitespace() || ch == '(' || ch == ')' {
+                break;
+            }
+
+            name.push(ch);
+        }
+
+        if !name.is_empty() {
+            return name;
+        }
+    }
+
+    "expr".to_string()
+}
+
+fn proof_basename_from_expr(expr: &str) -> String {
+    let raw_tag = proof_tag_from_expr(expr);
+    let mut tag = String::new();
+
+    for ch in raw_tag.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            tag.push(ch);
+        } else if ch.is_whitespace() {
+            tag.push('_');
+        }
+
+        if tag.len() >= 32 {
+            break;
+        }
+    }
+
+    if tag.is_empty() {
+        tag.push_str("expr");
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let ts_str = ts.to_string();
+
+    let prefix = "proof_";
+    let suffix_extra = 1 + ts_str.len() + 4; // "_" + ts + ".bin"
+    let max_len = 64usize;
+
+    let mut tag_trunc = tag.clone();
+    if prefix.len() + tag_trunc.len() + suffix_extra > max_len {
+        let allowed = max_len.saturating_sub(prefix.len() + suffix_extra);
+        if allowed == 0 {
+            tag_trunc.clear();
+        } else if tag_trunc.len() > allowed {
+            tag_trunc.truncate(allowed);
+        }
+
+        if tag_trunc.is_empty() {
+            tag_trunc.push('x');
+        }
+    }
+
+    format!("{prefix}{tag_trunc}_{ts_str}.bin")
+}
+
 fn init_logging(level: Option<&str>) {
     INIT_LOGGING.call_once(|| {
         if tracing::dispatcher::has_been_set() {
@@ -1163,4 +1663,83 @@ fn main() {
     };
 
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_vm_arg_u64_dec_and_hex() {
+        let a = parse_vm_arg("u64:10").unwrap();
+        assert!(matches!(a, VmArg::U64(10)));
+
+        let b = parse_vm_arg("u64:0xa").unwrap();
+        assert!(matches!(b, VmArg::U64(10)));
+    }
+
+    #[test]
+    fn parse_vm_arg_u128_and_bytes32() {
+        let a = parse_vm_arg("u128:340282366920938463463374607431768211455").unwrap();
+        assert!(matches!(a, VmArg::U128(_)));
+
+        let b = parse_vm_arg("bytes32:0x01ff").unwrap();
+        match b {
+            VmArg::Bytes32(arr) => {
+                assert_eq!(arr[0], 0x01);
+                assert_eq!(arr[1], 0xff);
+            }
+            _ => panic!("expected bytes32"),
+        }
+    }
+
+    #[test]
+    fn parse_public_args_u64_ok() {
+        let (vmargs, u64s) = parse_public_args(&["u64:7".to_string()]).unwrap();
+        assert_eq!(u64s, vec![7]);
+        assert!(matches!(vmargs[0], VmArg::U64(7)));
+    }
+
+    #[test]
+    fn parse_public_args_u128_fits_into_u64_ok() {
+        let (vmargs, u64s) = parse_public_args(&["u128:7".to_string()]).unwrap();
+        assert_eq!(u64s, vec![7]);
+        assert!(matches!(vmargs[0], VmArg::U128(7)));
+    }
+
+    #[test]
+    fn parse_public_args_bytes32_low_ok() {
+        let (vmargs, u64s) =
+            parse_public_args(&["bytes32:0x0100000000000000".to_string()]).unwrap();
+        assert_eq!(u64s, vec![1]);
+
+        match vmargs[0] {
+            VmArg::Bytes32(arr) => {
+                assert_eq!(arr[0], 0x01);
+                assert!(arr[1..].iter().all(|b| *b == 0));
+            }
+            _ => panic!("expected bytes32"),
+        }
+    }
+
+    #[test]
+    fn parse_public_args_u128_overflow_fails() {
+        let err = parse_public_args(&["u128:18446744073709551616".to_string()]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("does not fit into 64 bits"), "msg={msg}");
+    }
+
+    #[test]
+    fn parse_public_args_bytes32_high_nonzero_fails() {
+        let err = parse_public_args(&["bytes32:0x01000000000000000100".to_string()]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("must have bytes[8..32]=0"), "msg={msg}");
+    }
+
+    #[test]
+    fn parse_vm_arg_invalid_type_fails() {
+        let err = parse_vm_arg("foo:1").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid arg type"), "msg={msg}");
+    }
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -30,14 +30,16 @@ fn run_add_json_ok() {
         "run",
         "examples/hello-zk.zlisp",
         "--arg",
-        "2",
+        "u64:2",
         "--arg",
-        "3",
+        "u64:5",
+        "--secret",
+        "u64:3",
         "--json",
     ]);
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("\"result_dec\":\"5\""));
+        .stdout(predicate::str::contains("\"result_dec\":\"1\""));
 }
 
 #[test]
@@ -51,9 +53,11 @@ fn prove_and_verify_ok() {
         "prove",
         "examples/hello-zk.zlisp",
         "--arg",
-        "2",
+        "u64:2",
         "--arg",
-        "3",
+        "u64:5",
+        "--secret",
+        "u64:3",
         "--out",
         &path,
         "--quiet",
@@ -64,12 +68,12 @@ fn prove_and_verify_ok() {
     let mut cmd2 = bin();
     cmd2.args([
         "verify",
-        &format!("@{}", &path),
+        &path,
         "examples/hello-zk.zlisp",
         "--arg",
-        "2",
+        "u64:2",
         "--arg",
-        "3",
+        "u64:5",
         "--json",
     ]);
     let assert = cmd2.assert();
@@ -89,26 +93,24 @@ fn prove_and_verify_ok() {
 }
 
 #[test]
-fn verify_bad_hex_fails_json() {
+fn verify_bad_proof_path_fails_json() {
     let mut cmd = bin();
     cmd.args([
         "verify",
-        "zzzz",
+        "/this/does/not/exist.bin",
         "examples/hello-zk.zlisp",
         "--arg",
-        "2",
+        "u64:2",
         "--arg",
-        "3",
+        "u64:5",
         "--json",
     ]);
     let assert = cmd.assert().failure();
 
-    // exit code 2 mapped by our harness;
-    // cannot assert exact code
-    // via assert_cmd portable API
+    // IO error path, mapped to code 5 by our harness.
     assert
         .stdout(predicate::str::contains("\"ok\":false"))
-        .stdout(predicate::str::contains("\"code\":2"));
+        .stdout(predicate::str::contains("\"code\":5"));
 }
 
 #[test]
@@ -127,4 +129,141 @@ fn run_too_big_file_limit() {
         .failure()
         .stdout(predicate::str::contains("\"ok\":false"))
         .stdout(predicate::str::contains("file too large"));
+}
+
+#[test]
+fn run_schema_with_let_role_accepted() {
+    let src = r#"
+(typed-fn main ((let u64)) -> u64)
+(def (main x) x)
+"#;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), src).unwrap();
+
+    let mut cmd = bin();
+    cmd.args([
+        "run",
+        tmp.path().to_str().unwrap(),
+        "--arg",
+        "u64:7",
+        "--json",
+    ]);
+
+    let assert = cmd.assert().success();
+    assert.stdout(predicate::str::contains("\"ok\":true"));
+}
+
+#[test]
+fn run_typed_main_mixed_const_and_let_ok() {
+    let src = r#"
+(typed-fn main ((const u64) (let u64) (let u64)) -> u64)
+(def (main a b c)
+  (+ a (+ b c)))
+"#;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), src).unwrap();
+
+    let mut cmd = bin();
+    cmd.args([
+        "run",
+        tmp.path().to_str().unwrap(),
+        "--arg",
+        "u64:1",
+        "--arg",
+        "u64:2",
+        "--arg",
+        "u64:3",
+        "--json",
+    ]);
+
+    let assert = cmd.assert().success();
+    assert
+        .stdout(predicate::str::contains("\"ok\":true"))
+        .stdout(predicate::str::contains("\"result_dec\":\"6\""));
+}
+
+#[test]
+fn run_typed_main_non_u64_const_schema_type_rejected() {
+    let src = r#"
+(typed-fn main ((const u128)) -> u64)
+(def (main x) x)
+"#;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), src).unwrap();
+
+    let mut cmd = bin();
+    cmd.args([
+        "run",
+        tmp.path().to_str().unwrap(),
+        "--arg",
+        "u64:7",
+        "--json",
+    ]);
+
+    let assert = cmd.assert().failure();
+    assert
+        .stdout(predicate::str::contains("\"ok\":false"))
+        .stdout(predicate::str::contains(
+            "const args of type 'u128' are not supported for CLI public args; expected 'u64'",
+        ));
+}
+
+#[test]
+fn run_typed_main_let_u128_and_bytes32_ok() {
+    let src = r#"
+(typed-fn main ((let u64) (let u128) (let bytes32)) -> u64)
+(def (main a b c)
+  a)
+"#;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), src).unwrap();
+
+    let mut cmd = bin();
+    cmd.args([
+        "run",
+        tmp.path().to_str().unwrap(),
+        "--arg",
+        "u64:1",
+        "--arg",
+        "u128:42",
+        "--arg",
+        "bytes32:0x0102030405060708",
+        "--json",
+    ]);
+
+    let assert = cmd.assert().success();
+    assert
+        .stdout(predicate::str::contains("\"ok\":true"))
+        .stdout(predicate::str::contains("\"result_dec\":\"1\""));
+}
+
+#[test]
+fn run_typed_main_arity_mismatch_rejected() {
+    let src = r#"
+(typed-fn main ((let u64) (let u64)) -> u64)
+(def (main a b)
+  (+ a b))
+"#;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), src).unwrap();
+
+    // Provide only one arg instead of two
+    let mut cmd = bin();
+    cmd.args([
+        "run",
+        tmp.path().to_str().unwrap(),
+        "--arg",
+        "u64:7",
+        "--json",
+    ]);
+
+    let assert = cmd.assert().failure();
+    assert
+        .stdout(predicate::str::contains("\"ok\":false"))
+        .stdout(predicate::str::contains("main expects 2 args (got 1)"));
 }

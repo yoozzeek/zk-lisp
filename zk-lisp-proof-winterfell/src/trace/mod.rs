@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp.
+// This file is part of zk-lisp project.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -89,8 +89,10 @@ pub fn build_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trace
         steps,
     };
 
-    // Init VM trace core
-    VmTraceBuilder::new(&mut mem, &mut ram_events).fill_table(ctx, &mut trace)?;
+    // Init VM trace core, seeding secret VM args
+    // and main_args into the initial register file.
+    VmTraceBuilder::new(&mut mem, &mut ram_events, &pi.secret_args, &pi.main_args)
+        .fill_table(ctx, &mut trace)?;
 
     // Populate sorted RAM table across pad rows
     RamTraceBuilder::new(&ctx.prog.commitment, ram_events.as_mut_slice())
@@ -98,46 +100,6 @@ pub fn build_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trace
 
     // Populate ROM accumulator t=3 across all levels
     RomTraceBuilder::new().fill_table(ctx, &mut trace)?;
-
-    // After full trace is built, seed VM args at
-    // level 0 map row and carry them within level 0
-    // for registers that are not overwritten.
-    if (pi.feature_mask & pi::FM_VM) != 0 && !pi.vm_args.is_empty() {
-        let cols = Columns::baseline();
-        let base0 = 0usize;
-        let row_map0 = base0 + schedule::pos_map();
-        let row_fin0 = base0 + schedule::pos_final();
-
-        // seed args on map..=final
-        for (i, &a) in pi.vm_args.iter().enumerate() {
-            if i < NR {
-                let val = BE::from(a);
-                for r in row_map0..=row_fin0 {
-                    trace.set(cols.r_index(i), r, val);
-                }
-            }
-        }
-
-        // set next row after final
-        // for non-dst regs to equal cur.
-        let row_next = row_fin0 + 1;
-        let level_end = base0 + STEPS_PER_LEVEL_P2;
-
-        for i in 0..NR {
-            let is_dst = trace.get(cols.sel_dst0_index(i), row_fin0) == BE::ONE;
-            if !is_dst {
-                if let Some(&a) = pi.vm_args.get(i) {
-                    let val = BE::from(a);
-
-                    // Set all rows after final within level
-                    // to the arg value for non-dst regs.
-                    for r in row_next..level_end {
-                        trace.set(cols.r_index(i), r, val);
-                    }
-                }
-            }
-        }
-    }
 
     Ok(trace)
 }
