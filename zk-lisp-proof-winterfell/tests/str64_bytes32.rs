@@ -41,7 +41,7 @@ fn prove_verify_ok(src: &str) {
     let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
-    match verify_proof(proof, &program, pi, &opts) {
+    match verify_proof(proof, &program, pi, &opts, 64) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {
@@ -69,7 +69,7 @@ fn prove_verify_fail(src: &str) {
         }
         Ok(proof) => {
             // If prover succeeds, verification must fail
-            verify_proof(proof, &program, pi, &opts).expect_err("verify must fail");
+            verify_proof(proof, &program, pi, &opts, 64).expect_err("verify must fail");
         }
     }
 }

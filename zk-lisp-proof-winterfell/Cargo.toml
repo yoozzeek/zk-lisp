@@ -11,7 +11,7 @@ winterfell = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
 tracing = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 comfy-table = { workspace = true }
 arrayvec = { workspace = true }

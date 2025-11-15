@@ -230,11 +230,11 @@ pub fn verify_proof(
     program: &Program,
     pi: PublicInputs,
     opts: &ProofOptions,
+    min_bits: u32,
 ) -> Result<(), Error> {
     pi.validate_flags()?;
 
     // Enforce a minimum conjectured security
-    let min_bits = if cfg!(debug_assertions) { 64 } else { 128 };
     let acceptable = winterfell::AcceptableOptions::MinConjecturedSecurity(min_bits);
 
     // Recompute offline ROM accumulator

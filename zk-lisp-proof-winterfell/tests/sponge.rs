@@ -89,7 +89,7 @@ fn sponge_basic_hash2_prove_verify() {
     let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
-    match prove::verify_proof(proof, &program, pi, &opts()) {
+    match prove::verify_proof(proof, &program, pi, &opts(), 64) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {
@@ -170,7 +170,7 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
     let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
-    match prove::verify_proof(proof, &program, pi, &opts()) {
+    match prove::verify_proof(proof, &program, pi, &opts(), 64) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {
@@ -232,7 +232,7 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
 
     let prover_vm = ZkProver::new(opts(), pi_vm.clone(), rom_acc_vm);
     let proof_vm = prover_vm.prove(trace_vm).expect("prove vm");
-    match prove::verify_proof(proof_vm, &program_vm, pi_vm, &opts()) {
+    match prove::verify_proof(proof_vm, &program_vm, pi_vm, &opts(), 64) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {
@@ -255,7 +255,7 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
     let prover_sp = ZkProver::new(opts(), pi_sp.clone(), rom_acc_sp);
     let proof_sp = prover_sp.prove(trace_sp).expect("prove sp");
 
-    match prove::verify_proof(proof_sp, &program_sp, pi_sp, &opts()) {
+    match prove::verify_proof(proof_sp, &program_sp, pi_sp, &opts(), 64) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {
@@ -330,5 +330,5 @@ fn negative_vm_expected_mismatch() {
         ..Default::default()
     };
 
-    prove::verify_proof(proof, &program, pi_bad, &opts()).expect_err("verify must fail");
+    prove::verify_proof(proof, &program, pi_bad, &opts(), 64).expect_err("verify must fail");
 }

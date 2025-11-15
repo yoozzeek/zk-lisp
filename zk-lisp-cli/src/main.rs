@@ -58,6 +58,11 @@ struct Cli {
         value_parser = ["trace","debug","info","warn","error"],
     )]
     log_level: String,
+    /// Minimum conjectured security in bits for proofs (64 or 128).
+    /// Defaults to 64 in debug builds and 128 in release builds.
+    /// Can also be set via ZKL_SECURITY_BITS env var.
+    #[arg(long, global = true, env = "ZKL_SECURITY_BITS")]
+    security_bits: Option<u32>,
     /// Max input file size in bytes
     #[arg(long, global = true, default_value_t = 1_048_576)]
     max_bytes: usize,
@@ -189,20 +194,38 @@ impl CliError {
     }
 }
 
+fn normalize_security_bits(bits: Option<u32>) -> Result<Option<u32>, CliError> {
+    match bits {
+        None => Ok(None),
+        Some(b) if b == 64 || b == 128 => Ok(Some(b)),
+        Some(b) => Err(CliError::InvalidInput(format!(
+            "invalid --security-bits={b}; expected 64 or 128",
+        ))),
+    }
+}
+
 fn try_main(cli: Cli) -> Result<(), CliError> {
+    let security_bits = normalize_security_bits(cli.security_bits)?;
+
     match cli.command {
-        Command::Run(args) => cmd_run(args, cli.json, cli.max_bytes, cli.preflight),
-        Command::Prove(args) => cmd_prove(args, cli.json, cli.max_bytes, cli.preflight),
-        Command::Verify(args) => cmd_verify(args, cli.json, cli.max_bytes),
+        Command::Run(args) => cmd_run(args, cli.json, cli.max_bytes, cli.preflight, security_bits),
+        Command::Prove(args) => {
+            cmd_prove(args, cli.json, cli.max_bytes, cli.preflight, security_bits)
+        }
+        Command::Verify(args) => cmd_verify(args, cli.json, cli.max_bytes, security_bits),
         Command::Repl => cmd_repl(),
     }
 }
 
-fn proof_opts(queries: u8, blowup: u8, grind: u32) -> ProverOptions {
+fn proof_opts(queries: u8, blowup: u8, grind: u32, security_bits: Option<u32>) -> ProverOptions {
+    let base = ProverOptions::default();
+    let min_security_bits = security_bits.unwrap_or(base.min_security_bits);
+
     ProverOptions {
         queries,
         blowup,
         grind,
+        min_security_bits,
     }
 }
 
@@ -241,14 +264,20 @@ fn build_pi_for_program(
         .map_err(CliError::Build)
 }
 
-fn cmd_run(args: RunArgs, json: bool, max_bytes: usize, pf: PreflightArg) -> Result<(), CliError> {
+fn cmd_run(
+    args: RunArgs,
+    json: bool,
+    max_bytes: usize,
+    pf: PreflightArg,
+    security_bits: Option<u32>,
+) -> Result<(), CliError> {
     let src = read_program(&args.path, max_bytes)?;
     let program = compiler::compile_entry(&src, &args.args)?;
     let pi = build_pi_for_program(&program, &args.args)?;
 
     let pf_mode = resolve_preflight_mode(pf);
     if !matches!(pf_mode, PreflightMode::Off) {
-        let opts = proof_opts(1, 8, 0);
+        let opts = proof_opts(1, 8, 0, security_bits);
         frontend::preflight::<WinterfellBackend>(pf_mode, &opts, &program, &pi)
             .map_err(CliError::Prover)?;
     }
@@ -304,6 +333,7 @@ fn cmd_prove(
     json: bool,
     max_bytes: usize,
     pf: PreflightArg,
+    security_bits: Option<u32>,
 ) -> Result<(), CliError> {
     if args.seed.is_some() {
         return Err(CliError::InvalidInput(
@@ -315,7 +345,7 @@ fn cmd_prove(
     let program = compiler::compile_entry(&src, &args.args)?;
     let pi = build_pi_for_program(&program, &args.args)?;
 
-    let opts = proof_opts(args.queries, args.blowup, args.grind);
+    let opts = proof_opts(args.queries, args.blowup, args.grind, security_bits);
     let pf_mode = resolve_preflight_mode(pf);
 
     if !matches!(pf_mode, PreflightMode::Off) {
@@ -359,7 +389,12 @@ fn cmd_prove(
     Ok(())
 }
 
-fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliError> {
+fn cmd_verify(
+    args: VerifyArgs,
+    json: bool,
+    max_bytes: usize,
+    security_bits: Option<u32>,
+) -> Result<(), CliError> {
     let proof_bytes = if let Some(path) = args.proof.strip_prefix('@') {
         let meta = fs::metadata(path).map_err(|e| CliError::IoPath {
             source: e,
@@ -399,7 +434,7 @@ fn cmd_verify(args: VerifyArgs, json: bool, max_bytes: usize) -> Result<(), CliE
     let proof = frontend::decode_proof::<WinterfellBackend>(&proof_bytes)
         .map_err(|e| CliError::InvalidInput(format!("invalid proof encoding: {e}")))?;
 
-    let opts = proof_opts(args.queries, args.blowup, args.grind);
+    let opts = proof_opts(args.queries, args.blowup, args.grind, security_bits);
     frontend::verify::<WinterfellBackend>(proof, &program, &pi, &opts).map_err(CliError::Verify)?;
 
     if json {
@@ -681,7 +716,7 @@ fn cmd_repl() -> Result<(), CliError> {
                         metrics.mov_elided
                     );
 
-                    let opts = proof_opts(1, 8, 0);
+                    let opts = proof_opts(1, 8, 0, None);
                     match frontend::prove::<WinterfellBackend>(&program, &pi, &opts) {
                         Err(e) => println!("error: prove: {e}"),
                         Ok(proof) => match frontend::encode_proof::<WinterfellBackend>(&proof) {
@@ -786,7 +821,7 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
-            let opts = proof_opts(1, 8, 0);
+            let opts = proof_opts(1, 8, 0, None);
             match frontend::verify::<WinterfellBackend>(proof, &program, &pi, &opts) {
                 Ok(()) => println!("OK"),
                 Err(e) => println!("verify error: {e}"),

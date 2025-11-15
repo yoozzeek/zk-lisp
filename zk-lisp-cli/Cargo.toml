@@ -14,14 +14,14 @@ zk-lisp-proof = { path = "../zk-lisp-proof" }
 zk-lisp-proof-winterfell = { path = "../zk-lisp-proof-winterfell" }
 thiserror = { workspace = true }
 base64 = { workspace = true }
-clap = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
 hex = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 rustyline = { workspace = true }
 winterfell = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

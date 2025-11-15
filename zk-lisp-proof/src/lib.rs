@@ -17,7 +17,7 @@ pub mod error;
 pub mod frontend;
 pub mod pi;
 
-/// Minimal backend-agnostic proving options.
+/// Backend-agnostic proving options.
 /// These are enough to construct concrete
 /// backend options (e.g. backend-specific `ProofOptions`).
 #[derive(Clone, Copy, Debug)]
@@ -25,19 +25,27 @@ pub struct ProverOptions {
     pub queries: u8,
     pub blowup: u8,
     pub grind: u32,
+
+    /// Minimum conjectured security in bits.
+    ///
+    /// Frontends should set this explicitly when they
+    /// want to override the build-mode default.
+    pub min_security_bits: u32,
 }
 
 impl Default for ProverOptions {
     fn default() -> Self {
+        let min_security_bits = if cfg!(debug_assertions) { 64 } else { 128 };
         Self {
             queries: 64,
             blowup: 8,
             grind: 0,
+            min_security_bits,
         }
     }
 }
 
-/// Minimal field abstraction for zk backends.
+/// Field abstraction for zk backends.
 pub trait ZkField: Sized + Clone + 'static {
     fn zero() -> Self;
     fn one() -> Self;

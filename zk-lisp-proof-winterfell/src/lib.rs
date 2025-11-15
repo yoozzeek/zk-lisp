@@ -119,10 +119,22 @@ impl ZkBackend for WinterfellBackend {
         pub_inputs: &Self::PublicInputs,
         opts: &Self::ProverOptions,
     ) -> Result<Self::Proof, Self::Error> {
+        let min_bits = opts.min_security_bits;
+        let blowup = if min_bits >= 128 && opts.blowup < 16 {
+            16
+        } else {
+            opts.blowup
+        };
+        let grind = if min_bits >= 128 && opts.grind < 16 {
+            16
+        } else {
+            opts.grind
+        };
+
         let wf_opts = ProofOptions::new(
             opts.queries as usize,
-            opts.blowup as usize,
-            opts.grind,
+            blowup as usize,
+            grind,
             FieldExtension::None,
             2,
             1,
@@ -151,10 +163,22 @@ impl ZkBackend for WinterfellBackend {
         pub_inputs: &Self::PublicInputs,
         opts: &Self::ProverOptions,
     ) -> Result<(), Self::Error> {
+        let min_bits = opts.min_security_bits;
+        let blowup = if min_bits >= 128 && opts.blowup < 16 {
+            16
+        } else {
+            opts.blowup
+        };
+        let grind = if min_bits >= 128 && opts.grind < 16 {
+            16
+        } else {
+            opts.grind
+        };
+
         let wf_opts = ProofOptions::new(
             opts.queries as usize,
-            opts.blowup as usize,
-            opts.grind,
+            blowup as usize,
+            grind,
             FieldExtension::None,
             2,
             1,
@@ -162,7 +186,7 @@ impl ZkBackend for WinterfellBackend {
             BatchingMethod::Linear,
         );
 
-        prove::verify_proof(proof, program, pub_inputs.clone(), &wf_opts)
+        prove::verify_proof(proof, program, pub_inputs.clone(), &wf_opts, min_bits)
     }
 }
 

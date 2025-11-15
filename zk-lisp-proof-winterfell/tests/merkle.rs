@@ -177,7 +177,7 @@ fn merkle_two_steps_positive_prove_verify() {
     let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
-    match prove::verify_proof(proof, &program, pi, &opts()) {
+    match prove::verify_proof(proof, &program, pi, &opts(), 64) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {
@@ -216,7 +216,7 @@ fn load_ca_positive_prove_verify() {
     let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
-    match prove::verify_proof(proof, &program, pi, &opts()) {
+    match prove::verify_proof(proof, &program, pi, &opts(), 64) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {
@@ -284,7 +284,7 @@ fn load_ca_wrong_sibling_verify_fails() {
     let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
 
     if let Ok(proof) = prover.prove(trace) {
-        assert!(prove::verify_proof(proof, &program, pi, &opts()).is_err());
+        assert!(prove::verify_proof(proof, &program, pi, &opts(), 64).is_err());
     }
 }
 
@@ -314,7 +314,7 @@ fn merkle_wrong_root_verify_fails() {
         Ok(proof) => {
             // Wrong root must be
             // rejected at verification
-            assert!(prove::verify_proof(proof, &program, pi_for_verify, &opts()).is_err());
+            assert!(prove::verify_proof(proof, &program, pi_for_verify, &opts(), 64).is_err());
         }
         Err(_) => {
             // Early failure is also
@@ -351,7 +351,7 @@ fn merkle_wrong_sibling_verify_fails() {
 
     match prover.prove(trace) {
         Ok(proof) => {
-            assert!(prove::verify_proof(proof, &program, pi_for_verify, &opts()).is_err());
+            assert!(prove::verify_proof(proof, &program, pi_for_verify, &opts(), 64).is_err());
         }
         Err(_) => {}
     }

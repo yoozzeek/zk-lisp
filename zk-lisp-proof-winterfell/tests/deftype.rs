@@ -60,7 +60,7 @@ fn enum_predicate_positive_verifies() {
     let prover = ZkProver::new(opts.clone(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
-    match verify_proof(proof, &program, pi, &opts) {
+    match verify_proof(proof, &program, pi, &opts, 64) {
         Ok(()) => {}
         Err(e) => {
             if !matches!(e, prove::Error::BackendSource(_)) {
@@ -102,7 +102,7 @@ fn enum_predicate_negative_fails_verify() {
 
     match prove_res {
         Ok(Ok(proof)) => {
-            let err = verify_proof(proof, &program, pi, &opts).expect_err("must fail verify");
+            let err = verify_proof(proof, &program, pi, &opts, 64).expect_err("must fail verify");
             match err {
                 prove::Error::Backend(_)
                 | prove::Error::BackendSource(_)
