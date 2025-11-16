@@ -24,7 +24,6 @@ How it works:
 
 Example:
 
-  (typed-fn main ((let u64) (let u64)) -> u64)
   (def (main x y)
     (let ((s (secret-arg 0)))
       (assert (= y (+ x s)))

@@ -14,7 +14,6 @@ version = "0.12.0"
 edition = "2024"
 
 [workspace.dependencies]
-winterfell = "0.13.1"
 thiserror = "2"
 blake3 = "1"
 tracing = "0.1"
@@ -30,3 +29,4 @@ rustyline = "17"
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+rayon = "1.10"

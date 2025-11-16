@@ -14,8 +14,15 @@
 //! backend-agnostic public inputs and Winterfell's AIR/trace
 //! into a concrete proof system.
 
+pub mod agg_air;
+pub mod agg_child;
+pub mod agg_layout;
+pub mod agg_trace;
 pub mod air;
 pub mod commit;
+pub mod ivc_air;
+pub mod ivc_layout;
+pub mod ivc_trace;
 pub mod layout;
 pub mod poseidon;
 pub mod preflight;
@@ -24,6 +31,9 @@ pub mod romacc;
 pub mod schedule;
 pub mod trace;
 pub mod utils;
+pub mod zl1;
+pub mod zl_ivc;
+pub mod zl_step;
 
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField, ToElements};
@@ -32,6 +42,7 @@ use zk_lisp_compiler::Program;
 use zk_lisp_proof::frontend::{
     PreflightBackend, PreflightMode, ProofCodec, VmBackend, VmRunResult,
 };
+use zk_lisp_proof::ivc::{ExecRoot, IvBackend, IvDigest, IvPublic, StepDigest};
 use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
 use zk_lisp_proof::{ProverOptions, ZkBackend, ZkField};
 
@@ -248,5 +259,99 @@ impl ProofCodec for WinterfellBackend {
 
     fn proof_from_bytes(bytes: &[u8]) -> Result<Self::Proof, Self::CodecError> {
         Proof::from_bytes(bytes).map_err(|e| prove::Error::BackendSource(Box::new(e)))
+    }
+}
+
+impl IvBackend for WinterfellBackend {
+    type StepProof = crate::zl_step::ZlStepProof;
+    type IvProof = Proof;
+
+    fn step_digest(step: &Self::StepProof) -> StepDigest {
+        step.digest()
+    }
+
+    fn exec_root(
+        suite_id: &[u8; 32],
+        prev_iv_digest: &[u8; 32],
+        digests: &[StepDigest],
+    ) -> ExecRoot {
+        // Canonicalise the multiset of digests inside
+        // `exec_root_from_digests`, so callers do not need
+        // to pre-sort them.
+        crate::zl_ivc::exec_root_from_digests(suite_id, prev_iv_digest, digests)
+    }
+
+    fn prove_ivc(
+        prev: Option<Self::IvProof>,
+        steps: &[Self::StepProof],
+        iv_pi: &IvPublic,
+        opts: &Self::ProverOptions,
+    ) -> Result<(Self::IvProof, IvDigest), Self::Error> {
+        let has_prev_proof = prev.is_some();
+        let has_prev_digest = iv_pi.prev_iv_digest.iter().any(|b| *b != 0);
+
+        if has_prev_proof && !has_prev_digest {
+            return Err(crate::prove::Error::IvInvalid(
+                "IvPublic.prev_iv_digest must be non-zero when prev proof is supplied",
+            ));
+        }
+
+        if !has_prev_proof && has_prev_digest {
+            return Err(crate::prove::Error::IvInvalid(
+                "IvPublic.prev_iv_digest must be zero for the first IVC step",
+            ));
+        }
+
+        if steps.is_empty() {
+            return Err(crate::prove::Error::IvInvalid(
+                "IvBackend::prove_ivc requires at least one step proof",
+            ));
+        }
+
+        // Produce an IVC AIR proof over
+        // the additive state/root chains.
+        let iv_proof = crate::prove::prove_ivc_air(iv_pi, steps, opts)?;
+
+        // Compute the public IvDigest
+        // from IvPublic and step digests.
+        let mut digests = Vec::with_capacity(steps.len());
+        for step in steps {
+            digests.push(step.digest());
+        }
+
+        let iv_digest = crate::zl_ivc::iv_digest(iv_pi, &digests);
+
+        Ok((iv_proof, iv_digest))
+    }
+
+    fn verify_ivc(
+        iv_proof: Self::IvProof,
+        iv_pi: &IvPublic,
+        opts: &Self::ProverOptions,
+    ) -> Result<(), Self::Error> {
+        let min_bits = opts.min_security_bits;
+        let blowup = if min_bits >= 128 && opts.blowup < 16 {
+            16
+        } else {
+            opts.blowup
+        };
+        let grind = if min_bits >= 128 && opts.grind < 16 {
+            16
+        } else {
+            opts.grind
+        };
+
+        let wf_opts = ProofOptions::new(
+            opts.queries as usize,
+            blowup as usize,
+            grind,
+            FieldExtension::None,
+            2,
+            1,
+            BatchingMethod::Linear,
+            BatchingMethod::Linear,
+        );
+
+        crate::prove::verify_ivc_air(iv_proof, iv_pi, &wf_opts, min_bits)
     }
 }

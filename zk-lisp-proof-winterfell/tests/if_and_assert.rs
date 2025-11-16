@@ -10,7 +10,7 @@
 use winterfell::ProofOptions;
 
 use zk_lisp_compiler::{compile_entry, compile_str};
-use zk_lisp_proof::pi::{self, PublicInputs};
+use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
 use zk_lisp_proof_winterfell::trace::build_trace;
 
@@ -26,9 +26,9 @@ fn assert_positive() {
     (assert (eq1 a b))))";
     let program = compile_entry(src, &[]).expect("compile");
 
-    let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_VM;
-    pi.program_commitment = program.commitment;
+    let pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
 
     let trace = build_trace(&program, &pi).expect("trace");
     let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
@@ -62,9 +62,9 @@ fn if_positive() {
     let src = "(def (main) (if 1 5 9))";
     let program = compile_entry(src, &[]).expect("compile");
 
-    let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_VM;
-    pi.program_commitment = program.commitment;
+    let pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
 
     let trace = build_trace(&program, &pi).expect("trace");
     let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
@@ -108,9 +108,9 @@ fn assert_negative_may_fail_at_prove_or_verify() {
             assert!(msg.contains("assert: constant false"));
         }
         Ok(program) => {
-            let mut pi = PublicInputs::default();
-            pi.feature_mask = pi::FM_VM;
-            pi.program_commitment = program.commitment;
+            let pi = PublicInputsBuilder::from_program(&program)
+                .build()
+                .expect("pi");
 
             let trace = build_trace(&program, &pi).expect("trace");
             let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);

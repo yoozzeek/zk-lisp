@@ -15,6 +15,7 @@
 //! backends through a stable API.
 
 use crate::ZkBackend;
+use crate::ivc::{IvBackend, IvDigest, IvPublic, StepDigest};
 
 /// Backend-provided proof serialization.
 ///
@@ -116,4 +117,38 @@ pub fn encode_proof<B: ProofCodec>(proof: &B::Proof) -> Result<Vec<u8>, B::Codec
 /// Decode a backend proof from raw bytes.
 pub fn decode_proof<B: ProofCodec>(bytes: &[u8]) -> Result<B::Proof, B::CodecError> {
     B::proof_from_bytes(bytes)
+}
+
+/// Thin wrapper over [`IvBackend::step_digest`].
+pub fn step_digest<B: IvBackend>(step: &B::StepProof) -> StepDigest {
+    B::step_digest(step)
+}
+
+/// Thin wrapper over [`IvBackend::exec_root`]
+/// with explicit suite identifier.
+pub fn exec_root<B: IvBackend>(
+    suite_id: &[u8; 32],
+    prev_iv_digest: &[u8; 32],
+    digests_sorted: &[StepDigest],
+) -> crate::ivc::ExecRoot {
+    B::exec_root(suite_id, prev_iv_digest, digests_sorted)
+}
+
+/// Produce a new IVC aggregation step.
+pub fn prove_ivc<B: IvBackend>(
+    prev: Option<B::IvProof>,
+    steps: &[B::StepProof],
+    iv_pi: &IvPublic,
+    opts: &B::ProverOptions,
+) -> Result<(B::IvProof, IvDigest), B::Error> {
+    B::prove_ivc(prev, steps, iv_pi, opts)
+}
+
+/// Verify an IVC aggregation step.
+pub fn verify_ivc<B: IvBackend>(
+    iv_proof: B::IvProof,
+    iv_pi: &IvPublic,
+    opts: &B::ProverOptions,
+) -> Result<(), B::Error> {
+    B::verify_ivc(iv_proof, iv_pi, opts)
 }

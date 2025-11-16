@@ -15,6 +15,7 @@
 
 pub mod error;
 pub mod frontend;
+pub mod ivc;
 pub mod pi;
 
 /// Backend-agnostic proving options.

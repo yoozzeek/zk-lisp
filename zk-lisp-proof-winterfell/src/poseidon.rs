@@ -288,6 +288,16 @@ pub fn poseidon_hash_two_lanes(suite_id: &[u8; 32], left: BE, right: BE) -> BE {
     state[0]
 }
 
+/// Public helper for domain-separated RO→field mapping.
+///
+/// Kept thin and explicit so higher-level modules
+/// (e.g. IVC/digest code) can derive challenges and
+/// binders under their own string domains without
+/// re-implementing Blake3 plumbing.
+pub fn ro_to_fe(domain: &str, parts: &[&[u8]]) -> BE {
+    ro_from_slices(domain, parts)
+}
+
 // Local RO-to-field helper
 fn ro_from_slices(domain: &str, parts: &[&[u8]]) -> BE {
     let mut h = blake3::Hasher::new();

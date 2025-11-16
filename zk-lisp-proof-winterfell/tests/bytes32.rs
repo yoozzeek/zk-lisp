@@ -10,7 +10,7 @@
 use winterfell::ProofOptions;
 
 use zk_lisp_compiler::compile_str;
-use zk_lisp_proof::pi::{self, PublicInputs};
+use zk_lisp_proof::pi::{self as core_pi, PublicInputsBuilder};
 use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
 use zk_lisp_proof_winterfell::trace::build_trace;
 
@@ -30,9 +30,14 @@ fn opts() -> ProofOptions {
 fn prove_verify_ok(src: &str) {
     let program = compile_str(src).expect("compile");
 
-    let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;
-    pi.program_commitment = program.commitment;
+    let mut pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
+
+    // Constrain features to VM+Poseidon as in the
+    // original bytes32 tests so that the AIR block
+    // selection and constraint count remain stable.
+    pi.feature_mask = core_pi::FM_POSEIDON | core_pi::FM_VM;
 
     let trace = build_trace(&program, &pi).expect("trace");
     let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
@@ -54,9 +59,10 @@ fn prove_verify_ok(src: &str) {
 fn prove_verify_fail(src: &str) {
     let program = compile_str(src).expect("compile");
 
-    let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;
-    pi.program_commitment = program.commitment;
+    let mut pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
+    pi.feature_mask = core_pi::FM_POSEIDON | core_pi::FM_VM;
 
     let trace = build_trace(&program, &pi).expect("trace");
     let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
@@ -72,35 +78,6 @@ fn prove_verify_fail(src: &str) {
             verify_proof(proof, &program, pi, &opts, 64).expect_err("verify must fail");
         }
     }
-}
-
-#[cfg_attr(debug_assertions, ignore)]
-#[test]
-fn str64_eq_ok() {
-    let src = r#"(assert (= (str64 "hello") (str64 "hello")))"#;
-    prove_verify_ok(src);
-}
-
-#[test]
-fn str64_eq_fail() {
-    let src = r#"(assert (= (str64 "hello") (str64 "world")))"#;
-    prove_verify_fail(src);
-}
-
-#[cfg_attr(debug_assertions, ignore)]
-#[test]
-fn str64_in_set_ok() {
-    let src = r#"
-(in-set (str64 "b")
-  ((str64 "a") (str64 "b") (str64 "c")))"#;
-    prove_verify_ok(src);
-}
-
-#[test]
-fn str64_len_variation_fail() {
-    // "a" vs "a\x00" must differ due to length binding
-    let src = r#"(assert (= (str64 "a") (str64 "a\x00")))"#;
-    prove_verify_fail(src);
 }
 
 #[cfg_attr(debug_assertions, ignore)]

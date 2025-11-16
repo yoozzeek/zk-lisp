@@ -16,8 +16,10 @@
 use crate::layout::{self, NR};
 use crate::schedule;
 
+use blake3::Hasher;
 use std::sync::OnceLock;
 use winterfell::math::FieldElement;
+use winterfell::math::StarkField;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{Trace, TraceTable};
 use zk_lisp_proof::pi::VmArg;
@@ -312,6 +314,37 @@ pub fn vm_output_from_trace(trace: &TraceTable<BE>) -> (u8, u32) {
     (0u8, (row_fin0 + 1) as u32)
 }
 
+/// Compute a 32-byte hash of the VM state at the given
+/// trace row. The state snapshot currently includes only
+/// the full register file r0..r{NR-1}, all encoded as
+/// canonical little-endian u128 limbs under a fixed
+/// Blake3 domain.
+pub fn vm_state_hash_row(trace: &TraceTable<BE>, row: usize) -> [u8; 32] {
+    let cols = layout::Columns::baseline();
+    let n = trace.length();
+    if n == 0 {
+        return [0u8; 32];
+    }
+
+    let row = row.min(n.saturating_sub(1));
+
+    let mut h = Hasher::new();
+    h.update(b"zkl/vm/state-v1");
+
+    // Register file r0..r{NR-1}
+    for i in 0..NR {
+        let r = trace.get(cols.r_index(i), row);
+        h.update(&r.as_int().to_le_bytes());
+    }
+
+    let digest = h.finalize();
+
+    let mut out = [0u8; 32];
+    out.copy_from_slice(digest.as_bytes());
+
+    out
+}
+
 pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {
     // fold first 16 bytes (LE) into
     // a field element: lo + hi * 2^64.
@@ -321,4 +354,43 @@ pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {
     hi.copy_from_slice(&bytes32[8..16]);
 
     BE::from(u64::from_le_bytes(lo)) + BE::from(u64::from_le_bytes(hi)) * pow2_64()
+}
+
+/// Fold a 32-byte value into a single base-field element.
+///
+/// This is a deterministic, injective-enough embedding
+/// for digest-style use: we interpret the low and high
+/// 16-byte halves as independent 128-bit values mapped
+/// via [`be_from_le_bytes16`] and then combine them
+/// linearly inside the field. This is not intended as
+/// a cryptographic hash by itself; callers must wrap it
+/// inside a proper domain-separated hash (e.g. Poseidon).
+pub fn fold_bytes32_to_fe(bytes32: &[u8; 32]) -> BE {
+    let mut lo16 = [0u8; 16];
+    let mut hi16 = [0u8; 16];
+    lo16.copy_from_slice(&bytes32[0..16]);
+    hi16.copy_from_slice(&bytes32[16..32]);
+
+    let a = be_from_le_bytes16(&lo16);
+    let b = be_from_le_bytes16(&hi16);
+
+    // Use 2^64 as a mixing factor between halves;
+    // this is a simple linear combination in the
+    // field which keeps the mapping deterministic
+    // and cheap.
+    a + b * pow2_64()
+}
+
+/// Fold a base-field element into 32 bytes.
+///
+/// We encode the internal 128-bit integer representation
+/// into the low 16 bytes in little-endian form and leave
+/// the upper half zeroed. This is sufficient for digest
+/// purposes when combined with a domain-separated hash.
+pub fn fe_to_bytes_fold(x: BE) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    let le16 = x.as_int().to_le_bytes();
+    out[0..16].copy_from_slice(&le16);
+
+    out
 }

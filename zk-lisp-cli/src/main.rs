@@ -316,11 +316,6 @@ fn build_pi_for_program(
                             )));
                         }
                     },
-                    compiler::ScalarType::Str64 => {
-                        return Err(CliError::InvalidInput(format!(
-                            "main arg #{pos}: type 'str64' is not supported as runtime public input",
-                        )));
-                    }
                 }
             }
         }
@@ -350,8 +345,8 @@ fn build_pi_for_program(
 /// - for `ArgRole::Const`, only `u64` is supported at CLI level
 ///   (both in schema type and actual value);
 /// - for `ArgRole::Let`, the following types are supported
-///   as runtime public inputs and CLI values: `u64`, `u128`,
-///   `bytes32`; `str64` is rejected for now.
+///   as runtime public inputs and CLI values:
+///   `u64`, `u128`, `bytes32`.
 fn validate_main_args_against_schema(
     program: &compiler::Program,
     public_args: &[VmArg],
@@ -381,7 +376,6 @@ fn validate_main_args_against_schema(
                         compiler::ScalarType::U64 => "u64",
                         compiler::ScalarType::U128 => "u128",
                         compiler::ScalarType::Bytes32 => "bytes32",
-                        compiler::ScalarType::Str64 => "str64",
                     };
 
                     return Err(CliError::InvalidInput(format!(
@@ -423,11 +417,6 @@ fn validate_main_args_against_schema(
                         )));
                     }
                 },
-                compiler::ScalarType::Str64 => {
-                    return Err(CliError::InvalidInput(format!(
-                        "main arg #{pos}: type 'str64' is not supported for CLI public args",
-                    )));
-                }
             },
         }
     }
@@ -1217,7 +1206,7 @@ fn cmd_repl() -> Result<(), CliError> {
         // Top-level def/deftype
         // are stored into session
         let st = s.trim_start();
-        if st.starts_with("(def ") || st.starts_with("(deftype ") {
+        if st.starts_with("(def ") || st.starts_with("(deftype ") || st.starts_with("(typed-fn ") {
             if let Some(msg) = diagnose_non_ascii(s) {
                 println!("error: {msg}");
                 continue;

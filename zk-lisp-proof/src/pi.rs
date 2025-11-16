@@ -50,7 +50,24 @@ pub struct FeaturesMap {
 
 #[derive(Clone, Debug, Default)]
 pub struct PublicInputs {
+    /// Deterministic identifier
+    /// of the program semantics.
+    ///
+    /// This is computed as a Blake3
+    /// hash of the canonical VM bytecode
+    /// encoding (see `zk_lisp_compiler::builder::encode_ops`).
+    /// It is stable across proving backends
+    /// and is intended to serve as
+    /// the logical program id.
+    pub program_id: [u8; 32],
+
+    /// Blake3 commitment of the program
+    /// as used by the base VM AIR. For
+    /// now this is set equal to `program_id`,
+    /// but backends may derive additional
+    /// internal commitments from it.
     pub program_commitment: [u8; 32],
+
     pub merkle_root: [u8; 32],
 
     /// Public VM arguments (typed).
@@ -90,9 +107,17 @@ pub struct PublicInputsBuilder {
 
 impl PublicInputsBuilder {
     pub fn from_program(program: &Program) -> Self {
+        // The compiler exposes a single Blake3
+        // commitment over the canonical bytecode
+        // encoding. We use it both as a stable
+        // semantic program id and as the base
+        // VM-level program commitment.
+        let program_id = program.commitment;
+
         let mut builder = Self {
             pi: PublicInputs {
-                program_commitment: program.commitment,
+                program_id,
+                program_commitment: program_id,
                 compiler_stats: program.compiler_metrics.clone(),
                 ..PublicInputs::default()
             },
@@ -202,6 +227,11 @@ impl PublicInputsBuilder {
 
     pub fn build(self) -> Result<PublicInputs> {
         // basic validation and defaults
+        if self.pi.program_id.iter().all(|b| *b == 0) {
+            return Err(Error::InvalidInput(
+                "program_id (Blake3 over canonical bytecode) must be non-zero",
+            ));
+        }
         if self.pi.program_commitment.iter().all(|b| *b == 0) {
             return Err(Error::InvalidInput(
                 "program_commitment (Blake3) must be non-zero",
@@ -228,6 +258,11 @@ impl PublicInputs {
     }
 
     pub fn validate_flags(&self) -> Result<()> {
+        if self.program_id.iter().all(|b| *b == 0) {
+            return Err(Error::InvalidInput(
+                "program_id (Blake3 over canonical bytecode) must be non-zero",
+            ));
+        }
         if self.program_commitment.iter().all(|b| *b == 0) {
             return Err(Error::InvalidInput(
                 "program_commitment (Blake3) must be non-zero",

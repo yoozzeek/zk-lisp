@@ -10,7 +10,7 @@
 use winterfell::ProofOptions;
 
 use zk_lisp_compiler::compile_str;
-use zk_lisp_proof::pi::{self, PublicInputs};
+use zk_lisp_proof::pi::{self as core_pi, PublicInputsBuilder};
 use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
 use zk_lisp_proof_winterfell::trace::build_trace;
 
@@ -21,9 +21,14 @@ fn hash2_prove_verify() {
     let src = "(let ((x 1) (y 2)) (hash2 x y))";
     let program = compile_str(src).expect("compile");
 
-    let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;
-    pi.program_commitment = program.commitment;
+    let mut pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
+
+    // Constrain features to VM+Poseidon as in the
+    // original hash2 test so that AIR block
+    // selection and constraint count remain stable.
+    pi.feature_mask = core_pi::FM_POSEIDON | core_pi::FM_VM;
 
     let trace = build_trace(&program, &pi).expect("trace");
     let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);

@@ -104,7 +104,8 @@ fn enum_predicate_negative_fails_verify() {
             match err {
                 prove::Error::Backend(_)
                 | prove::Error::BackendSource(_)
-                | prove::Error::PublicInputs(_) => {}
+                | prove::Error::PublicInputs(_)
+                | prove::Error::IvInvalid(_) => {}
             }
         }
         // Prove returned an error — acceptable failure mode

@@ -236,7 +236,7 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
         }
         Ast::Atom(Atom::Str(_)) => {
             // String literal must be used
-            // under a macro (str64 "...")
+            // under a dedicated macro.
             Err(Error::InvalidForm("string literal outside macro".into()))
         }
         Ast::Atom(Atom::Sym(s)) => {
@@ -278,7 +278,6 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "if" => lower_if(cx, tail),
                     "let" => lower_let(cx, tail),
                     "neg" => lower_neg(cx, tail),
-                    "str64" => lower_str64(cx, tail),
                     "hash2" => lower_hash2(cx, tail),
                     "merkle-verify" => lower_merkle_verify(cx, tail),
                     "load-ca" => lower_load_ca(cx, tail),
@@ -1018,143 +1017,6 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     cx.define_fun(&assert_name, vec!["x".to_string()], assert_body);
 
     Ok(())
-}
-
-fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    // (str64 "...") → digest
-    if rest.len() != 1 {
-        return Err(Error::InvalidForm("str64".into()));
-    }
-
-    let s = match &rest[0] {
-        Ast::Atom(Atom::Str(st)) => st.clone(),
-        _ => return Err(Error::InvalidForm("str64: expects string literal".into())),
-    };
-
-    let bytes_src = s.as_bytes();
-    if bytes_src.len() > 64 {
-        return Err(Error::InvalidForm("str64: length > 64".into()));
-    }
-
-    // Pad to 64
-    let mut buf = [0u8; 64];
-    buf[..bytes_src.len()].copy_from_slice(bytes_src);
-
-    // Build chunk commitments from u64 pairs via Hash2 only
-    // c0 = H(lo0, hi0), c1 = H(lo1, hi1), ...
-    let c_hash = |cx: &mut LowerCtx, lo: u64, hi: u64| -> Result<u8, Error> {
-        let r_lo = cx.alloc()?;
-        cx.builder.push(Op::Const { dst: r_lo, imm: lo });
-
-        let r_hi = cx.alloc()?;
-        cx.builder.push(Op::Const { dst: r_hi, imm: hi });
-
-        cx.builder.push(Op::SAbsorbN {
-            regs: vec![r_lo, r_hi],
-        });
-
-        let r_c = cx.alloc()?;
-
-        cx.builder.push(Op::SSqueeze { dst: r_c });
-
-        cx.free_reg(r_lo);
-        cx.free_reg(r_hi);
-
-        Ok(r_c)
-    };
-
-    let (lo0, hi0) = u64_pair_from_le_16(&buf[0..16]);
-    let r_c0 = c_hash(cx, lo0, hi0)?;
-    let (lo1, hi1) = u64_pair_from_le_16(&buf[16..32]);
-    let r_c1 = c_hash(cx, lo1, hi1)?;
-    let r_p01 = {
-        let dst = cx.alloc()?;
-        cx.builder.push(Op::SAbsorbN {
-            regs: vec![r_c0, r_c1],
-        });
-        cx.builder.push(Op::SSqueeze { dst });
-
-        cx.free_reg(r_c0);
-        cx.free_reg(r_c1);
-
-        dst
-    };
-
-    let (lo2, hi2) = u64_pair_from_le_16(&buf[32..48]);
-    let r_c2 = c_hash(cx, lo2, hi2)?;
-    let (lo3, hi3) = u64_pair_from_le_16(&buf[48..64]);
-    let r_c3 = c_hash(cx, lo3, hi3)?;
-    let r_p23 = {
-        let dst = cx.alloc()?;
-        cx.builder.push(Op::SAbsorbN {
-            regs: vec![r_c2, r_c3],
-        });
-        cx.builder.push(Op::SSqueeze { dst });
-
-        cx.free_reg(r_c2);
-        cx.free_reg(r_c3);
-
-        dst
-    };
-
-    let r_payload = {
-        let dst = cx.alloc()?;
-        cx.builder.push(Op::SAbsorbN {
-            regs: vec![r_p01, r_p23],
-        });
-        cx.builder.push(Op::SSqueeze { dst });
-
-        cx.free_reg(r_p01);
-        cx.free_reg(r_p23);
-
-        dst
-    };
-
-    // t0 = H(TAG, L), TAG is 64-bit constant derived from blake3("zkl/str64")
-    let tag8 = {
-        let d = blake3::hash(b"zkl/str64");
-        let mut t = [0u8; 8];
-        t.copy_from_slice(&d.as_bytes()[0..8]);
-
-        u64::from_le_bytes(t)
-    };
-
-    let r_tag = cx.alloc()?;
-    cx.builder.push(Op::Const {
-        dst: r_tag,
-        imm: tag8,
-    });
-
-    let r_len = cx.alloc()?;
-    cx.builder.push(Op::Const {
-        dst: r_len,
-        imm: bytes_src.len() as u64,
-    });
-
-    let r_t0 = {
-        let dst = cx.alloc()?;
-        cx.builder.push(Op::SAbsorbN {
-            regs: vec![r_tag, r_len],
-        });
-        cx.builder.push(Op::SSqueeze { dst });
-
-        cx.free_reg(r_tag);
-        cx.free_reg(r_len);
-
-        dst
-    };
-
-    // digest = H(t0, payload)
-    let r_digest = cx.alloc()?;
-    cx.builder.push(Op::SAbsorbN {
-        regs: vec![r_t0, r_payload],
-    });
-    cx.builder.push(Op::SSqueeze { dst: r_digest });
-
-    cx.free_reg(r_t0);
-    cx.free_reg(r_payload);
-
-    Ok(RVal::Owned(r_digest))
 }
 
 fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
@@ -2900,7 +2762,6 @@ fn parse_scalar_type(sym: &str) -> Result<ScalarType, Error> {
         "u64" => Ok(ScalarType::U64),
         "u128" => Ok(ScalarType::U128),
         "bytes32" => Ok(ScalarType::Bytes32),
-        "str64" => Ok(ScalarType::Str64),
         _ => Err(Error::InvalidForm(format!(
             "typed-fn: unknown type '{sym}'",
         ))),

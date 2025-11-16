@@ -12,7 +12,7 @@ use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
 
 use zk_lisp_compiler::compile_entry;
 use zk_lisp_proof::frontend::PreflightMode;
-use zk_lisp_proof::pi::{self, PublicInputsBuilder};
+use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::layout::Columns;
 use zk_lisp_proof_winterfell::preflight::run as run_preflight;
 use zk_lisp_proof_winterfell::trace::build_trace;
@@ -38,7 +38,8 @@ fn store_then_load_same_address() {
   (begin (store 42 7)
          (load 42)))";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
     let cols = Columns::baseline();
     let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
@@ -54,7 +55,8 @@ fn double_load_after_single_store_ok() {
          (load 7)
          (load 7)))";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
     let cols = Columns::baseline();
     let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
@@ -70,7 +72,8 @@ fn store_same_addr_updates_value() {
          (store 7 13)
          (load 7)))";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
     let cols = Columns::baseline();
     let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
@@ -86,7 +89,8 @@ fn switch_addr_then_load_new_ok() {
          (store 2 7)
          (load 2)))";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
     let cols = Columns::baseline();
     let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
@@ -101,7 +105,8 @@ fn store_then_load_different_addr_reads_zero_without_prior_store() {
   (begin (store 1 5)
          (load 2)))";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
     let cols = Columns::baseline();
     let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
@@ -184,7 +189,8 @@ fn computed_addr_and_value_ok() {
     (store a v)
     (load a)))";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
     let cols = Columns::baseline();
     let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
@@ -200,7 +206,8 @@ fn switch_addr_then_load_old_addr_reads_old_value() {
          (store 2 7)
          (load 1)))";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
     let cols = Columns::baseline();
     let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
@@ -216,7 +223,8 @@ fn load_before_store_reads_zero() {
     // active addr (which is none at start)
     let src = "(def (main) (load 1))";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&p, &pi::PublicInputs::default()).expect("trace");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
     let cols = Columns::baseline();
     let (out_reg, out_row) = vm_output_from_trace(&trace);
     let v = trace.get(cols.r_index(out_reg as usize), out_row as usize);
