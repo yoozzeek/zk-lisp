@@ -21,7 +21,9 @@ use winterfell::{
 };
 
 use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
-use zk_lisp_proof_winterfell::agg_air::{AggAirPublicInputs, ZlAggAir};
+use zk_lisp_proof_winterfell::agg_air::{
+    AggAirPublicInputs, AggFriProfile, AggProfileMeta, AggQueryProfile, ZlAggAir,
+};
 use zk_lisp_proof_winterfell::agg_child::{ZlChildCompact, children_root_from_compact};
 use zk_lisp_proof_winterfell::agg_trace::build_agg_trace;
 use zk_lisp_proof_winterfell::poseidon_hasher::PoseidonHasher;
@@ -175,11 +177,37 @@ fn agg_proof_roundtrip_ok() {
 
     let children_root = children_root_from_compact(&children[0].suite_id, &children);
 
+    let profile_meta = AggProfileMeta {
+        m: children[0].meta.m,
+        rho: children[0].meta.rho,
+        q: children[0].meta.q,
+        o: children[0].meta.o,
+        lambda: children[0].meta.lambda,
+        pi_len: children[0].meta.pi_len,
+        v_units: children[0].meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: 8,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: 0,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: children[0].meta.q,
+        grinding_factor: 0,
+    };
+
     let agg_pi = AggAirPublicInputs {
-        suite_id: children[0].suite_id,
         children_root,
         v_units_total: v1 + v2,
         children_count: children.len() as u32,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: children[0].suite_id,
         children_ms: vec![m1, m2],
     };
 
@@ -216,11 +244,37 @@ fn agg_build_rejects_wrong_v_units_total() {
 
     let children_root = children_root_from_compact(&children[0].suite_id, &children);
 
+    let profile_meta = AggProfileMeta {
+        m: children[0].meta.m,
+        rho: children[0].meta.rho,
+        q: children[0].meta.q,
+        o: children[0].meta.o,
+        lambda: children[0].meta.lambda,
+        pi_len: children[0].meta.pi_len,
+        v_units: children[0].meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: 8,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: 0,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: children[0].meta.q,
+        grinding_factor: 0,
+    };
+
     let agg_pi = AggAirPublicInputs {
-        suite_id: children[0].suite_id,
         children_root,
         v_units_total: v1 + v2 + 1, // mismatch
         children_count: children.len() as u32,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: children[0].suite_id,
         children_ms: vec![m1, m2],
     };
 
@@ -243,11 +297,37 @@ fn agg_build_rejects_wrong_children_ms() {
     let children_root = children_root_from_compact(&children[0].suite_id, &children);
 
     // children_ms[1] mismatches meta.m for child 1
+    let profile_meta = AggProfileMeta {
+        m: children[0].meta.m,
+        rho: children[0].meta.rho,
+        q: children[0].meta.q,
+        o: children[0].meta.o,
+        lambda: children[0].meta.lambda,
+        pi_len: children[0].meta.pi_len,
+        v_units: children[0].meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: 8,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: 0,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: children[0].meta.q,
+        grinding_factor: 0,
+    };
+
     let agg_pi = AggAirPublicInputs {
-        suite_id: children[0].suite_id,
         children_root,
         v_units_total: v1 + v2,
         children_count: children.len() as u32,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: children[0].suite_id,
         children_ms: vec![m1, m1],
     };
 
@@ -274,11 +354,37 @@ fn agg_build_rejects_mixed_suite_id() {
     // suite_id consistency check fires first.
     let children_root = [0u8; 32];
 
+    let profile_meta = AggProfileMeta {
+        m: children[0].meta.m,
+        rho: children[0].meta.rho,
+        q: children[0].meta.q,
+        o: children[0].meta.o,
+        lambda: children[0].meta.lambda,
+        pi_len: children[0].meta.pi_len,
+        v_units: children[0].meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: 8,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: 0,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: children[0].meta.q,
+        grinding_factor: 0,
+    };
+
     let agg_pi = AggAirPublicInputs {
-        suite_id: [7u8; 32],
         children_root,
         v_units_total: v1 + v2,
         children_count: children.len() as u32,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: [7u8; 32],
         children_ms: vec![m1, m2],
     };
 

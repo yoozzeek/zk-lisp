@@ -28,30 +28,122 @@ use winterfell::{
 
 /// Public inputs for the aggregation AIR.
 ///
-/// These inputs tie the aggregator trace to
-/// a specific batch of child proofs via a suite
-/// identifier, a root binding children to the
-/// aggregation instance and global scalar aggregates.
+/// At the logical level these inputs expose the
+/// children aggregation root and a global STARK
+/// profile shared by all children (see AGG_SPEC.md
+/// for the high-level protocol). In the current
+/// implementation we also keep a few helper fields
+/// (`suite_id`, `children_ms`) used by the trace
+/// builder; these may be removed or folded into
+/// `batch_id` in future revisions.
 #[derive(Clone, Debug)]
 pub struct AggAirPublicInputs {
-    pub suite_id: [u8; 32],
+    /// Canonical aggregation root over compact
+    /// children as defined in AGG_SPEC §2.1.
     pub children_root: [u8; 32],
+
+    /// Global sum of child work units; the
+    /// aggregator AIR enforces that the work
+    /// accumulator equals this value on the
+    /// last row.
     pub v_units_total: u64,
+
+    /// Number of children in the batch.
     pub children_count: u32,
+
+    /// Aggregation batch identifier (optional
+    /// from protocol perspective). This can
+    /// be used to tie the aggregation instance
+    /// to a particular higher-level protocol
+    /// state or program set.
+    pub batch_id: [u8; 32],
+
+    /// Global zk-lisp STARK profile that all
+    /// children are expected to share.
+    pub profile_meta: AggProfileMeta,
+
+    /// Global FRI profile shared by all children.
+    pub profile_fri: AggFriProfile,
+
+    /// Global FS query / PoW profile.
+    pub profile_queries: AggQueryProfile,
+
+    /// Helper field used by the current
+    /// aggregation trace builder to check
+    /// suite-id consistency and recompute
+    /// `children_root`. This is not encoded
+    /// directly into the public elements and
+    /// may be removed once batch_id fully
+    /// covers protocol binding.
+    pub suite_id: [u8; 32],
+
+    /// Helper field used by the trace builder
+    /// to enforce shape invariants between
+    /// public inputs and individual children.
+    /// This will likely be phased out once
+    /// the global profile constraints are in
+    /// place.
     pub children_ms: Vec<u32>,
+}
+
+/// Global zk-lisp STARK profile shared by all
+/// children in a batch. For now this simply
+/// mirrors `StepMeta` but is not yet enforced
+/// by `ZlAggAir`; the enforcement logic will
+/// be added incrementally.
+#[derive(Clone, Debug, Default)]
+pub struct AggProfileMeta {
+    pub m: u32,
+    pub rho: u16,
+    pub q: u16,
+    pub o: u16,
+    pub lambda: u16,
+    pub pi_len: u32,
+    pub v_units: u64,
+}
+
+/// Global FRI profile used by all
+/// children in the aggregation.
+#[derive(Clone, Debug, Default)]
+pub struct AggFriProfile {
+    pub lde_blowup: u32,
+    pub folding_factor: u8,
+    pub redundancy: u8,
+    pub num_layers: u8,
+}
+
+/// Global query / PoW profile
+/// shared by all children.
+#[derive(Clone, Debug, Default)]
+pub struct AggQueryProfile {
+    pub num_queries: u16,
+    pub grinding_factor: u32,
 }
 
 impl ToElements<BE> for AggAirPublicInputs {
     fn to_elements(&self) -> Vec<BE> {
-        let mut out = Vec::with_capacity(4 + self.children_ms.len());
-        out.push(utils::be_from_le8(&self.suite_id));
+        let mut out = Vec::new();
         out.push(utils::fold_bytes32_to_fe(&self.children_root));
-        out.push(BE::from(self.v_units_total));
-        out.push(BE::from(self.children_count as u64));
+        out.push(utils::fold_bytes32_to_fe(&self.batch_id));
 
-        for &m in &self.children_ms {
-            out.push(BE::from(m as u64));
-        }
+        out.push(BE::from(self.profile_meta.m));
+        out.push(BE::from(self.profile_meta.rho as u64));
+        out.push(BE::from(self.profile_meta.q as u64));
+        out.push(BE::from(self.profile_meta.o as u64));
+        out.push(BE::from(self.profile_meta.lambda as u64));
+        out.push(BE::from(self.profile_meta.pi_len));
+        out.push(BE::from(self.profile_meta.v_units));
+
+        out.push(BE::from(self.profile_fri.lde_blowup));
+        out.push(BE::from(self.profile_fri.folding_factor as u64));
+        out.push(BE::from(self.profile_fri.redundancy as u64));
+        out.push(BE::from(self.profile_fri.num_layers as u64));
+
+        out.push(BE::from(self.profile_queries.num_queries as u64));
+        out.push(BE::from(self.profile_queries.grinding_factor));
+
+        out.push(BE::from(self.children_count as u64));
+        out.push(BE::from(self.v_units_total));
 
         out
     }
@@ -104,9 +196,7 @@ impl Air for ZlAggAir {
 
         // ok[0], v_units_acc[0], v_units_acc[last].
         let num_assertions = 3;
-
         let v_units_total_fe = BE::from(pub_inputs.v_units_total);
-
         let ctx = AirContext::new(info, degrees, num_assertions, options);
 
         Self {

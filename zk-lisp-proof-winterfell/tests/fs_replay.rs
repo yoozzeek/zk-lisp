@@ -16,17 +16,17 @@
 //! challenges (OOD point, DEEP coeffs, FRI alphas
 //! and query positions).
 
-use winterfell::math::FieldElement;
-use winterfell::math::fields::f128::BaseElement as BE;
-use winterfell::crypto::{DefaultRandomCoin, ElementHasher, RandomCoin};
-use winterfell::math::ToElements;
 use winterfell::Air;
+use winterfell::crypto::{DefaultRandomCoin, ElementHasher, RandomCoin};
+use winterfell::math::FieldElement;
+use winterfell::math::ToElements;
+use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputsBuilder;
+use zk_lisp_proof_winterfell::air::ZkLispAir;
 use zk_lisp_proof_winterfell::fs::replay_fs_from_step;
 use zk_lisp_proof_winterfell::poseidon_hasher::PoseidonHasher;
-use zk_lisp_proof_winterfell::air::ZkLispAir;
 
 fn make_opts() -> ProverOptions {
     ProverOptions {
@@ -201,9 +201,7 @@ fn fs_replay_matches_reference_coin() {
 
     for (depth, root) in fri_roots_h.iter().enumerate() {
         coin.reseed(*root);
-        let alpha: BE = coin
-            .draw()
-            .expect("draw FRI alpha in reference FS coin");
+        let alpha: BE = coin.draw().expect("draw FRI alpha in reference FS coin");
         fri_alphas_ref.push(alpha);
 
         if depth != fri_roots_h.len() - 1
