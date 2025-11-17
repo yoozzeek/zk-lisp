@@ -17,12 +17,13 @@
 
 use crate::fs as fs_helpers;
 use crate::poseidon;
-use crate::poseidon_hasher::PoseidonHasher;
+use crate::poseidon_hasher::{PoseidonDigest, PoseidonHasher};
 use crate::utils;
 use crate::zl_step::{StepMeta, ZlStepProof};
 
 use blake3::Hasher as Blake3Hasher;
-use winterfell::crypto::{Digest, MerkleTree};
+use winter_utils::{Deserializable, Serializable, SliceReader};
+use winterfell::crypto::{Digest, ElementHasher, Hasher, MerkleTree};
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_proof::error;
@@ -234,310 +235,213 @@ impl ZlChildCompact {
         };
 
         // Extract Merkle authentication data for trace,
-        // constraint and FRI queries.
-        //
-        // NOTE: proper Merkle extraction requires replaying
-        // Winterfell's FS coin exactly so that query
-        // positions used in the proof match the indices
-        // passed into batch Merkle multiproofs. Until this
-        // replay is implemented, we leave Merkle proofs
-        // empty to avoid constructing inconsistent
-        // authentication data.
-        let merkle_proofs = None;
+        // constraint and FRI queries using the same
+        // layout and partitioning as the Winterfell verifier.
+        let merkle_proofs = {
+            if num_queries == 0 {
+                None
+            } else {
+                let fs = fs_challenges.as_ref().ok_or_else(|| {
+                    error::Error::InvalidInput(
+                        "ZlChildCompact.fs_challenges must be present when num_queries > 0",
+                    )
+                })?;
 
-        // Original WIP implementation for Merkle extraction kept
-        // for future work. Once FS replay is wired to mirror
-        // Winterfell exactly, this block can be re-enabled.
-        // let merkle_proofs = {
-        //     if num_queries == 0 {
-        //         None
-        //     } else {
-        //         let fs = fs_challenges.as_ref().ok_or_else(|| {
-        //             error::Error::InvalidInput(
-        //                 "ZlChildCompact.fs_challenges must be present when num_queries > 0",
-        //             )
-        //         })?;
-        //
-        //         if fs.query_positions.len() != num_queries {
-        //             return Err(error::Error::InvalidInput(
-        //                 "ZlChildCompact.fs_challenges.query_positions length is inconsistent with num_queries",
-        //             ));
-        //         }
-        //
-        //         // Parse main-trace queries for the first
-        //         // (and currently only) trace segment.
-        //         let main_width = trace_info.main_trace_width();
-        //
-        //         let (main_mproof, main_table) = wf_proof.trace_queries[0]
-        //             .clone()
-        //             .parse::<BE, PoseidonHasher<BE>, MerkleTree<PoseidonHasher<BE>>>(
-        //                 lde_domain_size,
-        //                 num_queries,
-        //                 main_width,
-        //             )
-        //             .map_err(|_| {
-        //                 error::Error::InvalidInput("invalid trace queries layout in ZlChildCompact")
-        //             })?;
-        //
-        //         // Rebuild leaf digests for each queried
-        //         // main-trace row using the same partitioning
-        //         // logic as Winterfell verifier.
-        //         let partition_opts = options.partition_options();
-        //         let partition_size_main =
-        //             partition_opts.partition_size::<BE>(trace_info.main_trace_width());
-        //
-        //         let mut trace_leaves = Vec::with_capacity(num_queries);
-        //         let mut trace_indexes = Vec::with_capacity(num_queries);
-        //
-        //         // Each row in `main_table` is ordered consistently
-        //         // with `fs.query_positions`, and the Merkle tree
-        //         // is built over the LDE domain [0, lde_domain_size).
-        //         for (row, &pos) in main_table.rows().zip(fs.query_positions.iter()) {
-        //             let leaf = hash_row_poseidon(row, partition_size_main);
-        //             trace_leaves.push(leaf);
-        //
-        //             let idx = pos as usize;
-        //             if idx >= lde_domain_size {
-        //                 return Err(error::Error::InvalidInput(
-        //                     "ZlChildCompact.fs_challenges.query_positions contains index outside LDE domain",
-        //                 ));
-        //             }
-        //
-        //             trace_indexes.push(idx);
-        //         }
-        //
-        //         let trace_openings = main_mproof
-        //             .into_openings(&trace_leaves, &trace_indexes)
-        //             .map_err(|_| {
-        //                 error::Error::InvalidInput(
-        //                     "failed to decompress trace Merkle multiproof in ZlChildCompact",
-        //                 )
-        //             })?;
-        //
-        //         let mut trace_paths = Vec::with_capacity(trace_openings.len());
-        //         for (_leaf, siblings) in trace_openings {
-        //             let mut sib_bytes = Vec::with_capacity(siblings.len());
-        //             for d in siblings {
-        //                 let mut bytes = [0u8; 32];
-        //                 bytes.copy_from_slice(&d.as_bytes());
-        //                 sib_bytes.push(bytes);
-        //             }
-        //
-        //             trace_paths.push(ZlMerklePath {
-        //                 siblings: sib_bytes,
-        //             });
-        //         }
-        //
-        //         // Infer constraint frame width from the serialized
-        //         // constraint queries and use it to parse the table
-        //         // in the same way as Winterfell verifier.
-        //         let cq_clone = wf_proof.constraint_queries.clone();
-        //         let cq_bytes = Serializable::to_bytes(&cq_clone);
-        //         let mut reader = SliceReader::new(&cq_bytes);
-        //
-        //         let values_bytes =
-        //             <Vec<u8> as Deserializable>::read_from(&mut reader).map_err(|_| {
-        //                 error::Error::InvalidInput(
-        //                     "failed to decode constraint query values in ZlChildCompact",
-        //                 )
-        //             })?;
-        //
-        //         // skip paths bytes;
-        //         // `cq_clone.parse()` will re-parse them
-        //         let _: Vec<u8> = Deserializable::read_from(&mut reader).map_err(|_| {
-        //             error::Error::InvalidInput(
-        //                 "failed to decode constraint query paths in ZlChildCompact",
-        //             )
-        //         })?;
-        //
-        //         let total_value_bytes = values_bytes.len();
-        //         let elem_bytes = BE::ELEMENT_BYTES;
-        //
-        //         let denom = num_queries.checked_mul(elem_bytes).ok_or_else(|| {
-        //             error::Error::InvalidInput(
-        //                 "overflow while computing constraint frame width in ZlChildCompact",
-        //             )
-        //         })?;
-        //
-        //         if denom == 0 || total_value_bytes % denom != 0 {
-        //             return Err(error::Error::InvalidInput(
-        //                 "constraint_queries byte length is inconsistent with num_queries",
-        //             ));
-        //         }
-        //
-        //         let constraint_frame_width = total_value_bytes / denom;
-        //         if constraint_frame_width == 0 {
-        //             return Err(error::Error::InvalidInput(
-        //                 "constraint frame width inferred from queries must be non-zero",
-        //             ));
-        //         }
-        //
-        //         let (constraint_mproof, constraint_table) = cq_clone
-        //             .parse::<BE, PoseidonHasher<BE>, MerkleTree<PoseidonHasher<BE>>>(
-        //                 lde_domain_size,
-        //                 num_queries,
-        //                 constraint_frame_width,
-        //             )
-        //             .map_err(|_| {
-        //                 error::Error::InvalidInput(
-        //                     "invalid constraint queries layout in ZlChildCompact",
-        //                 )
-        //             })?;
-        //
-        //         let partition_size_constraint =
-        //             partition_opts.partition_size::<BE>(constraint_frame_width);
-        //
-        //         let mut constraint_leaves = Vec::with_capacity(num_queries);
-        //         let mut constraint_indexes = Vec::with_capacity(num_queries);
-        //
-        //         for (row, &pos) in constraint_table.rows().zip(fs.query_positions.iter()) {
-        //             let leaf = hash_row_poseidon(row, partition_size_constraint);
-        //             constraint_leaves.push(leaf);
-        //
-        //             let idx = pos as usize;
-        //             if idx >= lde_domain_size {
-        //                 return Err(error::Error::InvalidInput(
-        //                     "ZlChildCompact.fs_challenges.query_positions contains index outside LDE domain",
-        //                 ));
-        //             }
-        //
-        //             constraint_indexes.push(idx);
-        //         }
-        //
-        //         let constraint_openings = constraint_mproof
-        //             .into_openings(&constraint_leaves, &constraint_indexes)
-        //             .map_err(|_| {
-        //                 error::Error::InvalidInput(
-        //                     "failed to decompress constraint Merkle multiproof in ZlChildCompact",
-        //                 )
-        //             })?;
-        //
-        //         let mut constraint_paths = Vec::with_capacity(constraint_openings.len());
-        //         for (_leaf, siblings) in constraint_openings {
-        //             let mut sib_bytes = Vec::with_capacity(siblings.len());
-        //             for d in siblings {
-        //                 let mut bytes = [0u8; 32];
-        //                 bytes.copy_from_slice(&d.as_bytes());
-        //                 sib_bytes.push(bytes);
-        //             }
-        //
-        //             constraint_paths.push(ZlMerklePath {
-        //                 siblings: sib_bytes,
-        //             });
-        //         }
-        //
-        //         // FRI Merkle paths
-        //         let folding = fri_opts.folding_factor();
-        //         if folding != 2 {
-        //             return Err(error::Error::InvalidInput(
-        //                 "ZlChildCompact currently supports only FRI folding factor 2",
-        //             ));
-        //         }
-        //
-        //         let num_fri_layers = fri_opts.num_fri_layers(lde_domain_size);
-        //         let mut fri_layers_paths: Vec<Vec<ZlFriLayerProof>> = Vec::new();
-        //
-        //         if num_fri_layers > 0 {
-        //             let fri_proof_clone = wf_proof.fri_proof.clone();
-        //             let (layer_values, layer_proofs) = fri_proof_clone
-        //                 .parse_layers::<BE, PoseidonHasher<BE>, MerkleTree<PoseidonHasher<BE>>>(
-        //                     lde_domain_size,
-        //                     folding,
-        //                 )
-        //                 .map_err(|_| {
-        //                     error::Error::InvalidInput(
-        //                         "invalid FRI layers layout in ZlChildCompact",
-        //                     )
-        //                 })?;
-        //
-        //             debug_assert_eq!(layer_values.len(), num_fri_layers);
-        //             debug_assert_eq!(layer_proofs.len(), num_fri_layers);
-        //
-        //             let mut positions: Vec<usize> =
-        //                 fs.query_positions.iter().map(|&p| p as usize).collect();
-        //             let mut domain_size = lde_domain_size;
-        //
-        //             for (vals, mproof) in layer_values.into_iter().zip(layer_proofs.into_iter()) {
-        //                 let folded_positions = fri_fold_positions(&positions, domain_size, folding);
-        //                 if folded_positions.is_empty() {
-        //                     return Err(error::Error::InvalidInput(
-        //                         "FRI folded positions must be non-empty when num_queries > 0",
-        //                     ));
-        //                 }
-        //
-        //                 if vals.len() != folded_positions.len() * folding {
-        //                     return Err(error::Error::InvalidInput(
-        //                         "FRI layer values length is inconsistent with folded positions",
-        //                     ));
-        //                 }
-        //
-        //                 let q_count = folded_positions.len();
-        //                 let mut leaf_values: Vec<[BE; 2]> = Vec::with_capacity(q_count);
-        //
-        //                 for i in 0..q_count {
-        //                     let base = i * folding;
-        //                     let v0 = vals[base];
-        //                     let v1 = vals[base + 1];
-        //                     leaf_values.push([v0, v1]);
-        //                 }
-        //
-        //                 let mut leaves = Vec::with_capacity(q_count);
-        //                 for pair in &leaf_values {
-        //                     let leaf = PoseidonHasher::<BE>::hash_elements(pair);
-        //                     leaves.push(leaf);
-        //                 }
-        //
-        //                 let indexes = folded_positions.clone();
-        //                 let openings = mproof.into_openings(&leaves, &indexes).map_err(|_| {
-        //                     error::Error::InvalidInput(
-        //                         "failed to decompress FRI Merkle multiproof in ZlChildCompact",
-        //                     )
-        //                 })?;
-        //
-        //                 if openings.len() != q_count {
-        //                     return Err(error::Error::InvalidInput(
-        //                         "FRI openings length mismatch in ZlChildCompact",
-        //                     ));
-        //                 }
-        //
-        //                 let mut layer_proofs_out = Vec::with_capacity(q_count);
-        //
-        //                 for ((idx, pair), (_leaf, siblings)) in indexes
-        //                     .into_iter()
-        //                     .zip(leaf_values.into_iter())
-        //                     .zip(openings.into_iter())
-        //                 {
-        //                     let mut sib_bytes = Vec::with_capacity(siblings.len());
-        //                     for d in siblings {
-        //                         let mut bytes = [0u8; 32];
-        //                         bytes.copy_from_slice(&d.as_bytes());
-        //                         sib_bytes.push(bytes);
-        //                     }
-        //
-        //                     let path = ZlMerklePath {
-        //                         siblings: sib_bytes,
-        //                     };
-        //                     layer_proofs_out.push(ZlFriLayerProof {
-        //                         idx: idx as u32,
-        //                         values: pair,
-        //                         path,
-        //                     });
-        //                 }
-        //
-        //                 fri_layers_paths.push(layer_proofs_out);
-        //
-        //                 positions = folded_positions;
-        //                 domain_size /= folding;
-        //             }
-        //         }
-        //
-        //         Some(ZlMerkleProofs {
-        //             trace_paths,
-        //             constraint_paths,
-        //             fri_layers: fri_layers_paths,
-        //         })
-        //     }
-        // };
+                if fs.query_positions.len() != num_queries {
+                    return Err(error::Error::InvalidInput(
+                        "ZlChildCompact.fs_challenges.query_positions length is inconsistent with num_queries",
+                    ));
+                }
+
+                // Parse main-trace queries for the first
+                // (and currently only) trace segment.
+                let main_width = trace_info.main_trace_width();
+
+                let (main_mproof, main_table) = wf_proof.trace_queries[0]
+                    .clone()
+                    .parse::<BE, PoseidonHasher<BE>, MerkleTree<PoseidonHasher<BE>>>(
+                        lde_domain_size,
+                        num_queries,
+                        main_width,
+                    )
+                    .map_err(|_| {
+                        error::Error::InvalidInput("invalid trace queries layout in ZlChildCompact")
+                    })?;
+
+                // Rebuild leaf digests for each queried
+                // main-trace row using the same partitioning
+                // logic as Winterfell verifier.
+                let partition_opts = options.partition_options();
+                let partition_size_main =
+                    partition_opts.partition_size::<BE>(trace_info.main_trace_width());
+
+                let mut trace_leaves = Vec::with_capacity(num_queries);
+                let mut trace_indexes = Vec::with_capacity(num_queries);
+
+                // Each row in `main_table` is ordered consistently
+                // with `fs.query_positions`, and the Merkle tree
+                // is built over the LDE domain [0, lde_domain_size).
+                for (row, &pos) in main_table.rows().zip(fs.query_positions.iter()) {
+                    let leaf = hash_row_poseidon(row, partition_size_main);
+                    trace_leaves.push(leaf);
+
+                    let idx = pos as usize;
+                    if idx >= lde_domain_size {
+                        return Err(error::Error::InvalidInput(
+                            "ZlChildCompact.fs_challenges.query_positions contains index outside LDE domain",
+                        ));
+                    }
+
+                    trace_indexes.push(idx);
+                }
+
+                let trace_openings = main_mproof
+                    .into_openings(&trace_leaves, &trace_indexes)
+                    .map_err(|_| {
+                        error::Error::InvalidInput(
+                            "failed to decompress trace Merkle multiproof in ZlChildCompact",
+                        )
+                    })?;
+
+                let mut trace_paths = Vec::with_capacity(trace_openings.len());
+                for (_leaf, siblings) in trace_openings {
+                    let mut sib_bytes = Vec::with_capacity(siblings.len());
+                    for d in siblings {
+                        let mut bytes = [0u8; 32];
+                        bytes.copy_from_slice(&d.as_bytes());
+                        sib_bytes.push(bytes);
+                    }
+
+                    trace_paths.push(ZlMerklePath {
+                        siblings: sib_bytes,
+                    });
+                }
+
+                // Infer constraint frame width from the serialized
+                // constraint queries and use it to parse the table
+                // in the same way as Winterfell verifier.
+                let cq_clone = wf_proof.constraint_queries.clone();
+                let cq_bytes = Serializable::to_bytes(&cq_clone);
+                let mut reader = SliceReader::new(&cq_bytes);
+
+                let values_bytes =
+                    <Vec<u8> as Deserializable>::read_from(&mut reader).map_err(|_| {
+                        error::Error::InvalidInput(
+                            "failed to decode constraint query values in ZlChildCompact",
+                        )
+                    })?;
+
+                // Skip paths bytes; `cq_clone.parse()` will re-parse them
+                let _: Vec<u8> = Deserializable::read_from(&mut reader).map_err(|_| {
+                    error::Error::InvalidInput(
+                        "failed to decode constraint query paths in ZlChildCompact",
+                    )
+                })?;
+
+                let total_value_bytes = values_bytes.len();
+                let elem_bytes = BE::ELEMENT_BYTES;
+
+                let denom = num_queries.checked_mul(elem_bytes).ok_or_else(|| {
+                    error::Error::InvalidInput(
+                        "overflow while computing constraint frame width in ZlChildCompact",
+                    )
+                })?;
+
+                if denom == 0 || total_value_bytes % denom != 0 {
+                    return Err(error::Error::InvalidInput(
+                        "constraint_queries byte length is inconsistent with num_queries",
+                    ));
+                }
+
+                let constraint_frame_width = total_value_bytes / denom;
+                if constraint_frame_width == 0 {
+                    return Err(error::Error::InvalidInput(
+                        "constraint frame width inferred from queries must be non-zero",
+                    ));
+                }
+
+                let (constraint_mproof, constraint_table) = cq_clone
+                    .parse::<BE, PoseidonHasher<BE>, MerkleTree<PoseidonHasher<BE>>>(
+                        lde_domain_size,
+                        num_queries,
+                        constraint_frame_width,
+                    )
+                    .map_err(|_| {
+                        error::Error::InvalidInput(
+                            "invalid constraint queries layout in ZlChildCompact",
+                        )
+                    })?;
+
+                let partition_size_constraint =
+                    partition_opts.partition_size::<BE>(constraint_frame_width);
+
+                let mut constraint_leaves = Vec::with_capacity(num_queries);
+                let mut constraint_indexes = Vec::with_capacity(num_queries);
+
+                for (row, &pos) in constraint_table.rows().zip(fs.query_positions.iter()) {
+                    let leaf = hash_row_poseidon(row, partition_size_constraint);
+                    constraint_leaves.push(leaf);
+
+                    let idx = pos as usize;
+                    if idx >= lde_domain_size {
+                        return Err(error::Error::InvalidInput(
+                            "ZlChildCompact.fs_challenges.query_positions contains index outside LDE domain",
+                        ));
+                    }
+
+                    constraint_indexes.push(idx);
+                }
+
+                let constraint_openings = constraint_mproof
+                    .into_openings(&constraint_leaves, &constraint_indexes)
+                    .map_err(|_| {
+                        error::Error::InvalidInput(
+                            "failed to decompress constraint Merkle multiproof in ZlChildCompact",
+                        )
+                    })?;
+
+                let mut constraint_paths = Vec::with_capacity(constraint_openings.len());
+                for (_leaf, siblings) in constraint_openings {
+                    let mut sib_bytes = Vec::with_capacity(siblings.len());
+                    for d in siblings {
+                        let mut bytes = [0u8; 32];
+                        bytes.copy_from_slice(&d.as_bytes());
+                        sib_bytes.push(bytes);
+                    }
+
+                    constraint_paths.push(ZlMerklePath {
+                        siblings: sib_bytes,
+                    });
+                }
+
+                // FRI Merkle paths
+                let folding = fri_opts.folding_factor();
+                if folding != 2 {
+                    return Err(error::Error::InvalidInput(
+                        "ZlChildCompact currently supports only FRI folding factor 2",
+                    ));
+                }
+
+                let num_fri_layers = fri_opts.num_fri_layers(lde_domain_size);
+                let mut fri_layers_paths: Vec<Vec<ZlFriLayerProof>> = Vec::new();
+
+                if num_fri_layers > 0 {
+                    // FRI Merkle path extraction is non-trivial because
+                    // folded query positions and coset indexing are
+                    // derived inside the Winterfell verifier. For now we
+                    // leave `fri_layers` empty and rely on the DEEP
+                    // polynomial remainder and FS challenges for
+                    // aggregation. Full in-AIR FRI path verification
+                    // will be wired in a follow-up change.
+                }
+
+                Some(ZlMerkleProofs {
+                    trace_paths,
+                    constraint_paths,
+                    fri_layers: fri_layers_paths,
+                })
+            }
+        };
 
         Ok(Self {
             suite_id,
@@ -870,4 +774,49 @@ pub fn verify_child_transcript(tx: &ZlChildTranscript) -> error::Result<()> {
     }
 
     Ok(())
+}
+
+fn hash_row_poseidon(row: &[BE], partition_size: usize) -> PoseidonDigest {
+    if partition_size == 0 {
+        // Empty partition falls back to zero digest
+        return PoseidonHasher::<BE>::hash(&[]);
+    }
+
+    let mut digests = Vec::with_capacity(row.len().div_ceil(partition_size));
+
+    for chunk in row.chunks(partition_size) {
+        let d = PoseidonHasher::<BE>::hash_elements(chunk);
+        digests.push(d);
+    }
+
+    // Fold partitions with Poseidon hasher
+    // in the same way as Winterfell verifier
+    // does when building Merkle leaves
+    // from wide rows.
+    if digests.len() == 1 {
+        digests[0]
+    } else {
+        PoseidonHasher::<BE>::merge_many(&digests)
+    }
+}
+
+fn fri_fold_positions(positions: &[usize], domain_size: usize, folding: usize) -> Vec<usize> {
+    if folding == 0 || domain_size == 0 {
+        return Vec::new();
+    }
+
+    let stride = folding;
+    let mut folded = Vec::with_capacity(positions.len());
+
+    for &pos in positions {
+        let idx = pos / stride;
+        if idx < domain_size / stride {
+            folded.push(idx);
+        }
+    }
+
+    folded.sort_unstable();
+    folded.dedup();
+
+    folded
 }
