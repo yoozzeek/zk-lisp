@@ -7,145 +7,235 @@
 //   attribution in copies of this file or substantial
 //   portions of it. See the NOTICE file for details.
 
-//! Poseidon-based Fiat–Shamir helpers for zk-lisp child proofs.
+//! Poseidon-based Fiat–Shamir
+//! helpers for zk-lisp child proofs.
 //!
-//! These helpers define a minimal FS transcript over
-//! `suite_id`, step digest and commitment roots which
-//! will later be re-implemented inside `ZlAggAir` so
-//! that STARK-in-STARK aggregation does not rely on the
-//! host.
+//! Historically this module implemented a custom Poseidon-based FS
+//! transcript over `suite_id`, step digest and commitment roots. For
+//! aggregation, we now also provide `replay_fs_from_step` which
+//! reconstructs the exact sequence of Fiat–Shamir challenges as seen
+//! by the Winterfell verifier using `DefaultRandomCoin`.
 
+use crate::AirPublicInputs;
 use crate::agg_child::ZlFsChallenges;
-use crate::poseidon;
-use crate::utils;
+use crate::air::ZkLispAir;
+use crate::poseidon_hasher::PoseidonHasher;
+use crate::zl_step::ZlStepProof;
 
-use std::collections::BTreeSet;
+use winterfell::Air;
+use winterfell::crypto::{DefaultRandomCoin, ElementHasher, RandomCoin};
+use winterfell::math::ToElements;
 use winterfell::math::fields::f128::BaseElement as BE;
+use zk_lisp_proof::error;
 
-/// Derive Poseidon-based FS challenges for a child
-/// step from its suite id, step digest, metadata,
-/// domain size and FRI roots.
-pub fn derive_fs_challenges(
-    suite_id: &[u8; 32],
-    step_digest: &[u8; 32],
-    meta: &crate::zl_step::StepMeta,
-    n: usize,
-    q: usize,
-    fri_roots: &[[u8; 32]],
-) -> ZlFsChallenges {
-    let seed_q = fs_seed_q(suite_id, step_digest, meta);
-    let deep_coeffs = fs_deep_coeffs(suite_id, seed_q);
-    let fri_alphas = fs_fri_alphas(suite_id, seed_q, fri_roots);
-    let query_positions = fs_generate_indices(suite_id, seed_q, n, q);
+/// Replay Fiat–Shamir challenges for
+/// a zk-lisp step proof by mirroring
+/// Winterfell's verifier transcript
+/// (DefaultRandomCoin + VerifierChannel).
+///
+/// This function derives the public coin seed
+/// from the proof context and AIR public inputs,
+/// then applies the same reseeding and draw sequence
+/// as `winter_verifier::perform_verification` up to
+/// the point where FRI verification starts.
+/// The resulting `ZlFsChallenges` can be used by the
+/// aggregation layer as a single source of randomness
+/// consistent with both the original prover and verifier.
+pub fn replay_fs_from_step(step: &ZlStepProof) -> error::Result<ZlFsChallenges> {
+    let wf_proof = &step.proof.inner;
 
-    // Single OOD point derived from seed_q;
-    // if future AIRs require multiple points,
-    // this can be extended to a sequence.
-    let z_ood = fs_ood_point(suite_id, seed_q);
+    // Rebuild AIR public inputs for this proof instance.
+    let air_pi = AirPublicInputs {
+        core: step.pi_core.clone(),
+        rom_acc: step.rom_acc,
+    };
 
-    ZlFsChallenges {
+    // Seed for the public coin:
+    // proof context elements + AIR public inputs,
+    // exactly as in winter_verifier::verify.
+    let mut seed_elems = wf_proof.context.to_elements();
+    let mut pi_elems = air_pi.to_elements();
+    seed_elems.append(&mut pi_elems);
+
+    let mut coin = DefaultRandomCoin::<PoseidonHasher<BE>>::new(&seed_elems);
+
+    // Instantiate AIR for this proof
+    // instance so that auxiliary randomness
+    // and DEEP coefficients are drawn
+    // in the same way as inside the verifier.
+    let trace_info = wf_proof.trace_info().clone();
+    let options = wf_proof.options().clone();
+    let air = ZkLispAir::new(trace_info, air_pi, options.clone());
+
+    // Parse commitments into
+    // trace / constraint / FRI roots using the
+    // same layout as Winterfell prover/verifier.
+    let num_trace_segments = air.trace_info().num_segments();
+    let lde_domain_size = wf_proof.lde_domain_size();
+    let fri_opts = options.to_fri_options();
+    let num_fri_layers = fri_opts.num_fri_layers(lde_domain_size);
+
+    let commitments = wf_proof
+        .commitments
+        .clone()
+        .parse::<PoseidonHasher<BE>>(num_trace_segments, num_fri_layers)
+        .map_err(|_| {
+            error::Error::InvalidInput("invalid Winterfell commitments layout in FS replay")
+        })?;
+
+    let (trace_roots_h, constraint_root_h, fri_roots_h) = commitments;
+    if trace_roots_h.is_empty() {
+        return Err(error::Error::InvalidInput(
+            "FS replay requires at least one trace commitment root",
+        ));
+    }
+
+    // 1) Trace commitments and auxiliary randomness
+    // ---------------------------------------------
+    // Match winter_verifier::perform_verification:
+    // reseed with main trace commitment, draw
+    // auxiliary random elements if the trace is
+    // multi-segment, then reseed with auxiliary
+    // trace commitment.
+    coin.reseed(trace_roots_h[0]);
+
+    if air.trace_info().is_multi_segment() {
+        if trace_roots_h.len() < 2 {
+            return Err(error::Error::InvalidInput(
+                "multi-segment trace must provide at least two trace commitments",
+            ));
+        }
+
+        // Auxiliary randomness is not used
+        // directly here but consumes
+        // coin state exactly as in the verifier.
+        let _aux_rand = air
+            .get_aux_rand_elements::<BE, DefaultRandomCoin<PoseidonHasher<BE>>>(&mut coin)
+            .map_err(|_| {
+                error::Error::InvalidInput(
+                    "failed to draw auxiliary random elements during FS replay",
+                )
+            })?;
+
+        coin.reseed(trace_roots_h[1]);
+    }
+
+    // 2) Constraint commitment and OOD point
+    // --------------------------------------
+    coin.reseed(constraint_root_h);
+
+    let z_ood: BE = coin
+        .draw()
+        .map_err(|_| error::Error::InvalidInput("failed to draw OOD point in FS replay"))?;
+
+    // 3) OOD evaluations and reseeding with their hash
+    // -----------------------------------------------
+    let main_width = air.trace_info().main_trace_width();
+    let aux_width = air.trace_info().aux_segment_width();
+    let constraint_frame_width = air.context().num_constraint_composition_columns();
+
+    let (trace_ood_frame, quotient_ood_frame) = wf_proof
+        .ood_frame
+        .clone()
+        .parse::<BE>(main_width, aux_width, constraint_frame_width)
+        .map_err(|_| error::Error::InvalidInput("invalid OOD frame layout in FS replay"))?;
+
+    // Inline merge_ood_evaluations:
+    // current(z) || quotient(z) || next(zg) || quotient(zg).
+    let mut current_row = trace_ood_frame.current_row().to_vec();
+    current_row.extend_from_slice(quotient_ood_frame.current_row());
+
+    let mut next_row = trace_ood_frame.next_row().to_vec();
+    next_row.extend_from_slice(quotient_ood_frame.next_row());
+
+    let mut ood_evals = current_row;
+    ood_evals.extend_from_slice(&next_row);
+
+    let ood_digest = PoseidonHasher::<BE>::hash_elements(&ood_evals);
+    coin.reseed(ood_digest);
+
+    // 4) DEEP composition coefficients
+    // --------------------------------
+    let deep = air
+        .get_deep_composition_coefficients::<BE, DefaultRandomCoin<PoseidonHasher<BE>>>(&mut coin)
+        .map_err(|_| {
+            error::Error::InvalidInput("failed to draw DEEP composition coefficients in FS replay")
+        })?;
+
+    let mut deep_coeffs = Vec::with_capacity(deep.trace.len() + deep.constraints.len());
+    deep_coeffs.extend(deep.trace.iter().copied());
+    deep_coeffs.extend(deep.constraints.iter().copied());
+
+    // 5) FRI layer alphas
+    // --------------------
+    // Mirror FriVerifier::new: reseed the coin with
+    // every FRI commitment (including the remainder commitment)
+    // and draw an alpha per commitment. The last alpha is not
+    // used by the verifier but participates in the transcript
+    // and thus must be included here to keep the public coin state in sync.
+    let mut fri_alphas = Vec::with_capacity(fri_roots_h.len());
+    let mut max_degree_plus_1 = air.trace_poly_degree() + 1;
+
+    for (depth, root) in fri_roots_h.iter().enumerate() {
+        coin.reseed(*root);
+        let alpha: BE = coin
+            .draw()
+            .map_err(|_| error::Error::InvalidInput("failed to draw FRI alpha in FS replay"))?;
+        fri_alphas.push(alpha);
+
+        if depth != fri_roots_h.len() - 1
+            && !max_degree_plus_1.is_multiple_of(fri_opts.folding_factor())
+        {
+            return Err(error::Error::InvalidInput(
+                "FRI degree truncation detected while replaying FS challenges",
+            ));
+        }
+        max_degree_plus_1 /= fri_opts.folding_factor();
+    }
+
+    // 6) Query positions and PoW nonce
+    // --------------------------------
+    let pow_nonce = wf_proof.pow_nonce;
+    let grinding_factor = air.options().grinding_factor();
+
+    // Verify that the PoW nonce satisfies the grinding factor, just like
+    // the verifier does.
+    if coin.check_leading_zeros(pow_nonce) < grinding_factor {
+        return Err(error::Error::InvalidInput(
+            "pow_nonce does not satisfy grinding factor in FS replay",
+        ));
+    }
+
+    let num_queries = air.options().num_queries();
+    let lde_domain_size_air = air.lde_domain_size();
+    let lde_domain_size_proof = wf_proof.lde_domain_size();
+
+    if lde_domain_size_air != lde_domain_size_proof {
+        return Err(error::Error::InvalidInput(
+            "lde_domain_size mismatch between AIR and proof in FS replay",
+        ));
+    }
+
+    let mut positions = coin
+        .draw_integers(num_queries, lde_domain_size_air, pow_nonce)
+        .map_err(|_| error::Error::InvalidInput("failed to draw query positions in FS replay"))?;
+
+    positions.sort_unstable();
+    positions.dedup();
+
+    let num_unique_queries = wf_proof.num_unique_queries as usize;
+    if positions.len() != num_unique_queries {
+        return Err(error::Error::InvalidInput(
+            "unique query positions count does not match proof.num_unique_queries",
+        ));
+    }
+
+    let query_positions = positions.into_iter().map(|p| p as u32).collect();
+
+    Ok(ZlFsChallenges {
         ood_points: vec![z_ood],
         deep_coeffs,
         fri_alphas,
         query_positions,
-    }
-}
-
-/// Seed for query/FRI challenges derived
-/// from the step digest and metadata.
-fn fs_seed_q(suite_id: &[u8; 32], step_digest: &[u8; 32], meta: &crate::zl_step::StepMeta) -> BE {
-    let mut meta_bytes = Vec::with_capacity(4 * 6 + 8);
-    meta_bytes.extend_from_slice(&meta.m.to_le_bytes());
-    meta_bytes.extend_from_slice(&meta.rho.to_le_bytes());
-    meta_bytes.extend_from_slice(&meta.q.to_le_bytes());
-    meta_bytes.extend_from_slice(&meta.o.to_le_bytes());
-    meta_bytes.extend_from_slice(&meta.lambda.to_le_bytes());
-    meta_bytes.extend_from_slice(&meta.pi_len.to_le_bytes());
-    meta_bytes.extend_from_slice(&meta.v_units.to_le_bytes());
-
-    let seed_meta = poseidon::poseidon_ro_parts(suite_id, "zkl/fs/meta", &[&meta_bytes[..]]);
-
-    let seed_q = poseidon::poseidon_ro_parts(
-        suite_id,
-        "zkl/fs/seed_q",
-        &[&utils::fe_to_bytes_fold(seed_meta)[..], step_digest],
-    );
-
-    seed_q
-}
-
-/// Derive DEEP/composition coefficients
-/// (α, β, γ) from the seed.
-fn fs_deep_coeffs(suite_id: &[u8; 32], seed_q: BE) -> Vec<BE> {
-    let seed_b = utils::fe_to_bytes_fold(seed_q);
-
-    let alpha = poseidon::poseidon_ro_parts(suite_id, "zkl/fs/alpha", &[&seed_b[..]]);
-    let alpha_b = utils::fe_to_bytes_fold(alpha);
-
-    let beta = poseidon::poseidon_ro_parts(suite_id, "zkl/fs/beta", &[&alpha_b[..]]);
-    let beta_b = utils::fe_to_bytes_fold(beta);
-
-    let gamma = poseidon::poseidon_ro_parts(suite_id, "zkl/fs/gamma", &[&beta_b[..]]);
-
-    vec![alpha, beta, gamma]
-}
-
-/// Derive per-layer FRI folding challenges
-/// from FRI commitment roots and the seed.
-fn fs_fri_alphas(suite_id: &[u8; 32], seed_q: BE, fri_roots: &[[u8; 32]]) -> Vec<BE> {
-    let mut alphas = Vec::with_capacity(fri_roots.len());
-    let mut state = seed_q;
-
-    for r in fri_roots {
-        let sb = utils::fe_to_bytes_fold(state);
-        let t = poseidon::poseidon_ro_parts(suite_id, "zkl/fs/fri/alpha_state", &[&sb[..], &r[..]]);
-
-        let alpha = poseidon::poseidon_ro_parts(
-            suite_id,
-            "zkl/fs/fri/alpha",
-            &[&utils::fe_to_bytes_fold(t)[..]],
-        );
-
-        alphas.push(alpha);
-        state = t;
-    }
-
-    alphas
-}
-
-/// Derive a single OOD evaluation point from the seed.
-fn fs_ood_point(suite_id: &[u8; 32], seed_q: BE) -> BE {
-    let seed_b = utils::fe_to_bytes_fold(seed_q);
-    poseidon::poseidon_ro_parts(suite_id, "zkl/fs/ood", &[&seed_b[..]])
-}
-
-/// Deterministically sample `q` distinct indices
-/// without replacement from [0, n).
-fn fs_generate_indices(suite_id: &[u8; 32], seed: BE, n: usize, q: usize) -> Vec<u32> {
-    let mut out = Vec::with_capacity(q);
-    let mut seen: BTreeSet<u32> = BTreeSet::new();
-    let mut ctr: u64 = 0;
-
-    if n == 0 {
-        return out;
-    }
-
-    while out.len() < q {
-        let t = poseidon::poseidon_hash_two_lanes(suite_id, seed, BE::from(ctr));
-        let tb = utils::fe_to_bytes_fold(t);
-
-        let mut le8 = [0u8; 8];
-        le8.copy_from_slice(&tb[..8]);
-
-        let v = u64::from_le_bytes(le8);
-        let idx = (v % (n as u64)) as u32;
-
-        ctr = ctr.wrapping_add(1);
-
-        if seen.insert(idx) {
-            out.push(idx);
-        }
-    }
-
-    out
+    })
 }

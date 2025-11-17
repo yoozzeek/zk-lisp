@@ -27,6 +27,16 @@ pub struct AggColumns {
     /// Accumulator of v_next = v0 + r * v1.
     pub vnext_sum: usize,
 
+    /// Per-child FRI layer-0 v0 contribution,
+    /// non-zero only on rows where `seg_first == 1`.
+    pub fri_v0_child: usize,
+    /// Per-child FRI layer-0 v1 contribution,
+    /// non-zero only on rows where `seg_first == 1`.
+    pub fri_v1_child: usize,
+    /// Per-child FRI layer-0 v_next contribution,
+    /// non-zero only on rows where `seg_first == 1`.
+    pub fri_vnext_child: usize,
+
     /// Aggregated AIR composition value.
     pub comp_sum: usize,
     /// Aggregated alpha-part divided by Z_m.
@@ -74,7 +84,11 @@ impl AggColumns {
         let v1_sum = v0_sum + 1;
         let vnext_sum = v1_sum + 1;
 
-        let comp_sum = vnext_sum + 1;
+        let fri_v0_child = vnext_sum + 1;
+        let fri_v1_child = fri_v0_child + 1;
+        let fri_vnext_child = fri_v1_child + 1;
+
+        let comp_sum = fri_vnext_child + 1;
         let alpha_div_zm_sum = comp_sum + 1;
         let map_l0_sum = alpha_div_zm_sum + 1;
         let final_llast_sum = map_l0_sum + 1;
@@ -99,6 +113,9 @@ impl AggColumns {
             v0_sum,
             v1_sum,
             vnext_sum,
+            fri_v0_child,
+            fri_v1_child,
+            fri_vnext_child,
             comp_sum,
             alpha_div_zm_sum,
             map_l0_sum,

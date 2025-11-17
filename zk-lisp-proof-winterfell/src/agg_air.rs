@@ -79,13 +79,26 @@ impl Air for ZlAggAir {
         let trace_len = info.length();
         assert!(trace_len > 0, "AggTrace must contain at least one row");
 
-        // For the initial skeleton we expose three constraints:
+        // For the initial skeleton we expose eleven constraints:
         // C0: ok == 0 on all rows;
         // C1: work accumulator chain gated to non-last rows.
         // C2: trace_root_err must be zero on all rows.
+        // C3: fri_root_err must be zero on all rows.
+        // C4–C7: FS challenges (r, alpha, beta, gamma) are constant
+        //        across the trace (and thus per segment).
+        // C8–C10: FRI layer-0 accumulators v0_sum, v1_sum and
+        //         vnext_sum form a gated chain over child segments.
         let degrees = vec![
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(2, vec![trace_len]),
+            TransitionConstraintDegree::new(1),
+            TransitionConstraintDegree::new(1),
+            TransitionConstraintDegree::new(1),
+            TransitionConstraintDegree::new(1),
+            TransitionConstraintDegree::new(1),
+            TransitionConstraintDegree::new(1),
+            TransitionConstraintDegree::new(1),
+            TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::new(1),
         ];
 
@@ -115,7 +128,7 @@ impl Air for ZlAggAir {
     ) where
         E: FieldElement<BaseField = Self::BaseField> + From<Self::BaseField>,
     {
-        debug_assert_eq!(result.len(), 3);
+        debug_assert_eq!(result.len(), 11);
         debug_assert_eq!(periodic_values.len(), 1);
 
         let cols = &self.cols;
@@ -128,6 +141,27 @@ impl Air for ZlAggAir {
         let v_child = current[cols.v_units_child];
         let seg_first = current[cols.seg_first];
         let trace_root_err = current[cols.trace_root_err];
+        let fri_root_err = current[cols.fri_root_err];
+
+        let r = current[cols.r];
+        let r_next = next[cols.r];
+        let alpha = current[cols.alpha];
+        let alpha_next = next[cols.alpha];
+        let beta = current[cols.beta];
+        let beta_next = next[cols.beta];
+        let gamma = current[cols.gamma];
+        let gamma_next = next[cols.gamma];
+
+        let v0_sum = current[cols.v0_sum];
+        let v0_sum_next = next[cols.v0_sum];
+        let v1_sum = current[cols.v1_sum];
+        let v1_sum_next = next[cols.v1_sum];
+        let vnext_sum = current[cols.vnext_sum];
+        let vnext_sum_next = next[cols.vnext_sum];
+
+        let fri_v0_child = current[cols.fri_v0_child];
+        let fri_v1_child = current[cols.fri_v1_child];
+        let fri_vnext_child = current[cols.fri_vnext_child];
 
         let is_last = periodic_values[0];
         let not_last = E::ONE - is_last;
@@ -148,6 +182,26 @@ impl Air for ZlAggAir {
         // `expected_root - actual_root` on the first row of
         // each child segment and zeros elsewhere.
         result[2] = trace_root_err;
+
+        // C3: FRI-root error column must also be identically
+        // zero. Once FRI Merkle paths are wired, the trace
+        // builder will populate this column with
+        // `expected_root - actual_root` on segment boundaries.
+        result[3] = fri_root_err;
+
+        // C4–C7: FS challenges must be constant across the
+        // trace (and thus per child segment).
+        result[4] = not_last * (r_next - r);
+        result[5] = not_last * (alpha_next - alpha);
+        result[6] = not_last * (beta_next - beta);
+        result[7] = not_last * (gamma_next - gamma);
+
+        // C8–C10: FRI layer-0 accumulators follow a gated
+        // chain over child segments. In the current skeleton
+        // fri_v*_child are zero, so the sums stay constant.
+        result[8] = not_last * (v0_sum_next - (v0_sum + fri_v0_child * seg_first));
+        result[9] = not_last * (v1_sum_next - (v1_sum + fri_v1_child * seg_first));
+        result[10] = not_last * (vnext_sum_next - (vnext_sum + fri_vnext_child * seg_first));
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {

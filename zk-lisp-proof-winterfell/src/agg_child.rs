@@ -17,13 +17,12 @@
 
 use crate::fs as fs_helpers;
 use crate::poseidon;
-use crate::poseidon_hasher::{PoseidonDigest, PoseidonHasher};
+use crate::poseidon_hasher::PoseidonHasher;
 use crate::utils;
 use crate::zl_step::{StepMeta, ZlStepProof};
 
 use blake3::Hasher as Blake3Hasher;
-use winter_utils::{Deserializable, Serializable, SliceReader};
-use winterfell::crypto::{Digest, ElementHasher, MerkleTree};
+use winterfell::crypto::{Digest, MerkleTree};
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_proof::error;
@@ -224,28 +223,14 @@ impl ZlChildCompact {
 
         let pow_nonce = wf_proof.pow_nonce;
 
-        // Derive Poseidon-based FS challenges
-        // from suite id, metadata, step digest
-        // and commitment roots. For query indices
-        // we align the FS generator with the actual
-        // number of unique queries recorded in the
-        // Winterfell proof context.
-        let fs_challenges = {
-            let n = (meta.m as usize).saturating_mul(meta.rho as usize);
-            let q = num_queries;
-
-            if n == 0 || q == 0 {
-                None
-            } else {
-                Some(fs_helpers::derive_fs_challenges(
-                    &suite_id,
-                    &step_digest,
-                    &meta,
-                    n,
-                    q,
-                    &fri_roots,
-                ))
-            }
+        // Replay FS challenges exactly as seen by Winterfell verifier.
+        // This provides a single source of randomness for aggregation
+        // which is bit-for-bit consistent with the underlying child
+        // proof transcript.
+        let fs_challenges = if num_queries == 0 {
+            None
+        } else {
+            Some(fs_helpers::replay_fs_from_step(step)?)
         };
 
         // Extract Merkle authentication data for trace,
@@ -796,9 +781,10 @@ pub fn children_root_from_compact(suite_id: &[u8; 32], children: &[ZlChildCompac
 /// rejected early instead of propagating further into
 /// aggregation logic.
 pub fn verify_child_transcript(tx: &ZlChildTranscript) -> error::Result<()> {
-    // Recompute the Blake3 commitment root over trace and
-    // FRI commitments and compare it against the compact
-    // view embedded into `ZlChildCompact`.
+    // Recompute the Blake3 commitment root over
+    // trace and FRI commitments and compare it
+    // against the compact view embedded
+    // into `ZlChildCompact`.
     let mut h = Blake3Hasher::new();
     h.update(b"zkl/step/root_trace");
     h.update(&tx.compact.suite_id);
@@ -823,9 +809,10 @@ pub fn verify_child_transcript(tx: &ZlChildTranscript) -> error::Result<()> {
         ));
     }
 
-    // Enforce basic shape invariants for openings and FRI
-    // layers. These checks deliberately stay coarse and
-    // avoid depending on backend internals.
+    // Enforce basic shape invariants for
+    // openings and FRI layers. These checks
+    // deliberately stay coarse and avoid
+    // depending on backend internals.
     let num_q = tx.num_queries as usize;
 
     if num_q == 0 {
@@ -865,8 +852,9 @@ pub fn verify_child_transcript(tx: &ZlChildTranscript) -> error::Result<()> {
         }
     }
 
-    // FRI remainder polynomial must be non-empty and its
-    // reported degree must not exceed coeffs.len() - 1.
+    // FRI remainder polynomial must be
+    // non-empty and its reported degree
+    // must not exceed coeffs.len() - 1.
     let coeffs_len = tx.fri_final.coeffs.len();
     if coeffs_len == 0 {
         return Err(error::Error::InvalidInput(
@@ -882,51 +870,4 @@ pub fn verify_child_transcript(tx: &ZlChildTranscript) -> error::Result<()> {
     }
 
     Ok(())
-}
-
-/// NOTE: This helper mirrors the hash_row logic from winter-verifier
-/// (MIT-licensed, see third-party notices) specialized to PoseidonHasher<BE>.
-///
-/// Hash a single trace row into a Poseidon leaf
-/// using the same partitioning semantics as
-/// Winterfell verifier.
-fn hash_row_poseidon(row: &[BE], partition_size: usize) -> PoseidonDigest {
-    if partition_size == row.len() {
-        PoseidonHasher::<BE>::hash_elements(row)
-    } else {
-        let num_partitions = row.len().div_ceil(partition_size);
-        let mut buffer = vec![PoseidonDigest::default(); num_partitions];
-
-        row.chunks(partition_size)
-            .zip(buffer.iter_mut())
-            .for_each(|(chunk, buf)| *buf = PoseidonHasher::<BE>::hash_elements(chunk));
-
-        <PoseidonHasher<BE> as winterfell::crypto::Hasher>::merge_many(&buffer)
-    }
-}
-
-/// NOTE: This helper mirrors winter_fri::folding::fold_positions
-/// (MIT-licensed, see third-party notices).
-///
-/// Local copy of FRI position folding used by Winterfell's FRI
-/// prover and verifier. This maps positions in the source domain
-/// to positions in the folded domain by reducing modulo the
-/// folded domain size and removing duplicates while preserving
-/// order.
-fn fri_fold_positions(
-    positions: &[usize],
-    source_domain_size: usize,
-    folding_factor: usize,
-) -> Vec<usize> {
-    let target_domain_size = source_domain_size / folding_factor;
-
-    let mut result = Vec::new();
-    for position in positions {
-        let position = position % target_domain_size;
-        if !result.contains(&position) {
-            result.push(position);
-        }
-    }
-
-    result
 }

@@ -151,6 +151,16 @@ pub fn build_agg_trace(
     let mut row = 0usize;
     let mut v_acc = BE::from(0u64);
 
+    // Global FRI layer-0 accumulators.
+    // In the current skeleton they stay
+    // at zero, but the layout and transition
+    // constraints are wired so that future
+    // child-level contributions can be added at
+    // segment boundaries.
+    let fri_v0_sum = BE::ZERO;
+    let fri_v1_sum = BE::ZERO;
+    let fri_vnext_sum = BE::ZERO;
+
     for (i, child) in children.iter().enumerate() {
         let m = agg_pi.children_ms[i] as usize;
         let v_child_fe = BE::from(child.meta.v_units);
@@ -172,12 +182,34 @@ pub fn build_agg_trace(
                 trace.set(cols.v_units_child, cur_row, v_child_fe);
                 trace.set(cols.v_units_acc, cur_row, v_acc);
                 trace.set(cols.trace_root_err, cur_row, BE::ZERO);
+                trace.set(cols.fri_root_err, cur_row, BE::ZERO);
+
+                // Skeleton: no per-child FRI contributions
+                // yet, keep child-level deltas at zero.
+                trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
+                trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
+                trace.set(cols.fri_vnext_child, cur_row, BE::ZERO);
+
+                // Global FRI accumulators currently stay
+                // constant at zero.
+                trace.set(cols.v0_sum, cur_row, fri_v0_sum);
+                trace.set(cols.v1_sum, cur_row, fri_v1_sum);
+                trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
 
                 v_acc += v_child_fe;
             } else {
                 trace.set(cols.v_units_child, cur_row, BE::ZERO);
                 trace.set(cols.v_units_acc, cur_row, v_acc);
                 trace.set(cols.trace_root_err, cur_row, BE::ZERO);
+                trace.set(cols.fri_root_err, cur_row, BE::ZERO);
+
+                trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
+                trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
+                trace.set(cols.fri_vnext_child, cur_row, BE::ZERO);
+
+                trace.set(cols.v0_sum, cur_row, fri_v0_sum);
+                trace.set(cols.v1_sum, cur_row, fri_v1_sum);
+                trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
             }
 
             // ok and other composition-related columns
@@ -190,12 +222,21 @@ pub fn build_agg_trace(
     // Padding rows (if any):
     // keep accumulator constant and
     // disable seg_first, v_units_child
-    // and trace_root_err.
+    // and trace_root_err / fri_root_err.
     for cur_row in row..n_rows {
         trace.set(cols.seg_first, cur_row, BE::ZERO);
         trace.set(cols.v_units_child, cur_row, BE::ZERO);
         trace.set(cols.v_units_acc, cur_row, v_acc);
         trace.set(cols.trace_root_err, cur_row, BE::ZERO);
+        trace.set(cols.fri_root_err, cur_row, BE::ZERO);
+
+        trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
+        trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
+        trace.set(cols.fri_vnext_child, cur_row, BE::ZERO);
+
+        trace.set(cols.v0_sum, cur_row, fri_v0_sum);
+        trace.set(cols.v1_sum, cur_row, fri_v1_sum);
+        trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
     }
 
     Ok(AggTrace::new(trace, cols))
