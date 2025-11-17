@@ -16,10 +16,12 @@
 //! `AggAirPublicInputs::v_units_total`.
 
 use crate::agg_air::AggAirPublicInputs;
-use crate::agg_child::{ZlChildCompact, children_root_from_compact};
+use crate::agg_child::{ZlChildCompact, children_root_from_compact, merkle_root_from_leaf};
 use crate::agg_layout::AggColumns;
+use crate::utils;
 
 use winterfell::TraceTable;
+use winterfell::crypto::Digest as CryptoDigest;
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_proof::error;
@@ -195,6 +197,62 @@ pub fn build_agg_trace(
         let m = agg_pi.children_ms[i] as usize;
         let v_child_fe = BE::from(child.meta.v_units);
 
+        // Aggregate Merkle root errors for trace and constraint
+        // commitments for this child. When Fiat–Shamir challenges
+        // or Merkle proofs are missing (e.g. for synthetic children
+        // in tests or zero-query profiles), we keep the errors at
+        // zero so that the AIR does not enforce Merkle binding.
+        let mut trace_root_err_fe = BE::ZERO;
+        let mut constraint_root_err_fe = BE::ZERO;
+
+        if let (Some(fs), Some(merkle)) = (&child.fs_challenges, &child.merkle_proofs) {
+            let num_q = fs.query_positions.len();
+
+            if num_q != merkle.trace_paths.len() || num_q != merkle.constraint_paths.len() {
+                return Err(error::Error::InvalidInput(
+                    "ZlChildCompact.merkle_proofs path lengths are inconsistent with fs_challenges",
+                ));
+            }
+
+            if num_q > 0 {
+                if child.trace_roots.is_empty() {
+                    return Err(error::Error::InvalidInput(
+                        "ZlChildCompact.trace_roots must be non-empty when Merkle proofs are present",
+                    ));
+                }
+
+                let trace_root_expected_fe = utils::fold_bytes32_to_fe(&child.trace_roots[0]);
+                let constraint_root_expected_fe = utils::fold_bytes32_to_fe(&child.constraint_root);
+
+                let lde_domain_size = (child.meta.m as usize)
+                    .checked_mul(child.meta.rho as usize)
+                    .ok_or(error::Error::InvalidInput(
+                        "AggTrace LDE domain size overflow when checking Merkle paths",
+                    ))?;
+
+                for (k, &pos) in fs.query_positions.iter().enumerate() {
+                    let idx = pos as usize;
+                    if idx >= lde_domain_size {
+                        return Err(error::Error::InvalidInput(
+                            "AggTrace encountered an FS query position outside LDE domain",
+                        ));
+                    }
+
+                    let t_path = &merkle.trace_paths[k];
+                    let c_path = &merkle.constraint_paths[k];
+
+                    let t_root = merkle_root_from_leaf(&t_path.leaf, idx, &t_path.siblings);
+                    let c_root = merkle_root_from_leaf(&c_path.leaf, idx, &c_path.siblings);
+
+                    let t_root_fe = utils::fold_bytes32_to_fe(&t_root.as_bytes());
+                    let c_root_fe = utils::fold_bytes32_to_fe(&c_root.as_bytes());
+
+                    trace_root_err_fe += t_root_fe - trace_root_expected_fe;
+                    constraint_root_err_fe += c_root_fe - constraint_root_expected_fe;
+                }
+            }
+        }
+
         for r in 0..m {
             let cur_row = row + r;
             let is_first = r == 0;
@@ -212,8 +270,8 @@ pub fn build_agg_trace(
                 trace.set(cols.v_units_child, cur_row, v_child_fe);
                 trace.set(cols.v_units_acc, cur_row, v_acc);
                 trace.set(cols.child_count_acc, cur_row, child_count_acc);
-                trace.set(cols.trace_root_err, cur_row, BE::ZERO);
-                trace.set(cols.fri_root_err, cur_row, BE::ZERO);
+                trace.set(cols.trace_root_err, cur_row, trace_root_err_fe);
+                trace.set(cols.constraint_root_err, cur_row, constraint_root_err_fe);
 
                 // Skeleton: no per-child FRI contributions
                 // yet, keep child-level deltas at zero.
@@ -234,7 +292,7 @@ pub fn build_agg_trace(
                 trace.set(cols.v_units_acc, cur_row, v_acc);
                 trace.set(cols.child_count_acc, cur_row, child_count_acc);
                 trace.set(cols.trace_root_err, cur_row, BE::ZERO);
-                trace.set(cols.fri_root_err, cur_row, BE::ZERO);
+                trace.set(cols.constraint_root_err, cur_row, BE::ZERO);
 
                 trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
                 trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
@@ -262,7 +320,7 @@ pub fn build_agg_trace(
         trace.set(cols.v_units_acc, cur_row, v_acc);
         trace.set(cols.child_count_acc, cur_row, child_count_acc);
         trace.set(cols.trace_root_err, cur_row, BE::ZERO);
-        trace.set(cols.fri_root_err, cur_row, BE::ZERO);
+        trace.set(cols.constraint_root_err, cur_row, BE::ZERO);
 
         trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
         trace.set(cols.fri_v1_child, cur_row, BE::ZERO);

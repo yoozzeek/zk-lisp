@@ -122,30 +122,25 @@ pub struct AggQueryProfile {
 
 impl ToElements<BE> for AggAirPublicInputs {
     fn to_elements(&self) -> Vec<BE> {
-        let mut out = Vec::new();
-        out.push(utils::fold_bytes32_to_fe(&self.children_root));
-        out.push(utils::fold_bytes32_to_fe(&self.batch_id));
-
-        out.push(BE::from(self.profile_meta.m));
-        out.push(BE::from(self.profile_meta.rho as u64));
-        out.push(BE::from(self.profile_meta.q as u64));
-        out.push(BE::from(self.profile_meta.o as u64));
-        out.push(BE::from(self.profile_meta.lambda as u64));
-        out.push(BE::from(self.profile_meta.pi_len));
-        out.push(BE::from(self.profile_meta.v_units));
-
-        out.push(BE::from(self.profile_fri.lde_blowup));
-        out.push(BE::from(self.profile_fri.folding_factor as u64));
-        out.push(BE::from(self.profile_fri.redundancy as u64));
-        out.push(BE::from(self.profile_fri.num_layers as u64));
-
-        out.push(BE::from(self.profile_queries.num_queries as u64));
-        out.push(BE::from(self.profile_queries.grinding_factor));
-
-        out.push(BE::from(self.children_count as u64));
-        out.push(BE::from(self.v_units_total));
-
-        out
+        vec![
+            utils::fold_bytes32_to_fe(&self.children_root),
+            utils::fold_bytes32_to_fe(&self.batch_id),
+            BE::from(self.profile_meta.m),
+            BE::from(self.profile_meta.rho as u64),
+            BE::from(self.profile_meta.q as u64),
+            BE::from(self.profile_meta.o as u64),
+            BE::from(self.profile_meta.lambda as u64),
+            BE::from(self.profile_meta.pi_len),
+            BE::from(self.profile_meta.v_units),
+            BE::from(self.profile_fri.lde_blowup),
+            BE::from(self.profile_fri.folding_factor as u64),
+            BE::from(self.profile_fri.redundancy as u64),
+            BE::from(self.profile_fri.num_layers as u64),
+            BE::from(self.profile_queries.num_queries as u64),
+            BE::from(self.profile_queries.grinding_factor),
+            BE::from(self.children_count as u64),
+            BE::from(self.v_units_total),
+        ]
     }
 }
 
@@ -237,7 +232,7 @@ impl Air for ZlAggAir {
         let v_child = current[cols.v_units_child];
         let seg_first = current[cols.seg_first];
         let trace_root_err = current[cols.trace_root_err];
-        let fri_root_err = current[cols.fri_root_err];
+        let constraint_root_err = current[cols.constraint_root_err];
         let child_count_acc = current[cols.child_count_acc];
         let child_count_acc_next = next[cols.child_count_acc];
 
@@ -281,11 +276,13 @@ impl Air for ZlAggAir {
         // each child segment and zeros elsewhere.
         result[2] = trace_root_err;
 
-        // C3: FRI-root error column must also be identically
-        // zero. Once FRI Merkle paths are wired, the trace
-        // builder will populate this column with
-        // `expected_root - actual_root` on segment boundaries.
-        result[3] = fri_root_err;
+        // C3: constraint-root error column must also be
+        // identically zero. The trace builder populates this
+        // column with an aggregated difference between the
+        // advertised constraint commitment root and roots
+        // reconstructed from Merkle paths at all query
+        // positions.
+        result[3] = constraint_root_err;
 
         // C4–C7: FS challenges must be constant across the
         // trace (and thus per child segment).

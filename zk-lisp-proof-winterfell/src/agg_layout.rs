@@ -60,8 +60,8 @@ pub struct AggColumns {
 
     /// Trace Merkle root mismatch accumulator.
     pub trace_root_err: usize,
-    /// FRI Merkle root mismatch accumulator.
-    pub fri_root_err: usize,
+    /// Constraint Merkle root mismatch accumulator.
+    pub constraint_root_err: usize,
 
     /// Global accumulator over per-child work units.
     pub v_units_acc: usize,
@@ -107,9 +107,9 @@ impl AggColumns {
         let seg_first = gamma + 1;
 
         let trace_root_err = seg_first + 1;
-        let fri_root_err = trace_root_err + 1;
+        let constraint_root_err = trace_root_err + 1;
 
-        let v_units_acc = fri_root_err + 1;
+        let v_units_acc = constraint_root_err + 1;
         let v_units_child = v_units_acc + 1;
         let child_count_acc = v_units_child + 1;
 
@@ -133,7 +133,7 @@ impl AggColumns {
             gamma,
             seg_first,
             trace_root_err,
-            fri_root_err,
+            constraint_root_err,
             v_units_acc,
             v_units_child,
             child_count_acc,

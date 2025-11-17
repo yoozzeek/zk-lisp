@@ -17,10 +17,13 @@ use winterfell::matrix::ColMatrix;
 use winterfell::{
     AcceptableOptions, Air, CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
     DefaultConstraintEvaluator, DefaultTraceLde, FieldExtension, PartitionOptions, Proof,
-    ProofOptions, Prover, StarkDomain, TraceInfo, TracePolyTable, TraceTable,
+    ProofOptions, Prover, StarkDomain, Trace, TraceInfo, TracePolyTable, TraceTable,
 };
 
+use zk_lisp_compiler::builder::{Op, ProgramBuilder};
+use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
+use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::agg_air::{
     AggAirPublicInputs, AggFriProfile, AggProfileMeta, AggQueryProfile, ZlAggAir,
 };
@@ -167,6 +170,32 @@ fn make_children() -> Vec<ZlChildCompact> {
     };
 
     vec![c1, c2]
+}
+
+fn make_step_opts() -> ProverOptions {
+    ProverOptions {
+        min_security_bits: 40,
+        blowup: 8,
+        grind: 8,
+        queries: 8,
+    }
+}
+
+fn build_step_program() -> zk_lisp_compiler::Program {
+    let metrics = zk_lisp_compiler::CompilerMetrics::default();
+    let mut b = ProgramBuilder::new();
+
+    b.push(Op::End);
+
+    b.finalize(metrics).expect("program build must succeed")
+}
+
+fn build_step_public_inputs(
+    program: &zk_lisp_compiler::Program,
+) -> zk_lisp_proof::pi::PublicInputs {
+    PublicInputsBuilder::from_program(program)
+        .build()
+        .expect("pi build")
 }
 
 #[test]
@@ -353,7 +382,7 @@ fn agg_build_rejects_wrong_profile_meta() {
     let children_root = children_root_from_compact(&children[0].suite_id, &children);
 
     // profile_meta.lambda mismatches child.meta.lambda
-    let mut profile_meta = AggProfileMeta {
+    let profile_meta = AggProfileMeta {
         m: children[0].meta.m,
         rho: children[0].meta.rho,
         q: children[0].meta.q,
@@ -449,4 +478,147 @@ fn agg_build_rejects_mixed_suite_id() {
 
     let msg = format!("{err}");
     assert!(msg.contains("suite_id must match suite_id of all children"));
+}
+
+#[test]
+fn agg_merkle_binding_accepts_honest_child() {
+    let program = build_step_program();
+    let pi = build_step_public_inputs(&program);
+    let opts = make_step_opts();
+
+    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let child = ZlChildCompact::from_step(&step).expect("compact child must build");
+    let children = vec![child.clone()];
+
+    let children_root = children_root_from_compact(&child.suite_id, &children);
+
+    let profile_meta = AggProfileMeta {
+        m: child.meta.m,
+        rho: child.meta.rho,
+        q: child.meta.q,
+        o: child.meta.o,
+        lambda: child.meta.lambda,
+        pi_len: child.meta.pi_len,
+        v_units: child.meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: 8,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: 0,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: child.meta.q,
+        grinding_factor: 0,
+    };
+
+    let agg_pi = AggAirPublicInputs {
+        children_root,
+        v_units_total: child.meta.v_units,
+        children_count: 1,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: child.suite_id,
+        children_ms: vec![child.meta.m],
+    };
+
+    let agg_trace =
+        build_agg_trace(&agg_pi, &children).expect("agg trace build must succeed for real child");
+
+    // All Merkle error columns must be zero for an honest child.
+    let cols = agg_trace.cols;
+    let trace = &agg_trace.trace;
+    for r in 0..trace.length() {
+        assert_eq!(trace.get(cols.trace_root_err, r), BE::ZERO);
+        assert_eq!(trace.get(cols.constraint_root_err, r), BE::ZERO);
+    }
+
+    // Prove and verify aggregation AIR with Merkle-bound child.
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+    let proof: Proof = prover
+        .prove(agg_trace.trace.clone())
+        .expect("agg proof must be created for honest child");
+
+    let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+
+    winterfell::verify::<
+        ZlAggAir,
+        PoseidonHasher<BE>,
+        DefaultRandomCoin<PoseidonHasher<BE>>,
+        MerkleTree<PoseidonHasher<BE>>,
+    >(proof, agg_pi, &acceptable)
+    .expect("agg proof with Merkle binding must verify");
+}
+
+#[test]
+fn agg_merkle_binding_rejects_tampered_trace_root() {
+    let program = build_step_program();
+    let pi = build_step_public_inputs(&program);
+    let opts = make_step_opts();
+
+    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let mut child = ZlChildCompact::from_step(&step).expect("compact child must build");
+
+    // Corrupt the first trace root while keeping the aggregate
+    // Blake3 root unchanged. This must be detected by Merkle
+    // binding in the aggregator.
+    if let Some(first) = child.trace_roots.first_mut() {
+        first[0] ^= 1;
+    }
+
+    let children = vec![child.clone()];
+    let children_root = children_root_from_compact(&child.suite_id, &children);
+
+    let profile_meta = AggProfileMeta {
+        m: child.meta.m,
+        rho: child.meta.rho,
+        q: child.meta.q,
+        o: child.meta.o,
+        lambda: child.meta.lambda,
+        pi_len: child.meta.pi_len,
+        v_units: child.meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: 8,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: 0,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: child.meta.q,
+        grinding_factor: 0,
+    };
+
+    let agg_pi = AggAirPublicInputs {
+        children_root,
+        v_units_total: child.meta.v_units,
+        children_count: 1,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: child.suite_id,
+        children_ms: vec![child.meta.m],
+    };
+
+    let agg_trace = build_agg_trace(&agg_pi, &children)
+        .expect("agg trace build must succeed even for tampered child");
+
+    let cols = agg_trace.cols;
+    let trace = &agg_trace.trace;
+
+    // Merkle error for trace root must be non-zero on the
+    // first row of the child segment.
+    assert_ne!(trace.get(cols.trace_root_err, 0), BE::ZERO);
 }

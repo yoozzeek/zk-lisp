@@ -125,13 +125,14 @@ pub struct ZlFsChallenges {
     pub query_positions: Vec<u32>,
 }
 
-/// Simple Merkle path represented by a list of
-/// sibling digests from leaf to root. Direction
-/// at each level is derived from the leaf index
-/// (stored separately) and is not encoded here.
+/// Simple Merkle path represented by a leaf digest
+/// and a list of sibling digests from leaf to root.
+/// Direction at each level is derived from the leaf
+/// index (stored separately) and is not encoded here.
 #[derive(Clone, Debug)]
 pub struct ZlMerklePath {
-    pub siblings: Vec<[u8; 32]>,
+    pub leaf: PoseidonDigest,
+    pub siblings: Vec<PoseidonDigest>,
 }
 
 /// Per-layer FRI Merkle proof for a single leaf
@@ -241,11 +242,9 @@ impl ZlChildCompact {
             if num_queries == 0 {
                 None
             } else {
-                let fs = fs_challenges.as_ref().ok_or_else(|| {
-                    error::Error::InvalidInput(
-                        "ZlChildCompact.fs_challenges must be present when num_queries > 0",
-                    )
-                })?;
+                let fs = fs_challenges.as_ref().ok_or(error::Error::InvalidInput(
+                    "ZlChildCompact.fs_challenges must be present when num_queries > 0",
+                ))?;
 
                 if fs.query_positions.len() != num_queries {
                     return Err(error::Error::InvalidInput(
@@ -304,17 +303,8 @@ impl ZlChildCompact {
                     })?;
 
                 let mut trace_paths = Vec::with_capacity(trace_openings.len());
-                for (_leaf, siblings) in trace_openings {
-                    let mut sib_bytes = Vec::with_capacity(siblings.len());
-                    for d in siblings {
-                        let mut bytes = [0u8; 32];
-                        bytes.copy_from_slice(&d.as_bytes());
-                        sib_bytes.push(bytes);
-                    }
-
-                    trace_paths.push(ZlMerklePath {
-                        siblings: sib_bytes,
-                    });
+                for (leaf, siblings) in trace_openings {
+                    trace_paths.push(ZlMerklePath { leaf, siblings });
                 }
 
                 // Infer constraint frame width from the serialized
@@ -341,11 +331,12 @@ impl ZlChildCompact {
                 let total_value_bytes = values_bytes.len();
                 let elem_bytes = BE::ELEMENT_BYTES;
 
-                let denom = num_queries.checked_mul(elem_bytes).ok_or_else(|| {
-                    error::Error::InvalidInput(
-                        "overflow while computing constraint frame width in ZlChildCompact",
-                    )
-                })?;
+                let denom =
+                    num_queries
+                        .checked_mul(elem_bytes)
+                        .ok_or(error::Error::InvalidInput(
+                            "overflow while computing constraint frame width in ZlChildCompact",
+                        ))?;
 
                 if denom == 0 || total_value_bytes % denom != 0 {
                     return Err(error::Error::InvalidInput(
@@ -401,17 +392,8 @@ impl ZlChildCompact {
                     })?;
 
                 let mut constraint_paths = Vec::with_capacity(constraint_openings.len());
-                for (_leaf, siblings) in constraint_openings {
-                    let mut sib_bytes = Vec::with_capacity(siblings.len());
-                    for d in siblings {
-                        let mut bytes = [0u8; 32];
-                        bytes.copy_from_slice(&d.as_bytes());
-                        sib_bytes.push(bytes);
-                    }
-
-                    constraint_paths.push(ZlMerklePath {
-                        siblings: sib_bytes,
-                    });
+                for (leaf, siblings) in constraint_openings {
+                    constraint_paths.push(ZlMerklePath { leaf, siblings });
                 }
 
                 // FRI Merkle paths
@@ -423,7 +405,7 @@ impl ZlChildCompact {
                 }
 
                 let num_fri_layers = fri_opts.num_fri_layers(lde_domain_size);
-                let mut fri_layers_paths: Vec<Vec<ZlFriLayerProof>> = Vec::new();
+                let fri_layers_paths: Vec<Vec<ZlFriLayerProof>> = Vec::new();
 
                 if num_fri_layers > 0 {
                     // FRI Merkle path extraction is non-trivial because
@@ -800,23 +782,30 @@ fn hash_row_poseidon(row: &[BE], partition_size: usize) -> PoseidonDigest {
     }
 }
 
-fn fri_fold_positions(positions: &[usize], domain_size: usize, folding: usize) -> Vec<usize> {
-    if folding == 0 || domain_size == 0 {
-        return Vec::new();
+/// Recompute a binary Poseidon Merkle root from a leaf
+/// digest, its sibling path and the leaf index.
+///
+/// The path is interpreted from leaf to root; at each
+/// step we use the least-significant bit of `idx` to
+/// decide whether the current accumulator is the left
+/// or right child of the sibling.
+pub fn merkle_root_from_leaf(
+    leaf: &PoseidonDigest,
+    mut idx: usize,
+    siblings: &[PoseidonDigest],
+) -> PoseidonDigest {
+    let mut acc = *leaf;
+
+    for sib in siblings {
+        let pair = if idx & 1 == 0 {
+            [acc, *sib]
+        } else {
+            [*sib, acc]
+        };
+
+        acc = PoseidonHasher::<BE>::merge(&pair);
+        idx >>= 1;
     }
 
-    let stride = folding;
-    let mut folded = Vec::with_capacity(positions.len());
-
-    for &pos in positions {
-        let idx = pos / stride;
-        if idx < domain_size / stride {
-            folded.push(idx);
-        }
-    }
-
-    folded.sort_unstable();
-    folded.dedup();
-
-    folded
+    acc
 }

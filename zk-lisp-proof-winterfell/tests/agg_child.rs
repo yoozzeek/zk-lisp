@@ -10,13 +10,11 @@
 //! Integration-style tests for
 //! ZlChildCompact Merkle extraction.
 
-use winterfell::crypto::{Digest, Hasher};
-use winterfell::math::fields::f128::BaseElement as BE;
+use winterfell::crypto::Digest;
 use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::agg_child::{ZlChildCompact, ZlMerklePath};
-use zk_lisp_proof_winterfell::poseidon_hasher::{PoseidonDigest, PoseidonHasher};
+use zk_lisp_proof_winterfell::agg_child::{ZlChildCompact, ZlMerklePath, merkle_root_from_leaf};
 
 fn make_opts() -> ProverOptions {
     ProverOptions {
@@ -42,10 +40,16 @@ fn build_public_inputs(program: &zk_lisp_compiler::Program) -> zk_lisp_proof::pi
         .expect("pi build")
 }
 
-fn verify_path(_root: &[u8; 32], _leaf: PoseidonDigest, _idx: usize, path: &ZlMerklePath) {
-    // For now we only check basic
-    // shape properties of the path.
+fn verify_path(root: &[u8; 32], idx: usize, path: &ZlMerklePath) {
+    // Basic shape: non-empty path
     assert!(!path.siblings.is_empty());
+
+    let computed = merkle_root_from_leaf(&path.leaf, idx, &path.siblings);
+    assert_eq!(
+        root,
+        &computed.as_bytes(),
+        "Merkle path must reconstruct advertised root",
+    );
 }
 
 #[test]
@@ -76,32 +80,20 @@ fn agg_child_merkle_paths_match_roots() {
     // Verify trace paths against the first trace root.
     let trace_root = child.trace_roots[0];
 
-    for (j, (&pos, path)) in fs
-        .query_positions
-        .iter()
-        .zip(merkle.trace_paths.iter())
-        .enumerate()
-    {
-        // Build a dummy leaf digest;
-        // we only check that the path
-        // shape is consistent and leads
-        // to the advertised root.
-        let leaf = PoseidonHasher::<BE>::hash(&[j as u8]);
-        verify_path(&trace_root, leaf, pos as usize, path);
+    for (&pos, path) in fs.query_positions.iter().zip(merkle.trace_paths.iter()) {
+        verify_path(&trace_root, pos as usize, path);
     }
 
     // Verify constraint paths
     // against the constraint root.
     let constraint_root = child.constraint_root;
 
-    for (j, (&pos, path)) in fs
+    for (&pos, path) in fs
         .query_positions
         .iter()
         .zip(merkle.constraint_paths.iter())
-        .enumerate()
     {
-        let leaf = PoseidonHasher::<BE>::hash(&[0xC0 | (j as u8)]);
-        verify_path(&constraint_root, leaf, pos as usize, path);
+        verify_path(&constraint_root, pos as usize, path);
     }
 
     // Shape checks for FRI layers.
