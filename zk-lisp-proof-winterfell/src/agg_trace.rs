@@ -92,6 +92,35 @@ pub fn build_agg_trace(
         }
     }
 
+    // Enforce that all children share the same
+    // global STARK profile as advertised in
+    // AggAirPublicInputs.profile_meta and
+    // AggAirPublicInputs.profile_queries. We
+    // deliberately do not constrain per-child
+    // quantities such as base trace length `m`
+    // or `v_units` here; those are handled via
+    // `children_ms` and the work accumulator.
+    let pm = &agg_pi.profile_meta;
+    let pq = &agg_pi.profile_queries;
+
+    for child in children {
+        if child.meta.rho != pm.rho
+            || child.meta.o != pm.o
+            || child.meta.lambda != pm.lambda
+            || child.meta.pi_len != pm.pi_len
+        {
+            return Err(error::Error::InvalidInput(
+                "AggAirPublicInputs.profile_meta is inconsistent with child StepMeta",
+            ));
+        }
+
+        if child.meta.q != pq.num_queries {
+            return Err(error::Error::InvalidInput(
+                "AggAirPublicInputs.profile_queries.num_queries is inconsistent with child meta.q",
+            ));
+        }
+    }
+
     // Enforce canonical children_root
     let children_root_expected = children_root_from_compact(&agg_pi.suite_id, children);
     if children_root_expected != agg_pi.children_root {
@@ -150,6 +179,7 @@ pub fn build_agg_trace(
 
     let mut row = 0usize;
     let mut v_acc = BE::from(0u64);
+    let mut child_count_acc = BE::from(0u64);
 
     // Global FRI layer-0 accumulators.
     // In the current skeleton they stay
@@ -181,6 +211,7 @@ pub fn build_agg_trace(
             if is_first {
                 trace.set(cols.v_units_child, cur_row, v_child_fe);
                 trace.set(cols.v_units_acc, cur_row, v_acc);
+                trace.set(cols.child_count_acc, cur_row, child_count_acc);
                 trace.set(cols.trace_root_err, cur_row, BE::ZERO);
                 trace.set(cols.fri_root_err, cur_row, BE::ZERO);
 
@@ -197,9 +228,11 @@ pub fn build_agg_trace(
                 trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
 
                 v_acc += v_child_fe;
+                child_count_acc += BE::ONE;
             } else {
                 trace.set(cols.v_units_child, cur_row, BE::ZERO);
                 trace.set(cols.v_units_acc, cur_row, v_acc);
+                trace.set(cols.child_count_acc, cur_row, child_count_acc);
                 trace.set(cols.trace_root_err, cur_row, BE::ZERO);
                 trace.set(cols.fri_root_err, cur_row, BE::ZERO);
 
@@ -227,6 +260,7 @@ pub fn build_agg_trace(
         trace.set(cols.seg_first, cur_row, BE::ZERO);
         trace.set(cols.v_units_child, cur_row, BE::ZERO);
         trace.set(cols.v_units_acc, cur_row, v_acc);
+        trace.set(cols.child_count_acc, cur_row, child_count_acc);
         trace.set(cols.trace_root_err, cur_row, BE::ZERO);
         trace.set(cols.fri_root_err, cur_row, BE::ZERO);
 

@@ -118,9 +118,12 @@ fn make_wf_opts() -> ProofOptions {
 fn make_children() -> Vec<ZlChildCompact> {
     let suite_id = [7u8; 32];
 
-    // Two children with different m and v_units.
+    // Two children with different m (base trace length)
+    // but identical global STARK profile parameters
+    // (rho, q, o, lambda, pi_len). This matches the
+    // AggAirPublicInputs.profile_* contract.
     let meta1 = StepMeta::new(4, 8, 2, 2, 40, 1);
-    let meta2 = StepMeta::new(8, 8, 3, 2, 40, 1);
+    let meta2 = StepMeta::new(8, 8, 2, 2, 40, 1);
 
     // For the initial aggregator skeleton we keep
     // trace roots trivial and equal to the public
@@ -336,6 +339,59 @@ fn agg_build_rejects_wrong_children_ms() {
 
     let msg = format!("{err}");
     assert!(msg.contains("children_ms entry does not match child meta.m"));
+}
+
+#[test]
+fn agg_build_rejects_wrong_profile_meta() {
+    let children = make_children();
+
+    let m1 = children[0].meta.m;
+    let m2 = children[1].meta.m;
+    let v1 = children[0].meta.v_units;
+    let v2 = children[1].meta.v_units;
+
+    let children_root = children_root_from_compact(&children[0].suite_id, &children);
+
+    // profile_meta.lambda mismatches child.meta.lambda
+    let mut profile_meta = AggProfileMeta {
+        m: children[0].meta.m,
+        rho: children[0].meta.rho,
+        q: children[0].meta.q,
+        o: children[0].meta.o,
+        lambda: children[0].meta.lambda + 1,
+        pi_len: children[0].meta.pi_len,
+        v_units: children[0].meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: 8,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: 0,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: children[0].meta.q,
+        grinding_factor: 0,
+    };
+
+    let agg_pi = AggAirPublicInputs {
+        children_root,
+        v_units_total: v1 + v2,
+        children_count: children.len() as u32,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: children[0].suite_id,
+        children_ms: vec![m1, m2],
+    };
+
+    let err = build_agg_trace(&agg_pi, &children)
+        .expect_err("agg trace build must fail when profile_meta mismatches child StepMeta");
+
+    let msg = format!("{err}");
+    assert!(msg.contains("profile_meta is inconsistent with child StepMeta"));
 }
 
 #[test]

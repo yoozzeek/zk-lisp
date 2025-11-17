@@ -154,6 +154,7 @@ pub struct ZlAggAir {
     ctx: AirContext<BE>,
     cols: AggColumns,
     v_units_total_fe: BE,
+    children_count_fe: BE,
 }
 
 impl Air for ZlAggAir {
@@ -171,7 +172,7 @@ impl Air for ZlAggAir {
         let trace_len = info.length();
         assert!(trace_len > 0, "AggTrace must contain at least one row");
 
-        // For the initial skeleton we expose eleven constraints:
+        // We currently expose twelve constraints:
         // C0: ok == 0 on all rows;
         // C1: work accumulator chain gated to non-last rows.
         // C2: trace_root_err must be zero on all rows.
@@ -180,6 +181,7 @@ impl Air for ZlAggAir {
         //        across the trace (and thus per segment).
         // C8–C10: FRI layer-0 accumulators v0_sum, v1_sum and
         //         vnext_sum form a gated chain over child segments.
+        // C11: child_count_acc chain gated to non-last rows.
         let degrees = vec![
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(2, vec![trace_len]),
@@ -192,17 +194,21 @@ impl Air for ZlAggAir {
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::new(1),
+            TransitionConstraintDegree::with_cycles(1, vec![trace_len]),
         ];
 
-        // ok[0], v_units_acc[0], v_units_acc[last].
-        let num_assertions = 3;
+        // ok[0], v_units_acc[0], v_units_acc[last],
+        // child_count_acc[0], child_count_acc[last].
+        let num_assertions = 5;
         let v_units_total_fe = BE::from(pub_inputs.v_units_total);
+        let children_count_fe = BE::from(pub_inputs.children_count as u64);
         let ctx = AirContext::new(info, degrees, num_assertions, options);
 
         Self {
             ctx,
             cols,
             v_units_total_fe,
+            children_count_fe,
         }
     }
 
@@ -218,7 +224,7 @@ impl Air for ZlAggAir {
     ) where
         E: FieldElement<BaseField = Self::BaseField> + From<Self::BaseField>,
     {
-        debug_assert_eq!(result.len(), 11);
+        debug_assert_eq!(result.len(), 12);
         debug_assert_eq!(periodic_values.len(), 1);
 
         let cols = &self.cols;
@@ -232,6 +238,8 @@ impl Air for ZlAggAir {
         let seg_first = current[cols.seg_first];
         let trace_root_err = current[cols.trace_root_err];
         let fri_root_err = current[cols.fri_root_err];
+        let child_count_acc = current[cols.child_count_acc];
+        let child_count_acc_next = next[cols.child_count_acc];
 
         let r = current[cols.r];
         let r_next = next[cols.r];
@@ -292,10 +300,14 @@ impl Air for ZlAggAir {
         result[8] = not_last * (v0_sum_next - (v0_sum + fri_v0_child * seg_first));
         result[9] = not_last * (v1_sum_next - (v1_sum + fri_v1_child * seg_first));
         result[10] = not_last * (vnext_sum_next - (vnext_sum + fri_vnext_child * seg_first));
+
+        // C11: child_count_acc increments by 1 on
+        // segment starts and stays constant otherwise.
+        result[11] = not_last * (child_count_acc_next - (child_count_acc + seg_first));
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {
-        let mut out = Vec::with_capacity(3);
+        let mut out = Vec::with_capacity(5);
         let last = self.ctx.trace_len().saturating_sub(1);
 
         // ok[0] == 0
@@ -309,6 +321,16 @@ impl Air for ZlAggAir {
             self.cols.v_units_acc,
             last,
             self.v_units_total_fe,
+        ));
+
+        // child_count_acc[0] == 0
+        out.push(Assertion::single(self.cols.child_count_acc, 0, BE::ZERO));
+
+        // child_count_acc[last] == children_count
+        out.push(Assertion::single(
+            self.cols.child_count_acc,
+            last,
+            self.children_count_fe,
         ));
 
         out

@@ -69,6 +69,12 @@ pub struct AggColumns {
     /// `seg_first == 1`, zero elsewhere.
     pub v_units_child: usize,
 
+    /// Accumulator over child segments; increments
+    /// by one at each `seg_first == 1` row and stays
+    /// constant elsewhere. The final value must equal
+    /// `children_count` in public inputs.
+    pub child_count_acc: usize,
+
     width: usize,
 }
 
@@ -105,8 +111,9 @@ impl AggColumns {
 
         let v_units_acc = fri_root_err + 1;
         let v_units_child = v_units_acc + 1;
+        let child_count_acc = v_units_child + 1;
 
-        let width = v_units_child + 1;
+        let width = child_count_acc + 1;
 
         Self {
             ok,
@@ -129,6 +136,7 @@ impl AggColumns {
             fri_root_err,
             v_units_acc,
             v_units_child,
+            child_count_acc,
             width,
         }
     }
