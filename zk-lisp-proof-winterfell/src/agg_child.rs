@@ -405,16 +405,106 @@ impl ZlChildCompact {
                 }
 
                 let num_fri_layers = fri_opts.num_fri_layers(lde_domain_size);
-                let fri_layers_paths: Vec<Vec<ZlFriLayerProof>> = Vec::new();
+                let mut fri_layers_paths: Vec<Vec<ZlFriLayerProof>> = Vec::new();
 
-                if num_fri_layers > 0 {
-                    // FRI Merkle path extraction is non-trivial because
-                    // folded query positions and coset indexing are
-                    // derived inside the Winterfell verifier. For now we
-                    // leave `fri_layers` empty and rely on the DEEP
-                    // polynomial remainder and FS challenges for
-                    // aggregation. Full in-AIR FRI path verification
-                    // will be wired in a follow-up change.
+                if num_fri_layers > 0 && num_queries > 0 {
+                    // Parse FRI layers into per-query values and
+                    // batch Merkle proofs using the same layout as
+                    // Winterfell's FriProver/FriVerifier.
+                    let fri_proof_clone = wf_proof.fri_proof.clone();
+                    let (layer_queries, layer_proofs) = fri_proof_clone
+                        .parse_layers::<BE, PoseidonHasher<BE>, MerkleTree<PoseidonHasher<BE>>>(
+                            lde_domain_size,
+                            folding,
+                        )
+                        .map_err(|_| {
+                            error::Error::InvalidInput(
+                                "invalid FRI layers layout in ZlChildCompact",
+                            )
+                        })?;
+
+                    debug_assert_eq!(layer_queries.len(), num_fri_layers);
+                    debug_assert_eq!(layer_proofs.len(), num_fri_layers);
+
+                    // Reconstruct folded query positions for each
+                    // FRI layer exactly as FriProver::build_proof
+                    // does: starting from FS query_positions and
+                    // folding the domain size by `folding` at each
+                    // step.
+                    let mut positions: Vec<usize> =
+                        fs.query_positions.iter().map(|&p| p as usize).collect();
+                    let mut domain_size = lde_domain_size;
+
+                    for (vals, mproof) in layer_queries.into_iter().zip(layer_proofs.into_iter()) {
+                        if vals.is_empty() || folding == 0 {
+                            fri_layers_paths.push(Vec::new());
+                            domain_size /= folding;
+                            positions = fold_positions_usize(&positions, domain_size, folding)?;
+                            continue;
+                        }
+
+                        if vals.len() % folding != 0 {
+                            return Err(error::Error::InvalidInput(
+                                "FRI layer values length is inconsistent with folding factor in ZlChildCompact",
+                            ));
+                        }
+
+                        // Fold positions for this layer
+                        let folded_positions =
+                            fold_positions_usize(&positions, domain_size, folding)?;
+
+                        let q_count = vals.len() / folding;
+                        if q_count != folded_positions.len() {
+                            return Err(error::Error::InvalidInput(
+                                "FRI folded positions count is inconsistent with layer queries in ZlChildCompact",
+                            ));
+                        }
+
+                        // Hash per-query values into Merkle leaves using
+                        // the same convention as FriProofLayer::parse.
+                        let mut hashed_leaves = Vec::with_capacity(q_count);
+                        let mut values_pairs = Vec::with_capacity(q_count);
+                        for i in 0..q_count {
+                            let base = i * folding;
+                            let v0 = vals[base];
+                            let v1 = vals[base + 1];
+                            let pair = [v0, v1];
+                            let leaf = PoseidonHasher::<BE>::hash_elements(&pair);
+                            hashed_leaves.push(leaf);
+                            values_pairs.push(pair);
+                        }
+
+                        // Decompress the batch proof into individual
+                        // openings, preserving the same order as in
+                        // `folded_positions`.
+                        let openings = mproof
+                            .into_openings(&hashed_leaves, &folded_positions)
+                            .map_err(|_| {
+                                error::Error::InvalidInput(
+                                    "failed to decompress FRI Merkle multiproof in ZlChildCompact",
+                                )
+                            })?;
+
+                        debug_assert_eq!(openings.len(), q_count);
+
+                        let mut layer_paths = Vec::with_capacity(q_count);
+                        for (((leaf, siblings), pair), &idx) in openings
+                            .into_iter()
+                            .zip(values_pairs.into_iter())
+                            .zip(folded_positions.iter())
+                        {
+                            layer_paths.push(ZlFriLayerProof {
+                                idx: idx as u32,
+                                values: pair,
+                                path: ZlMerklePath { leaf, siblings },
+                            });
+                        }
+
+                        fri_layers_paths.push(layer_paths);
+
+                        domain_size /= folding;
+                        positions = folded_positions;
+                    }
                 }
 
                 Some(ZlMerkleProofs {
@@ -475,9 +565,36 @@ pub struct ZlChildTranscript {
     /// the base trace segment.
     pub trace_main_openings: Vec<Vec<BE>>,
 
+    /// Per-query constraint composition
+    /// openings at FS query positions.
+    pub constraint_openings: Vec<Vec<BE>>,
+
     /// Per-layer FRI evaluations for the
     /// DEEP composition polynomial.
     pub fri_layers: Vec<Vec<[BE; 2]>>,
+
+    /// OOD trace evaluations (main segment)
+    /// at points z and z * g.
+    pub ood_main_current: Vec<BE>,
+    pub ood_main_next: Vec<BE>,
+
+    /// OOD trace evaluations (aux segment)
+    /// at points z and z * g. Empty when the
+    /// underlying trace has no auxiliary segment.
+    pub ood_aux_current: Vec<BE>,
+    pub ood_aux_next: Vec<BE>,
+
+    /// OOD evaluations of the constraint
+    /// composition polynomial at z and z * g.
+    pub ood_quotient_current: Vec<BE>,
+    pub ood_quotient_next: Vec<BE>,
+
+    /// Trace and constraint widths needed to
+    /// interpret OOD rows and constraint
+    /// openings.
+    pub main_trace_width: u32,
+    pub aux_trace_width: u32,
+    pub constraint_frame_width: u32,
 }
 
 /// FRI remainder polynomial container used by
@@ -528,10 +645,12 @@ impl ZlChildTranscript {
             coeffs,
         };
 
+        let main_width = trace_info.main_trace_width();
+        let aux_width = trace_info.aux_segment_width();
+
         // Decode main-trace openings for each
         // unique query position from the first
         // (and currently only) trace segment.
-        let main_width = trace_info.main_trace_width();
         let mut trace_main_openings = Vec::new();
 
         if num_queries > 0 {
@@ -550,6 +669,70 @@ impl ZlChildTranscript {
 
             trace_main_openings = main_table.rows().map(|row| row.to_vec()).collect();
         }
+
+        // Decode constraint composition openings at query positions
+        // and reconstruct the constraint frame width in a backend-
+        // agnostic way.
+        let (constraint_openings, constraint_frame_width) = if num_queries == 0 {
+            (Vec::new(), 0u32)
+        } else {
+            let cq_clone = wf_proof.constraint_queries.clone();
+            let cq_bytes = Serializable::to_bytes(&cq_clone);
+            let mut reader = SliceReader::new(&cq_bytes);
+
+            let values_bytes =
+                <Vec<u8> as Deserializable>::read_from(&mut reader).map_err(|_| {
+                    error::Error::InvalidInput(
+                        "failed to decode constraint query values in ZlChildTranscript",
+                    )
+                })?;
+
+            // Skip paths bytes; `cq_clone.parse()` will re-parse them
+            let _: Vec<u8> = Deserializable::read_from(&mut reader).map_err(|_| {
+                error::Error::InvalidInput(
+                    "failed to decode constraint query paths in ZlChildTranscript",
+                )
+            })?;
+
+            let total_value_bytes = values_bytes.len();
+            let elem_bytes = BE::ELEMENT_BYTES;
+
+            let denom = num_queries
+                .checked_mul(elem_bytes)
+                .ok_or(error::Error::InvalidInput(
+                    "overflow while computing constraint frame width in ZlChildTranscript",
+                ))?;
+
+            if denom == 0 || total_value_bytes % denom != 0 {
+                return Err(error::Error::InvalidInput(
+                    "constraint_queries byte length is inconsistent with num_queries in ZlChildTranscript",
+                ));
+            }
+
+            let frame_width = total_value_bytes / denom;
+            if frame_width == 0 {
+                return Err(error::Error::InvalidInput(
+                    "constraint frame width inferred from queries must be non-zero in ZlChildTranscript",
+                ));
+            }
+
+            let (constraint_mproof, constraint_table) = cq_clone
+                .parse::<BE, PoseidonHasher<BE>, MerkleTree<PoseidonHasher<BE>>>(
+                    lde_domain_size,
+                    num_queries,
+                    frame_width,
+                )
+                .map_err(|_| {
+                    error::Error::InvalidInput(
+                        "invalid constraint queries layout in ZlChildTranscript",
+                    )
+                })?;
+
+            let _ = constraint_mproof; // reserved for future Merkle checks
+
+            let openings = constraint_table.rows().map(|row| row.to_vec()).collect();
+            (openings, frame_width as u32)
+        };
 
         // Decode FRI per-layer query values for the
         // DEEP composition polynomial. For each layer
@@ -599,6 +782,67 @@ impl ZlChildTranscript {
             }
         }
 
+        // Decode OOD frames for trace and constraint composition.
+        let (
+            ood_main_current,
+            ood_main_next,
+            ood_aux_current,
+            ood_aux_next,
+            ood_quotient_current,
+            ood_quotient_next,
+        ) = if num_queries == 0 {
+            (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        } else {
+            let (trace_ood_frame, quotient_ood_frame) = wf_proof
+                .ood_frame
+                .clone()
+                .parse::<BE>(main_width, aux_width, constraint_frame_width as usize)
+                .map_err(|_| {
+                    error::Error::InvalidInput("invalid OOD frame layout in ZlChildTranscript")
+                })?;
+
+            let trace_ood_current = trace_ood_frame.current_row();
+            let trace_ood_next = trace_ood_frame.next_row();
+
+            if trace_ood_current.len() != main_width + aux_width
+                || trace_ood_next.len() != main_width + aux_width
+            {
+                return Err(error::Error::InvalidInput(
+                    "ZlChildTranscript OOD trace row length is inconsistent with trace widths",
+                ));
+            }
+
+            let (main_curr, aux_curr) = trace_ood_current.split_at(main_width);
+            let (main_next, aux_next) = trace_ood_next.split_at(main_width);
+
+            let quotient_ood_current = quotient_ood_frame.current_row();
+            let quotient_ood_next = quotient_ood_frame.next_row();
+
+            if quotient_ood_current.len() != constraint_frame_width as usize
+                || quotient_ood_next.len() != constraint_frame_width as usize
+            {
+                return Err(error::Error::InvalidInput(
+                    "ZlChildTranscript OOD quotient row length is inconsistent with constraint frame width",
+                ));
+            }
+
+            (
+                main_curr.to_vec(),
+                main_next.to_vec(),
+                aux_curr.to_vec(),
+                aux_next.to_vec(),
+                quotient_ood_current.to_vec(),
+                quotient_ood_next.to_vec(),
+            )
+        };
+
         Ok(Self {
             compact,
             trace_roots,
@@ -607,7 +851,17 @@ impl ZlChildTranscript {
             fri_final,
             num_queries: wf_proof.num_unique_queries,
             trace_main_openings,
+            constraint_openings,
             fri_layers,
+            ood_main_current,
+            ood_main_next,
+            ood_aux_current,
+            ood_aux_next,
+            ood_quotient_current,
+            ood_quotient_next,
+            main_trace_width: main_width as u32,
+            aux_trace_width: aux_width as u32,
+            constraint_frame_width,
         })
     }
 }
@@ -707,6 +961,11 @@ pub fn verify_child_transcript(tx: &ZlChildTranscript) -> error::Result<()> {
                 "ZlChildTranscript must not contain trace openings when num_queries is zero",
             ));
         }
+        if !tx.constraint_openings.is_empty() {
+            return Err(error::Error::InvalidInput(
+                "ZlChildTranscript must not contain constraint openings when num_queries is zero",
+            ));
+        }
         if !tx.fri_layers.is_empty() {
             return Err(error::Error::InvalidInput(
                 "ZlChildTranscript must not contain FRI layers when num_queries is zero",
@@ -723,6 +982,32 @@ pub fn verify_child_transcript(tx: &ZlChildTranscript) -> error::Result<()> {
             if row.is_empty() {
                 return Err(error::Error::InvalidInput(
                     "ZlChildTranscript contains an empty trace opening row",
+                ));
+            }
+        }
+
+        if tx.constraint_openings.len() != num_q {
+            return Err(error::Error::InvalidInput(
+                "ZlChildTranscript.constraint_openings length is inconsistent with num_queries",
+            ));
+        }
+
+        let c_width = tx.constraint_frame_width as usize;
+        if c_width == 0 {
+            return Err(error::Error::InvalidInput(
+                "ZlChildTranscript.constraint_frame_width must be non-zero when num_queries is non-zero",
+            ));
+        }
+
+        for row in &tx.constraint_openings {
+            if row.is_empty() {
+                return Err(error::Error::InvalidInput(
+                    "ZlChildTranscript contains an empty constraint opening row",
+                ));
+            }
+            if row.len() != c_width {
+                return Err(error::Error::InvalidInput(
+                    "ZlChildTranscript.constraint_openings row width is inconsistent with constraint_frame_width",
                 ));
             }
         }
@@ -808,4 +1093,39 @@ pub fn merkle_root_from_leaf(
     }
 
     acc
+}
+
+/// Fold query positions from a source domain of the
+/// given size into a smaller domain by the specified
+/// folding factor, mirroring winter-fri's
+/// `fold_positions` helper. Duplicates are removed
+/// while preserving ascending order.
+fn fold_positions_usize(
+    positions: &[usize],
+    source_domain_size: usize,
+    folding_factor: usize,
+) -> error::Result<Vec<usize>> {
+    if folding_factor == 0 {
+        return Err(error::Error::InvalidInput(
+            "folding_factor must be non-zero in fold_positions_usize",
+        ));
+    }
+
+    if source_domain_size == 0 || source_domain_size % folding_factor != 0 {
+        return Err(error::Error::InvalidInput(
+            "source_domain_size must be a positive multiple of folding_factor in fold_positions_usize",
+        ));
+    }
+
+    let target_domain_size = source_domain_size / folding_factor;
+    let mut result = Vec::new();
+
+    for &pos in positions {
+        let idx = pos % target_domain_size;
+        if !result.contains(&idx) {
+            result.push(idx);
+        }
+    }
+
+    Ok(result)
 }

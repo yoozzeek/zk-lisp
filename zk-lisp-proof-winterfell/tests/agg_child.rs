@@ -10,11 +10,13 @@
 //! Integration-style tests for
 //! ZlChildCompact Merkle extraction.
 
-use winterfell::crypto::Digest;
+use winterfell::crypto::{Digest, ElementHasher};
+use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::agg_child::{ZlChildCompact, ZlMerklePath, merkle_root_from_leaf};
+use zk_lisp_proof_winterfell::poseidon_hasher::PoseidonHasher;
 
 fn make_opts() -> ProverOptions {
     ProverOptions {
@@ -96,15 +98,69 @@ fn agg_child_merkle_paths_match_roots() {
         verify_path(&constraint_root, pos as usize, path);
     }
 
-    // Shape checks for FRI layers.
+    // Shape and correctness checks for FRI layers.
     let num_layers = merkle.fri_layers.len();
     if num_layers > 0 {
-        for layer in &merkle.fri_layers {
+        // Rebuild folded positions for each FRI
+        // layer in the same way as FriProver.
+        let mut positions: Vec<usize> = fs.query_positions.iter().map(|&p| p as usize).collect();
+        let mut domain_size = (child.meta.m as usize)
+            .checked_mul(child.meta.rho as usize)
+            .expect("LDE domain size overflow in agg_child_merkle_paths_match_roots");
+        let folding = 2usize;
+
+        for (layer_idx, layer) in merkle.fri_layers.iter().enumerate() {
             assert!(!layer.is_empty());
-            for lp in layer {
-                assert_eq!(lp.values.len(), 2);
+
+            let folded_positions = fold_positions_test(&positions, domain_size, folding);
+            assert_eq!(
+                folded_positions.len(),
+                layer.len(),
+                "folded positions count must match number of FRI leaf proofs",
+            );
+
+            let fri_root = child.fri_roots[layer_idx];
+
+            for (lp, &idx) in layer.iter().zip(folded_positions.iter()) {
+                assert_eq!(
+                    lp.idx as usize, idx,
+                    "FRI leaf index must match folded query position",
+                );
                 assert!(!lp.path.siblings.is_empty());
+
+                let leaf = PoseidonHasher::<BE>::hash_elements(&lp.values);
+                let computed = merkle_root_from_leaf(&leaf, idx, &lp.path.siblings);
+                assert_eq!(
+                    &fri_root,
+                    &computed.as_bytes(),
+                    "FRI Merkle path must reconstruct advertised fri_root",
+                );
             }
+
+            positions = folded_positions;
+            domain_size /= folding;
         }
     }
+}
+
+fn fold_positions_test(
+    positions: &[usize],
+    source_domain_size: usize,
+    folding_factor: usize,
+) -> Vec<usize> {
+    assert!(folding_factor > 0);
+    assert!(
+        source_domain_size > 0 && source_domain_size % folding_factor == 0,
+        "invalid source_domain_size/folding_factor in fold_positions_test",
+    );
+
+    let target_domain_size = source_domain_size / folding_factor;
+    let mut result = Vec::new();
+    for &p in positions {
+        let idx = p % target_domain_size;
+        if !result.contains(&idx) {
+            result.push(idx);
+        }
+    }
+    result
 }

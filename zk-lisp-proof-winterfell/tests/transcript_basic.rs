@@ -67,18 +67,48 @@ fn transcript_commitments_match_zl1_root_trace() {
     let max_deg = transcript.fri_final.coeffs.len().saturating_sub(1) as u16;
     assert!(transcript.fri_final.deg <= max_deg);
 
-    // Trace openings and FRI layer values must
-    // be shape-consistent with num_queries.
+    // Trace openings, constraint openings and FRI
+    // layer values must be shape-consistent with
+    // num_queries and reported widths.
     let num_q = transcript.num_queries as usize;
     assert_eq!(num_q, transcript.trace_main_openings.len());
+    assert_eq!(num_q, transcript.constraint_openings.len());
 
     for row in &transcript.trace_main_openings {
         assert!(!row.is_empty());
+    }
+
+    let c_width = transcript.constraint_frame_width as usize;
+    assert!(c_width > 0);
+
+    for row in &transcript.constraint_openings {
+        assert!(!row.is_empty());
+        assert_eq!(row.len(), c_width);
     }
 
     if !transcript.fri_layers.is_empty() {
         for layer in &transcript.fri_layers {
             assert!(!layer.is_empty());
         }
+    }
+
+    // OOD rows must be consistent with reported
+    // trace and constraint widths.
+    let main_w = transcript.main_trace_width as usize;
+    let aux_w = transcript.aux_trace_width as usize;
+
+    if !transcript.ood_main_current.is_empty() {
+        assert_eq!(transcript.ood_main_current.len(), main_w);
+        assert_eq!(transcript.ood_main_next.len(), main_w);
+    }
+
+    if aux_w > 0 && !transcript.ood_aux_current.is_empty() {
+        assert_eq!(transcript.ood_aux_current.len(), aux_w);
+        assert_eq!(transcript.ood_aux_next.len(), aux_w);
+    }
+
+    if c_width > 0 && !transcript.ood_quotient_current.is_empty() {
+        assert_eq!(transcript.ood_quotient_current.len(), c_width);
+        assert_eq!(transcript.ood_quotient_next.len(), c_width);
     }
 }
