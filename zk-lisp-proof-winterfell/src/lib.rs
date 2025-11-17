@@ -20,11 +20,13 @@ pub mod agg_layout;
 pub mod agg_trace;
 pub mod air;
 pub mod commit;
+pub mod fs;
 pub mod ivc_air;
 pub mod ivc_layout;
 pub mod ivc_trace;
 pub mod layout;
 pub mod poseidon;
+pub mod poseidon_hasher;
 pub mod preflight;
 pub mod prove;
 pub mod romacc;
@@ -150,7 +152,7 @@ impl ZkBackend for WinterfellBackend {
             opts.grind
         };
 
-        let wf_opts = ProofOptions::new(
+        let base_opts = ProofOptions::new(
             opts.queries as usize,
             blowup as usize,
             grind,
@@ -161,7 +163,14 @@ impl ZkBackend for WinterfellBackend {
             BatchingMethod::Linear,
         );
 
+        // Build trace first so we can size partition options.
         let trace = build_trace(program, pub_inputs)?;
+        let trace_width = trace.width();
+        let trace_length = trace.length();
+        let (num_partitions, hash_rate) =
+            crate::trace::select_partitions_for_trace(trace_width, trace_length);
+
+        let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
 
         // Offline ROM accumulator from program
         let rom_acc = if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
@@ -234,7 +243,7 @@ impl PreflightBackend for WinterfellBackend {
         program: &Self::Program,
         pub_inputs: &Self::PublicInputs,
     ) -> Result<(), Self::Error> {
-        let wf_opts = ProofOptions::new(
+        let base_opts = ProofOptions::new(
             opts.queries as usize,
             opts.blowup as usize,
             opts.grind,
@@ -246,6 +255,11 @@ impl PreflightBackend for WinterfellBackend {
         );
 
         let trace = build_trace(program, pub_inputs)?;
+
+        let (num_partitions, hash_rate) =
+            crate::trace::select_partitions_for_trace(trace.width(), trace.length());
+        let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
+
         preflight::run(mode, &wf_opts, pub_inputs, &trace)
     }
 }

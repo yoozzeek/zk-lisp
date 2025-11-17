@@ -288,6 +288,135 @@ pub fn poseidon_hash_two_lanes(suite_id: &[u8; 32], left: BE, right: BE) -> BE {
     state[0]
 }
 
+/// Poseidon-based random oracle over
+/// arbitrary byte parts under a
+/// per-proof suite identifier.
+pub fn poseidon_ro_parts(suite_id: &[u8; 32], domain: &str, parts: &[&[u8]]) -> BE {
+    let mut acc = BE::from(0u64);
+
+    // absorb domain label
+    let mut dbuf = [0u8; 32];
+    let dbytes = domain.as_bytes();
+    let copy_len = core::cmp::min(32, dbytes.len());
+    dbuf[..copy_len].copy_from_slice(&dbytes[..copy_len]);
+
+    let d_fe = utils::fold_bytes32_to_fe(&dbuf);
+    acc = poseidon_hash_two_lanes(suite_id, acc, d_fe);
+
+    // absorb chunked parts
+    for p in parts {
+        let mut i = 0usize;
+        while i < p.len() {
+            let mut chunk = [0u8; 32];
+            let end = core::cmp::min(i + 32, p.len());
+            chunk[..(end - i)].copy_from_slice(&p[i..end]);
+
+            let fe = utils::fold_bytes32_to_fe(&chunk);
+            acc = poseidon_hash_two_lanes(suite_id, acc, fe);
+
+            i = end;
+        }
+    }
+
+    acc
+}
+
+/// Poseidon-based random oracle over arbitrary input bytes
+/// under a per-proof suite identifier and string domain.
+///
+/// This variant implements a standard sponge over the
+/// t=12 state with rate=10, absorbing field elements
+/// derived from the input bytes in blocks before
+/// applying the Poseidon2 permutation. This reduces
+/// the number of full permutations compared to chaining
+/// `poseidon_hash_two_lanes` per 32-byte chunk, while
+/// keeping collision resistance at 128 bits.
+pub fn poseidon_ro_bytes_sponge(suite_id: &[u8; 32], domain: &str, data: &[u8]) -> BE {
+    let ps = get_poseidon_suite(suite_id);
+
+    let mut dbuf = [0u8; 32];
+    let dbytes = domain.as_bytes();
+    let copy_len = core::cmp::min(32, dbytes.len());
+    dbuf[..copy_len].copy_from_slice(&dbytes[..copy_len]);
+
+    let dom_fe = utils::fold_bytes32_to_fe(&dbuf);
+
+    // Sponge state: lanes 0..10 are the rate/capacity
+    // pool, lanes 10..11 carry suite-level domain tags.
+    let mut state = [BE::ZERO; 12];
+    state[10] = ps.dom[0];
+    state[11] = ps.dom[1];
+
+    const RATE: usize = 10;
+
+    let mut lane = 0usize;
+
+    // run one full Poseidon2 permutation
+    // using precomputed MDS.
+    let permute = |state: &mut [BE; 12]| {
+        for rc_r in ps.rc.iter() {
+            // S-box on all lanes (x^3)
+            for v in state.iter_mut() {
+                *v = *v * *v * *v;
+            }
+
+            // y = MDS * s + rc
+            let mut new_state = [BE::ZERO; 12];
+            for (i, row) in ps.mds.iter().enumerate() {
+                let acc = row
+                    .iter()
+                    .zip(state.iter())
+                    .fold(BE::ZERO, |acc, (m, s)| acc + (*m) * (*s));
+                new_state[i] = acc + rc_r[i];
+            }
+
+            *state = new_state;
+        }
+    };
+
+    // Absorb a single message element
+    let absorb = |msg: BE, state: &mut [BE; 12], lane: &mut usize| {
+        state[*lane] += msg;
+        *lane += 1;
+
+        if *lane == RATE {
+            permute(state);
+            *lane = 0;
+        }
+    };
+
+    absorb(dom_fe, &mut state, &mut lane);
+
+    // Absorb data as a stream of 32-byte chunks,
+    // each folded into a single base-field element.
+    let mut chunk = [0u8; 32];
+    let mut i = 0usize;
+
+    while i < data.len() {
+        let end = core::cmp::min(i + 32, data.len());
+        let len = end - i;
+
+        chunk[..len].copy_from_slice(&data[i..end]);
+
+        if len < 32 {
+            for b in &mut chunk[len..] {
+                *b = 0;
+            }
+        }
+
+        let fe = utils::fold_bytes32_to_fe(&chunk);
+        absorb(fe, &mut state, &mut lane);
+
+        i = end;
+    }
+
+    if lane != 0 {
+        permute(&mut state);
+    }
+
+    state[0]
+}
+
 /// Public helper for domain-separated RO→field mapping.
 ///
 /// Kept thin and explicit so higher-level modules

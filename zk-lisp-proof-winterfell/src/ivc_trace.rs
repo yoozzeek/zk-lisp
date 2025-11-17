@@ -210,12 +210,6 @@ pub fn build_iv_trace(iv_pi: &IvPublic, steps: &[ZlStepProof]) -> error::Result<
 }
 
 /// Select partitioning parameters for IVC proving.
-///
-/// For now we keep a single partition and set the
-/// hash rate to the trace width (clamped to 1..=256)
-/// as a simple and robust default; this can be
-/// refined later based on profiling.
-pub fn ivc_partition_options(trace_width: usize) -> (usize, usize) {
-    let hash_rate = trace_width.clamp(1, 256);
-    (1, hash_rate)
+pub fn ivc_partition_options(trace_width: usize, trace_length: usize) -> (usize, usize) {
+    crate::trace::select_partitions_for_trace(trace_width, trace_length)
 }

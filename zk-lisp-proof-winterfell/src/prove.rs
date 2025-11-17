@@ -19,7 +19,7 @@ use winterfell::{
     Air, CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
     DefaultConstraintEvaluator, DefaultTraceLde, PartitionOptions, Proof, ProofOptions,
     Prover as WProver, StarkDomain, Trace, TraceInfo, TracePolyTable, TraceTable,
-    crypto::{DefaultRandomCoin, MerkleTree, hashers::Blake3_256},
+    crypto::{DefaultRandomCoin, MerkleTree},
     math::FieldElement,
     math::ToElements,
     math::fields::f128::BaseElement as BE,
@@ -34,6 +34,7 @@ use zk_lisp_proof::pi::PublicInputs;
 
 use crate::air::ZkLispAir;
 use crate::ivc_air::{IvAirPublicInputs, ZlIvAir};
+use crate::poseidon_hasher::PoseidonHasher;
 use crate::zl_step::{StepMeta, ZlStepProof};
 use crate::{ivc_trace, preflight::run as run_preflight, schedule, utils};
 
@@ -150,7 +151,7 @@ impl WProver for ZkWinterfellProver {
     type BaseField = BE;
     type Air = ZkLispAir;
     type Trace = TraceTable<Self::BaseField>;
-    type HashFn = Blake3_256<Self::BaseField>;
+    type HashFn = PoseidonHasher<Self::BaseField>;
     type VC = MerkleTree<Self::HashFn>;
     type RandomCoin = DefaultRandomCoin<Self::HashFn>;
     type TraceLde<E: FieldElement<BaseField = Self::BaseField>> =
@@ -235,7 +236,7 @@ impl WProver for ZlIvWinterfellProver {
     type BaseField = BE;
     type Air = ZlIvAir;
     type Trace = TraceTable<Self::BaseField>;
-    type HashFn = Blake3_256<Self::BaseField>;
+    type HashFn = PoseidonHasher<Self::BaseField>;
     type VC = MerkleTree<Self::HashFn>;
     type RandomCoin = DefaultRandomCoin<Self::HashFn>;
     type TraceLde<E: FieldElement<BaseField = Self::BaseField>> =
@@ -330,9 +331,9 @@ pub fn verify_proof(
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         winterfell::verify::<
             ZkLispAir,
-            Blake3_256<BE>,
-            DefaultRandomCoin<Blake3_256<BE>>,
-            MerkleTree<Blake3_256<BE>>,
+            PoseidonHasher<BE>,
+            DefaultRandomCoin<PoseidonHasher<BE>>,
+            MerkleTree<PoseidonHasher<BE>>,
         >(
             proof,
             crate::AirPublicInputs { core: pi, rom_acc },
@@ -400,7 +401,7 @@ pub fn prove_step(
         opts.grind
     };
 
-    let wf_opts = ProofOptions::new(
+    let base_opts = ProofOptions::new(
         opts.queries as usize,
         blowup as usize,
         grind,
@@ -413,6 +414,10 @@ pub fn prove_step(
 
     let trace = crate::trace::build_trace(program, pub_inputs)?;
     let trace_len = trace.length();
+
+    let (num_partitions, hash_rate) =
+        crate::trace::select_partitions_for_trace(trace.width(), trace_len);
+    let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
 
     // Derive VM state hashes at the beginning
     // and end of the segment. For single-segment
@@ -452,9 +457,13 @@ pub fn prove_step(
         state_in_hash,
         state_out_hash,
         proof,
-    );
+    )?;
 
-    Ok(ZlStepProof { proof: zl1_proof })
+    Ok(ZlStepProof {
+        proof: zl1_proof,
+        pi_core: pub_inputs.clone(),
+        rom_acc,
+    })
 }
 
 /// Prove a single IVC aggregation step
@@ -491,8 +500,10 @@ pub fn prove_ivc_air(
     let iv_trace = ivc_trace::build_iv_trace(iv_pi, steps)?;
     let trace = iv_trace.trace;
     let trace_width = trace.width();
+    let trace_length = trace.length();
 
-    let (num_partitions, hash_rate) = ivc_trace::ivc_partition_options(trace_width);
+    let (num_partitions, hash_rate) =
+        crate::trace::select_partitions_for_trace(trace_width, trace_length);
 
     let wf_opts = ProofOptions::new(
         opts.queries as usize,
@@ -574,9 +585,9 @@ pub fn verify_ivc_air(
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         winterfell::verify::<
             ZlIvAir,
-            Blake3_256<BE>,
-            DefaultRandomCoin<Blake3_256<BE>>,
-            MerkleTree<Blake3_256<BE>>,
+            PoseidonHasher<BE>,
+            DefaultRandomCoin<PoseidonHasher<BE>>,
+            MerkleTree<PoseidonHasher<BE>>,
         >(proof, pi, &acceptable)
     }));
 

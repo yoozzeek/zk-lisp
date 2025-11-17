@@ -8,15 +8,6 @@
 //   portions of it. See the NOTICE file for details.
 
 //! zk-lisp step proof format (zl1) and Poseidon-based digest.
-//!
-//! This module defines a backend-specific container (`zl1::format::Proof`)
-//! for zk-lisp VM STARK proofs over Winterfell together with a deterministic
-//! digest construction (`zl1::digest::step_digest`).
-//! The digest is derived from:
-//! - profile metadata (`StepMeta`),
-//! - a compact public input echo (program id/commitment, feature mask,
-//!   segment indices), and
-//! - a single commitment root bound to the underlying Winterfell proof.
 
 pub mod format {
     use crate::zl_step::StepMeta;
@@ -121,7 +112,7 @@ pub mod format {
             state_in_hash: [u8; 32],
             state_out_hash: [u8; 32],
             wf_proof: WProof,
-        ) -> Self {
+        ) -> zk_lisp_proof::error::Result<Self> {
             // Header echoes the effective proving profile
             // under which the proof was generated.
             let header = Header {
@@ -169,11 +160,15 @@ pub mod format {
             let commitments = wf_proof
                 .commitments
                 .clone()
-                .parse::<winterfell::crypto::hashers::Blake3_256<BE>>(
+                .parse::<crate::poseidon_hasher::PoseidonHasher<BE>>(
                     num_trace_segments,
                     num_fri_layers,
                 )
-                .expect("invalid Winterfell commitments layout in zl1::Proof");
+                .map_err(|_| {
+                    zk_lisp_proof::error::Error::InvalidInput(
+                        "invalid Winterfell commitments layout in zl1::Proof",
+                    )
+                })?;
 
             let (trace_roots, constraint_root, fri_roots) = commitments;
 
@@ -197,13 +192,13 @@ pub mod format {
 
             let commits = Commitments { root_trace };
 
-            Self {
+            Ok(Self {
                 header,
                 pi,
                 commits,
                 meta,
                 inner: wf_proof,
-            }
+            })
         }
     }
 }

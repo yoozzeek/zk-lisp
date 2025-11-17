@@ -38,8 +38,8 @@ impl Default for ProverOptions {
     fn default() -> Self {
         let min_security_bits = if cfg!(debug_assertions) { 64 } else { 128 };
         Self {
-            queries: 64,
-            blowup: 8,
+            queries: 32,
+            blowup: 16,
             grind: 0,
             min_security_bits,
         }

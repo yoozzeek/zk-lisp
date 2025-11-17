@@ -18,6 +18,7 @@
 use crate::zl1;
 
 use winterfell::ProofOptions;
+use winterfell::math::fields::f128::BaseElement as BE;
 
 /// Minimal per-proof echo used for digest computation.
 ///
@@ -47,11 +48,6 @@ pub struct StepMeta {
     pub pi_len: u32,
 
     /// Coarse estimate of verifier work units.
-    ///
-    /// For now we keep a simple model m * q; this
-    /// can be refined later as long as callers are
-    /// updated consistently. The digest cares only
-    /// that changes in profile/shape perturb v_units.
     pub v_units: u64,
 }
 
@@ -65,6 +61,11 @@ pub struct StepMeta {
 #[derive(Clone, Debug)]
 pub struct ZlStepProof {
     pub proof: zl1::format::Proof,
+    /// Backend-agnostic public inputs used when building
+    /// this step trace.
+    pub pi_core: zk_lisp_proof::pi::PublicInputs,
+    /// Final ROM accumulator lanes for this step.
+    pub rom_acc: [BE; 3],
 }
 
 impl ZlStepProof {
@@ -128,6 +129,3 @@ impl StepMeta {
         StepMeta::new(m, rho, q, o, lambda, pi_len)
     }
 }
-
-// Legacy step_digest has been superseded by zl1::digest::step_digest
-// and is intentionally removed to avoid ambiguity.

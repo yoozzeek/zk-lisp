@@ -10,7 +10,7 @@
 //! Basic tests for the aggregation AIR (ZlAggAir) and
 //! aggregation trace builder (build_agg_trace).
 
-use winterfell::crypto::{DefaultRandomCoin, MerkleTree, hashers::Blake3_256};
+use winterfell::crypto::{DefaultRandomCoin, MerkleTree};
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::matrix::ColMatrix;
@@ -20,9 +20,11 @@ use winterfell::{
     ProofOptions, Prover, StarkDomain, TraceInfo, TracePolyTable, TraceTable,
 };
 
+use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
 use zk_lisp_proof_winterfell::agg_air::{AggAirPublicInputs, ZlAggAir};
 use zk_lisp_proof_winterfell::agg_child::{ZlChildCompact, children_root_from_compact};
 use zk_lisp_proof_winterfell::agg_trace::build_agg_trace;
+use zk_lisp_proof_winterfell::poseidon_hasher::PoseidonHasher;
 use zk_lisp_proof_winterfell::zl_step::StepMeta;
 
 /// Minimal prover wiring for
@@ -45,7 +47,7 @@ impl Prover for AggProver {
     type BaseField = BE;
     type Air = ZlAggAir;
     type Trace = TraceTable<Self::BaseField>;
-    type HashFn = Blake3_256<Self::BaseField>;
+    type HashFn = PoseidonHasher<Self::BaseField>;
     type VC = MerkleTree<Self::HashFn>;
     type RandomCoin = DefaultRandomCoin<Self::HashFn>;
     type TraceLde<E: FieldElement<BaseField = Self::BaseField>> =
@@ -123,17 +125,40 @@ fn make_children() -> Vec<ZlChildCompact> {
     // `children_root` value used in tests (all zeros).
     let trace_root = [0u8; 32];
 
+    let pi_core = CorePublicInputs::default();
+    let rom_acc = [BE::ZERO; 3];
+    let trace_roots = Vec::new();
+    let constraint_root = [0u8; 32];
+    let fri_roots = Vec::new();
+    let pow_nonce = 0u64;
+
     let c1 = ZlChildCompact {
         suite_id,
         meta: meta1,
+        pi_core: pi_core.clone(),
+        rom_acc,
         step_digest: [1u8; 32],
         trace_root,
+        trace_roots: trace_roots.clone(),
+        constraint_root,
+        fri_roots: fri_roots.clone(),
+        pow_nonce,
+        fs_challenges: None,
+        merkle_proofs: None,
     };
     let c2 = ZlChildCompact {
         suite_id,
         meta: meta2,
+        pi_core,
+        rom_acc,
         step_digest: [2u8; 32],
         trace_root,
+        trace_roots,
+        constraint_root,
+        fri_roots,
+        pow_nonce,
+        fs_challenges: None,
+        merkle_proofs: None,
     };
 
     vec![c1, c2]
@@ -173,9 +198,9 @@ fn agg_proof_roundtrip_ok() {
 
     winterfell::verify::<
         ZlAggAir,
-        Blake3_256<BE>,
-        DefaultRandomCoin<Blake3_256<BE>>,
-        MerkleTree<Blake3_256<BE>>,
+        PoseidonHasher<BE>,
+        DefaultRandomCoin<PoseidonHasher<BE>>,
+        MerkleTree<PoseidonHasher<BE>>,
     >(proof, agg_pi, &acceptable)
     .expect("agg proof must verify");
 }
