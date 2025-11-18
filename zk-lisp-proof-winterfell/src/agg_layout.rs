@@ -45,6 +45,9 @@ pub struct AggColumns {
     /// Per-child FRI coset x1 coordinate for the
     /// minimal folding sample.
     pub fri_x1_child: usize,
+    /// Per-child FRI layer-1 query value used for a
+    /// minimal evaluations == query_values check.
+    pub fri_q1_child: usize,
 
     /// Aggregated AIR composition value.
     pub comp_sum: usize,
@@ -105,8 +108,9 @@ impl AggColumns {
         let fri_alpha_child = fri_vnext_child + 1;
         let fri_x0_child = fri_alpha_child + 1;
         let fri_x1_child = fri_x0_child + 1;
+        let fri_q1_child = fri_x1_child + 1;
 
-        let comp_sum = fri_x1_child + 1;
+        let comp_sum = fri_q1_child + 1;
         let alpha_div_zm_sum = comp_sum + 1;
         let map_l0_sum = alpha_div_zm_sum + 1;
         let final_llast_sum = map_l0_sum + 1;
@@ -138,6 +142,7 @@ impl AggColumns {
             fri_alpha_child,
             fri_x0_child,
             fri_x1_child,
+            fri_q1_child,
             comp_sum,
             alpha_div_zm_sum,
             map_l0_sum,

@@ -167,7 +167,7 @@ impl Air for ZlAggAir {
         let trace_len = info.length();
         assert!(trace_len > 0, "AggTrace must contain at least one row");
 
-        // We currently expose thirteen constraints:
+        // We currently expose fifteen constraints:
         // C0: ok == 0 on all rows;
         // C1: work accumulator chain gated to non-last rows.
         // C2: trace_root_err must be zero on all rows.
@@ -179,6 +179,8 @@ impl Air for ZlAggAir {
         // C11: child_count_acc chain gated to non-last rows.
         // C12: minimal on-circuit FRI-folding check for a
         //      per-child binary FRI sample.
+        // C13: FRI layer-1 evaluations == query_values sample.
+        // C14: DEEP composition vs FRI layer-0 sample.
         let degrees = vec![
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(2, vec![trace_len]),
@@ -192,7 +194,9 @@ impl Air for ZlAggAir {
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(1, vec![trace_len]),
-            TransitionConstraintDegree::new(1),
+            TransitionConstraintDegree::new(1), // C12
+            TransitionConstraintDegree::new(1), // C13
+            TransitionConstraintDegree::new(1), // C14
         ];
 
         // ok[0], v_units_acc[0], v_units_acc[last],
@@ -222,7 +226,7 @@ impl Air for ZlAggAir {
     ) where
         E: FieldElement<BaseField = Self::BaseField> + From<Self::BaseField>,
     {
-        debug_assert_eq!(result.len(), 13);
+        debug_assert_eq!(result.len(), 15);
         debug_assert_eq!(periodic_values.len(), 1);
 
         let cols = &self.cols;
@@ -261,6 +265,9 @@ impl Air for ZlAggAir {
         let fri_alpha_child = current[cols.fri_alpha_child];
         let fri_x0_child = current[cols.fri_x0_child];
         let fri_x1_child = current[cols.fri_x1_child];
+        let fri_q1_child = current[cols.fri_q1_child];
+
+        let comp_sum = current[cols.comp_sum];
 
         let is_last = periodic_values[0];
         let not_last = E::ONE - is_last;
@@ -321,6 +328,20 @@ impl Air for ZlAggAir {
         let rhs = fri_v1_child * (fri_alpha_child - fri_x0_child)
             - fri_v0_child * (fri_alpha_child - fri_x1_child);
         result[12] = lhs - rhs;
+
+        // C13: FRI layer-1 evaluations == query_values
+        // sample. The trace builder wires vnext_child
+        // as the evaluation obtained by folding the
+        // first-layer coset, and fri_q1_child as the
+        // corresponding value read from fri_layers[1]
+        // via get_query_values semantics.
+        result[13] = fri_vnext_child - fri_q1_child;
+
+        // C14: DEEP composition vs FRI layer-0 sample.
+        // For now we wire a single per-child error into
+        // comp_sum on segment-first rows and require it
+        // to be identically zero across the trace.
+        result[14] = comp_sum;
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {

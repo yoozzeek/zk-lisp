@@ -23,6 +23,18 @@ use crate::agg_child::{
 use crate::agg_layout::AggColumns;
 use crate::utils;
 
+#[derive(Clone, Copy, Debug)]
+struct FriDeepSample {
+    v0: BE,
+    v1: BE,
+    vnext: BE,
+    alpha: BE,
+    x0: BE,
+    x1: BE,
+    q1: BE,
+    deep_err: BE,
+}
+
 use winterfell::TraceTable;
 use winterfell::crypto::Digest as CryptoHashDigest;
 use winterfell::math::FieldElement;
@@ -275,6 +287,10 @@ pub fn build_agg_trace(
                 trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
                 trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
                 trace.set(cols.fri_vnext_child, cur_row, BE::ZERO);
+                trace.set(cols.fri_alpha_child, cur_row, BE::ZERO);
+                trace.set(cols.fri_x0_child, cur_row, BE::ZERO);
+                trace.set(cols.fri_x1_child, cur_row, BE::ZERO);
+                trace.set(cols.fri_q1_child, cur_row, BE::ZERO);
 
                 trace.set(cols.v0_sum, cur_row, fri_v0_sum);
                 trace.set(cols.v1_sum, cur_row, fri_v1_sum);
@@ -295,6 +311,7 @@ pub fn build_agg_trace(
                 trace.set(cols.fri_alpha_child, cur_row, BE::ZERO);
                 trace.set(cols.fri_x0_child, cur_row, BE::ZERO);
                 trace.set(cols.fri_x1_child, cur_row, BE::ZERO);
+                trace.set(cols.fri_q1_child, cur_row, BE::ZERO);
 
                 trace.set(cols.v0_sum, cur_row, fri_v0_sum);
                 trace.set(cols.v1_sum, cur_row, fri_v1_sum);
@@ -326,6 +343,7 @@ pub fn build_agg_trace(
         trace.set(cols.fri_alpha_child, cur_row, BE::ZERO);
         trace.set(cols.fri_x0_child, cur_row, BE::ZERO);
         trace.set(cols.fri_x1_child, cur_row, BE::ZERO);
+        trace.set(cols.fri_q1_child, cur_row, BE::ZERO);
 
         trace.set(cols.v0_sum, cur_row, fri_v0_sum);
         trace.set(cols.v1_sum, cur_row, fri_v1_sum);
@@ -534,14 +552,16 @@ pub fn build_agg_trace_from_transcripts(
         // AIR can enforce the binary folding relation. When FRI
         // data or query positions are unavailable, we fall back
         // to zeros so that the constraint becomes vacuous.
-        let (
-            fri_v0_child_fe,
-            fri_v1_child_fe,
-            fri_vnext_child_fe,
-            fri_alpha_child_fe,
-            fri_x0_child_fe,
-            fri_x1_child_fe,
-        ) = sample_fri_fold_child(tx, &agg_pi.profile_fri)?;
+        let FriDeepSample {
+            v0: fri_v0_child_fe,
+            v1: fri_v1_child_fe,
+            vnext: fri_vnext_child_fe,
+            alpha: fri_alpha_child_fe,
+            x0: fri_x0_child_fe,
+            x1: fri_x1_child_fe,
+            q1: fri_q1_child_fe,
+            deep_err: fri_deep_err_fe,
+        } = sample_fri_fold_child(tx, &agg_pi.profile_fri)?;
 
         for r in 0..m {
             let cur_row = row + r;
@@ -569,6 +589,8 @@ pub fn build_agg_trace_from_transcripts(
                 trace.set(cols.fri_alpha_child, cur_row, fri_alpha_child_fe);
                 trace.set(cols.fri_x0_child, cur_row, fri_x0_child_fe);
                 trace.set(cols.fri_x1_child, cur_row, fri_x1_child_fe);
+                trace.set(cols.fri_q1_child, cur_row, fri_q1_child_fe);
+                trace.set(cols.comp_sum, cur_row, fri_deep_err_fe);
 
                 trace.set(cols.v0_sum, cur_row, fri_v0_sum);
                 trace.set(cols.v1_sum, cur_row, fri_v1_sum);
@@ -589,6 +611,7 @@ pub fn build_agg_trace_from_transcripts(
                 trace.set(cols.fri_alpha_child, cur_row, BE::ZERO);
                 trace.set(cols.fri_x0_child, cur_row, BE::ZERO);
                 trace.set(cols.fri_x1_child, cur_row, BE::ZERO);
+                trace.set(cols.fri_q1_child, cur_row, BE::ZERO);
 
                 trace.set(cols.v0_sum, cur_row, fri_v0_sum);
                 trace.set(cols.v1_sum, cur_row, fri_v1_sum);
@@ -620,6 +643,7 @@ pub fn build_agg_trace_from_transcripts(
         trace.set(cols.fri_alpha_child, cur_row, BE::ZERO);
         trace.set(cols.fri_x0_child, cur_row, BE::ZERO);
         trace.set(cols.fri_x1_child, cur_row, BE::ZERO);
+        trace.set(cols.fri_q1_child, cur_row, BE::ZERO);
 
         trace.set(cols.v0_sum, cur_row, fri_v0_sum);
         trace.set(cols.v1_sum, cur_row, fri_v1_sum);
@@ -630,23 +654,39 @@ pub fn build_agg_trace_from_transcripts(
 }
 
 /// Compute a minimal per-child binary FRI-folding
-/// sample from a child transcript.
+/// and DEEP-composition sample from a child transcript.
 ///
 /// We pick the first FRI layer and the first coset
 /// in that layer and derive (v0, v1, vnext, alpha,
-/// x0, x1) for a binary FRI step. When FRI data or
-/// query positions are unavailable, we return all
-/// zeros so that the corresponding AIR constraint
-/// becomes vacuous.
+/// x0, x1) for a binary FRI step. We also compute a
+/// layer-1 FRI query value `q1` matching `vnext` via
+/// `get_query_values` semantics and a DEEP composition
+/// error `deep_err = Y(x_0) - q0`, where `Y(x_0)` is
+/// reconstructed from trace / constraint openings and
+/// OOD frames and `q0` is the FRI layer-0 query value
+/// at the same query position.
+///
+/// When FRI data or query positions are unavailable,
+/// we return all zeros so that the corresponding AIR
+/// constraints become vacuous.
 fn sample_fri_fold_child(
     tx: &ZlChildTranscript,
     fri_profile: &AggFriProfile,
-) -> error::Result<(BE, BE, BE, BE, BE, BE)> {
+) -> error::Result<FriDeepSample> {
     let num_layers = tx.fri_layers.len();
     let num_queries = tx.num_queries as usize;
 
     if num_layers == 0 || num_queries == 0 {
-        return Ok((BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO));
+        return Ok(FriDeepSample {
+            v0: BE::ZERO,
+            v1: BE::ZERO,
+            vnext: BE::ZERO,
+            alpha: BE::ZERO,
+            x0: BE::ZERO,
+            x1: BE::ZERO,
+            q1: BE::ZERO,
+            deep_err: BE::ZERO,
+        });
     }
 
     let folding = fri_profile.folding_factor as usize;
@@ -656,19 +696,47 @@ fn sample_fri_fold_child(
         ));
     }
 
+    if num_layers < 2 {
+        return Err(error::Error::InvalidInput(
+            "AggTrace requires at least two FRI layers in sample_fri_fold_child when num_queries > 0",
+        ));
+    }
+
     let child = &tx.compact;
     let fs = match &child.fs_challenges {
         Some(fs) => fs,
         None => {
             // Without FS challenges we cannot reconstruct
-            // the FRI domain geometry; fall back to zeros.
-            return Ok((BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO));
+            // the FRI / DEEP domain geometry; fall back to
+            // zeros so that AIR constraints become vacuous.
+            return Ok(FriDeepSample {
+                v0: BE::ZERO,
+                v1: BE::ZERO,
+                vnext: BE::ZERO,
+                alpha: BE::ZERO,
+                x0: BE::ZERO,
+                x1: BE::ZERO,
+                q1: BE::ZERO,
+                deep_err: BE::ZERO,
+            });
         }
     };
 
     if fs.query_positions.len() != num_queries {
         return Err(error::Error::InvalidInput(
             "FS query_positions length is inconsistent with child transcript num_queries",
+        ));
+    }
+
+    if fs.ood_points.len() != 1 {
+        return Err(error::Error::InvalidInput(
+            "AggTrace expects exactly one OOD point in sample_fri_fold_child",
+        ));
+    }
+
+    if fs.deep_coeffs.is_empty() {
+        return Err(error::Error::InvalidInput(
+            "AggTrace requires non-empty DEEP coefficients in sample_fri_fold_child",
         ));
     }
 
@@ -701,7 +769,16 @@ fn sample_fri_fold_child(
     ))?;
 
     if folded_positions.is_empty() || layer0_vals.is_empty() {
-        return Ok((BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO));
+        return Ok(FriDeepSample {
+            v0: BE::ZERO,
+            v1: BE::ZERO,
+            vnext: BE::ZERO,
+            alpha: BE::ZERO,
+            x0: BE::ZERO,
+            x1: BE::ZERO,
+            q1: BE::ZERO,
+            deep_err: BE::ZERO,
+        });
     }
 
     let q_count = layer0_vals.len();
@@ -728,7 +805,16 @@ fn sample_fri_fold_child(
         None => {
             // Without a layer-0 FRI alpha we cannot form
             // the folding sample; fall back to zeros.
-            return Ok((BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO));
+            return Ok(FriDeepSample {
+                v0: BE::ZERO,
+                v1: BE::ZERO,
+                vnext: BE::ZERO,
+                alpha: BE::ZERO,
+                x0: BE::ZERO,
+                x1: BE::ZERO,
+                q1: BE::ZERO,
+                deep_err: BE::ZERO,
+            });
         }
     };
 
@@ -742,5 +828,244 @@ fn sample_fri_fold_child(
     let num = v1 * (alpha - x0) - v0 * (alpha - x1);
     let vnext = num * den.inv();
 
-    Ok((v0, v1, vnext, alpha, x0, x1))
+    // --- FRI layer-1 evaluations == query_values sample ---
+    // Reconstruct layer-1 query value for the same path
+    // using `get_query_values` geometry.
+    let layer1_vals = tx.fri_layers.get(1).ok_or(error::Error::InvalidInput(
+        "ZlChildTranscript.fri_layers must contain at least two layers in sample_fri_fold_child",
+    ))?;
+
+    let domain_size_1 = lde_domain_size
+        .checked_div(folding)
+        .ok_or(error::Error::InvalidInput(
+            "AggTrace domain size underflow at FRI depth 1 in sample_fri_fold_child",
+        ))?;
+
+    if domain_size_1 == 0 || domain_size_1 % folding != 0 {
+        return Err(error::Error::InvalidInput(
+            "AggTrace FRI domain size at depth 1 must be a positive multiple of folding in sample_fri_fold_child",
+        ));
+    }
+
+    let positions_1 = folded_positions.clone();
+    let folded_positions_1 = fold_positions_usize(&positions_1, domain_size_1, folding)?;
+
+    let q_count_1 = layer1_vals.len();
+    if q_count_1 != folded_positions_1.len() {
+        return Err(error::Error::InvalidInput(
+            "FRI folded positions count is inconsistent with transcript layer 1 values in sample_fri_fold_child",
+        ));
+    }
+
+    let pos_1 = positions_1[sample_idx];
+    if pos_1 >= domain_size_1 {
+        return Err(error::Error::InvalidInput(
+            "FRI sample position exceeds domain size at depth 1 in sample_fri_fold_child",
+        ));
+    }
+
+    let row_length_1 = domain_size_1 / folding;
+    if row_length_1 == 0 {
+        return Err(error::Error::InvalidInput(
+            "FRI row length at depth 1 must be non-zero in sample_fri_fold_child",
+        ));
+    }
+
+    let coset_idx_1 = pos_1 % row_length_1;
+    let elem_idx_1 = pos_1 / row_length_1;
+    if elem_idx_1 >= folding {
+        return Err(error::Error::InvalidInput(
+            "FRI element index exceeds folding factor at depth 1 in sample_fri_fold_child",
+        ));
+    }
+
+    let folded_idx_1 = folded_positions_1
+        .iter()
+        .position(|&p| p == coset_idx_1)
+        .ok_or(error::Error::InvalidInput(
+            "FRI sample coset index not found in folded positions at depth 1 in sample_fri_fold_child",
+        ))?;
+
+    let pair_1 = layer1_vals[folded_idx_1];
+    let q1 = pair_1[elem_idx_1];
+
+    // --- DEEP composition vs FRI layer-0 sample ---
+    // Reconstruct a single DEEP composition value Y(x_0)
+    // for the same query position and compare it to the
+    // corresponding FRI layer-0 query value q0.
+    let trace_width = tx.main_trace_width as usize;
+    let constraint_width = tx.constraint_frame_width as usize;
+
+    if trace_width == 0 && constraint_width == 0 {
+        return Err(error::Error::InvalidInput(
+            "ZlChildTranscript must have non-zero trace or constraint width in sample_fri_fold_child",
+        ));
+    }
+
+    if fs.deep_coeffs.len() != trace_width + constraint_width {
+        return Err(error::Error::InvalidInput(
+            "FS deep_coeffs length is inconsistent with trace/constraint widths in sample_fri_fold_child",
+        ));
+    }
+
+    if tx.trace_main_openings.len() != num_queries {
+        return Err(error::Error::InvalidInput(
+            "ZlChildTranscript.trace_main_openings length is inconsistent with num_queries in sample_fri_fold_child",
+        ));
+    }
+
+    if !tx.constraint_openings.is_empty() && tx.constraint_openings.len() != num_queries {
+        return Err(error::Error::InvalidInput(
+            "ZlChildTranscript.constraint_openings length is inconsistent with num_queries in sample_fri_fold_child",
+        ));
+    }
+
+    if tx.ood_main_current.len() != trace_width
+        || tx.ood_main_next.len() != trace_width
+        || tx.ood_quotient_current.len() != constraint_width
+    {
+        return Err(error::Error::InvalidInput(
+            "ZlChildTranscript OOD row lengths are inconsistent with trace/constraint widths in sample_fri_fold_child",
+        ));
+    }
+
+    if trace_width > 0 && tx.trace_main_openings[sample_idx].len() != trace_width {
+        return Err(error::Error::InvalidInput(
+            "ZlChildTranscript.trace_main_openings row width is inconsistent with main_trace_width in sample_fri_fold_child",
+        ));
+    }
+
+    if constraint_width > 0
+        && !tx.constraint_openings.is_empty()
+        && tx.constraint_openings[sample_idx].len() != constraint_width
+    {
+        return Err(error::Error::InvalidInput(
+            "ZlChildTranscript.constraint_openings row width is inconsistent with constraint_frame_width in sample_fri_fold_child",
+        ));
+    }
+
+    let z = fs.ood_points[0];
+
+    // Reconstruct the evaluation point x_0 in the LDE domain
+    // matching the sample query position.
+    let pos_0 = positions[sample_idx];
+    if pos_0 >= lde_domain_size {
+        return Err(error::Error::InvalidInput(
+            "FRI sample position exceeds LDE domain size in sample_fri_fold_child",
+        ));
+    }
+
+    let x = base_g.exp_vartime((pos_0 as u64).into()) * offset;
+
+    // Reconstruct the trace-domain generator and z * g for
+    // the OOD "next" row. We require m to be a power of two
+    // so that get_root_of_unity(m.ilog2()) is well-defined.
+    let m = child.meta.m as usize;
+    if m == 0 || !m.is_power_of_two() {
+        return Err(error::Error::InvalidInput(
+            "child.meta.m must be a non-zero power of two in sample_fri_fold_child",
+        ));
+    }
+
+    let g_trace = BE::get_root_of_unity(m.ilog2());
+    let z_g = z * g_trace;
+
+    let x_minus_z = x - z;
+    let x_minus_zg = x - z_g;
+
+    if x_minus_z == BE::ZERO || x_minus_zg == BE::ZERO {
+        return Err(error::Error::InvalidInput(
+            "evaluation point x collides with OOD point in sample_fri_fold_child",
+        ));
+    }
+
+    let inv_x_minus_z = x_minus_z.inv();
+    let inv_x_minus_zg = x_minus_zg.inv();
+
+    let (deep_trace_coeffs, deep_constraint_coeffs) = fs.deep_coeffs.split_at(trace_width);
+
+    let mut deep_val = BE::ZERO;
+
+    // Trace contribution: use both current and next OOD
+    // rows with a single coefficient per column, mirroring
+    // DeepComposer semantics.
+    if trace_width > 0 {
+        let row_x = &tx.trace_main_openings[sample_idx];
+        for i in 0..trace_width {
+            let coeff = deep_trace_coeffs[i];
+            let t_x = row_x[i];
+            let t_z = tx.ood_main_current[i];
+            let t_zg = tx.ood_main_next[i];
+
+            let term_z = (t_x - t_z) * inv_x_minus_z;
+            let term_zg = (t_x - t_zg) * inv_x_minus_zg;
+            deep_val += coeff * (term_z + term_zg);
+        }
+    }
+
+    // Constraint composition contribution: use both
+    // current and next OOD rows with the same common
+    // denominator as for trace columns, mirroring
+    // DeepComposer semantics.
+    if constraint_width > 0 && !tx.constraint_openings.is_empty() {
+        let row_c = &tx.constraint_openings[sample_idx];
+        for j in 0..constraint_width {
+            let coeff = deep_constraint_coeffs[j];
+            let c_x = row_c[j];
+            let c_z = tx.ood_quotient_current[j];
+            let c_zg = tx.ood_quotient_next[j];
+
+            let term_c_z = (c_x - c_z) * inv_x_minus_z;
+            let term_c_zg = (c_x - c_zg) * inv_x_minus_zg;
+            deep_val += coeff * (term_c_z + term_c_zg);
+        }
+    }
+
+    // FRI layer-0 query value q0 for the same sample
+    // path, computed via get_query_values geometry.
+    let domain_size_0 = lde_domain_size;
+    let row_length_0 = domain_size_0 / folding;
+    if row_length_0 == 0 {
+        return Err(error::Error::InvalidInput(
+            "FRI row length at depth 0 must be non-zero in sample_fri_fold_child",
+        ));
+    }
+
+    let pos_0_fe = positions[sample_idx];
+    if pos_0_fe >= domain_size_0 {
+        return Err(error::Error::InvalidInput(
+            "FRI sample position exceeds domain size at depth 0 in sample_fri_fold_child",
+        ));
+    }
+
+    let coset_idx_0 = pos_0_fe % row_length_0;
+    let elem_idx_0 = pos_0_fe / row_length_0;
+    if elem_idx_0 >= folding {
+        return Err(error::Error::InvalidInput(
+            "FRI element index exceeds folding factor at depth 0 in sample_fri_fold_child",
+        ));
+    }
+
+    let folded_idx_0 = folded_positions
+        .iter()
+        .position(|&p| p == coset_idx_0)
+        .ok_or(error::Error::InvalidInput(
+            "FRI sample coset index not found in folded positions at depth 0 in sample_fri_fold_child",
+        ))?;
+
+    let pair_0 = layer0_vals[folded_idx_0];
+    let q0 = pair_0[elem_idx_0];
+
+    let deep_err = deep_val - q0;
+
+    Ok(FriDeepSample {
+        v0,
+        v1,
+        vnext,
+        alpha,
+        x0,
+        x1,
+        q1,
+        deep_err,
+    })
 }
