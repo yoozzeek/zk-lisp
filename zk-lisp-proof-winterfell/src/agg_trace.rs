@@ -584,7 +584,18 @@ pub fn build_agg_trace_from_transcripts(
         // so that this aggregate stays statistically
         // independent from beta-based aggregates.
         let fri_path_agg =
-            compute_fri_path_agg_over_layers(tx, &agg_pi.profile_fri, BE::from(7u64))?;
+            compute_fri_path_agg_over_layers(tx, &agg_pi.profile_fri, BE::from(7u64), 0usize)?;
+
+        // Aggregate FRI folding and remainder errors over all query
+        // paths using a separate geometric weighting beta_paths^k so
+        // that depth and path aggregates remain statistically
+        // independent.
+        let fri_paths_agg = compute_fri_paths_agg_over_layers(
+            tx,
+            &agg_pi.profile_fri,
+            BE::from(7u64),
+            BE::from(11u64),
+        )?;
 
         for r in 0..m {
             let cur_row = row + r;
@@ -616,6 +627,7 @@ pub fn build_agg_trace_from_transcripts(
                 trace.set(cols.comp_sum, cur_row, deep_agg);
                 trace.set(cols.alpha_div_zm_sum, cur_row, fri_layer1_agg);
                 trace.set(cols.map_l0_sum, cur_row, fri_path_agg);
+                trace.set(cols.final_llast_sum, cur_row, fri_paths_agg);
 
                 trace.set(cols.v0_sum, cur_row, fri_v0_sum);
                 trace.set(cols.v1_sum, cur_row, fri_v1_sum);
@@ -676,14 +688,15 @@ pub fn build_agg_trace_from_transcripts(
         trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
         trace.set(cols.alpha_div_zm_sum, cur_row, BE::ZERO);
         trace.set(cols.map_l0_sum, cur_row, BE::ZERO);
+        trace.set(cols.final_llast_sum, cur_row, BE::ZERO);
     }
 
     Ok(AggTrace::new(trace, cols))
 }
 
-/// Aggregate local FRI folding errors along a single path (sample
-/// index 0) across all FRI layers and the remainder polynomial for a
-/// child transcript.
+/// Aggregate local FRI folding errors along a single FRI query path
+/// across all FRI layers and the remainder polynomial for a child
+/// transcript.
 ///
 /// This function mirrors the structure of FriVerifier::verify_generic
 /// for folding factor 2 but restricts to a single query path. For each
@@ -699,15 +712,16 @@ pub fn build_agg_trace_from_transcripts(
 ///   folded polynomial on the smallest domain and compares it against
 ///   the remainder polynomial at the corresponding point.
 ///
-/// All errors are accumulated into a single scalar using a geometric
-/// weighting delta^d so that a non-zero result flags any inconsistency
-/// along the path. When FRI data or FS challenges are missing, or when
-/// num_layers < 2, the function falls back to zero so that the AIR
-/// constraint becomes vacuous.
+/// All errors for a single path indexed by `sample_idx` are accumulated
+/// into a scalar using a geometric weighting delta^d so that a non-zero
+/// result flags any inconsistency along that path. When FRI data or FS
+/// challenges are missing, or when num_layers < 2, the function falls
+/// back to zero so that the AIR constraint becomes vacuous.
 fn compute_fri_path_agg_over_layers(
     tx: &ZlChildTranscript,
     fri_profile: &AggFriProfile,
     delta: BE,
+    sample_idx: usize,
 ) -> error::Result<BE> {
     let num_layers = tx.fri_layers.len();
     let num_queries = tx.num_queries as usize;
@@ -782,10 +796,6 @@ fn compute_fri_path_agg_over_layers(
     // fri_final at the end.
     let mut v_remainder_path = BE::ZERO;
     let mut pos_remainder = 0usize;
-
-    // We use sample index 0 consistently across depths, matching the
-    // minimal sample used by sample_fri_fold_child.
-    let sample_idx = 0usize;
 
     for depth in 0..num_layers {
         let layer_vals = &tx.fri_layers[depth];
@@ -966,6 +976,60 @@ fn compute_fri_path_agg_over_layers(
 
     let e_final = v_remainder_path - rem_val;
     agg += delta_pow * e_final;
+
+    Ok(agg)
+}
+
+/// Aggregate FRI folding and remainder errors over all query paths and
+/// all FRI layers for a child transcript.
+///
+/// For each FRI path index `k` (coset index shared across all layers)
+/// this function computes the single-path aggregate
+/// `path_err_k = compute_fri_path_agg_over_layers` with depth challenge
+/// `delta`, and then folds all such paths into a single scalar
+///
+///     agg = sum_{k} beta^k * path_err_k
+///
+/// using an independent path-weighting challenge `beta`. When FRI data
+/// or FS challenges are missing, or when there are fewer than two FRI
+/// layers or no non-empty layers, the aggregate falls back to zero so
+/// that the corresponding AIR constraint becomes vacuous.
+fn compute_fri_paths_agg_over_layers(
+    tx: &ZlChildTranscript,
+    fri_profile: &AggFriProfile,
+    delta: BE,
+    beta: BE,
+) -> error::Result<BE> {
+    let num_layers = tx.fri_layers.len();
+    let num_queries = tx.num_queries as usize;
+
+    if num_layers < 2 || num_queries == 0 {
+        return Ok(BE::ZERO);
+    }
+
+    // Use the minimum non-empty layer length as the number of FRI paths
+    // that can be followed consistently across all depths without
+    // running out of samples.
+    let min_paths = tx
+        .fri_layers
+        .iter()
+        .map(|layer| layer.len())
+        .filter(|&len| len > 0)
+        .min()
+        .unwrap_or(0usize);
+
+    if min_paths == 0 {
+        return Ok(BE::ZERO);
+    }
+
+    let mut agg = BE::ZERO;
+    let mut beta_pow = BE::ONE;
+
+    for k in 0..min_paths {
+        let path_err = compute_fri_path_agg_over_layers(tx, fri_profile, delta, k)?;
+        agg += beta_pow * path_err;
+        beta_pow *= beta;
+    }
 
     Ok(agg)
 }

@@ -167,7 +167,7 @@ impl Air for ZlAggAir {
         let trace_len = info.length();
         assert!(trace_len > 0, "AggTrace must contain at least one row");
 
-        // We currently expose seventeen constraints:
+        // We currently expose eighteen constraints:
         // C0: ok == 0 on all rows;
         // C1: work accumulator chain gated to non-last rows.
         // C2: trace_root_err must be zero on all rows.
@@ -185,6 +185,8 @@ impl Air for ZlAggAir {
         //      error over all query positions.
         // C16: local FRI path folding and remainder consistency
         //      across all layers for a single query path.
+        // C17: global FRI paths folding and remainder consistency
+        //      aggregated over all query paths.
         let degrees = vec![
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(2, vec![trace_len]),
@@ -203,6 +205,7 @@ impl Air for ZlAggAir {
             TransitionConstraintDegree::new(1), // C14
             TransitionConstraintDegree::new(1), // C15
             TransitionConstraintDegree::new(1), // C16
+            TransitionConstraintDegree::new(1), // C17
         ];
 
         // ok[0], v_units_acc[0], v_units_acc[last],
@@ -232,7 +235,7 @@ impl Air for ZlAggAir {
     ) where
         E: FieldElement<BaseField = Self::BaseField> + From<Self::BaseField>,
     {
-        debug_assert_eq!(result.len(), 17);
+        debug_assert_eq!(result.len(), 18);
         debug_assert_eq!(periodic_values.len(), 1);
 
         let cols = &self.cols;
@@ -276,6 +279,7 @@ impl Air for ZlAggAir {
         let comp_sum = current[cols.comp_sum];
         let fri_layer1_agg = current[cols.alpha_div_zm_sum];
         let fri_path_agg = current[cols.map_l0_sum];
+        let fri_paths_agg = current[cols.final_llast_sum];
 
         let is_last = periodic_values[0];
         let not_last = E::ONE - is_last;
@@ -365,6 +369,13 @@ impl Air for ZlAggAir {
         // on segment-first rows and zeros elsewhere; we require
         // it to be identically zero across the trace.
         result[16] = fri_path_agg;
+
+        // C17: global FRI paths folding and remainder consistency
+        // aggregated over all query paths. The trace builder wires
+        // this scalar into final_llast_sum on segment-first rows and
+        // zeros elsewhere; we require it to be identically zero
+        // across the trace.
+        result[17] = fri_paths_agg;
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {
