@@ -21,7 +21,16 @@ use crate::agg_child::{
     merkle_root_from_leaf,
 };
 use crate::agg_layout::AggColumns;
+use crate::poseidon_hasher::PoseidonHasher;
 use crate::utils;
+
+use winterfell::TraceTable;
+use winterfell::crypto::{DefaultRandomCoin, Digest as CryptoHashDigest, RandomCoin};
+use winterfell::math::FieldElement;
+use winterfell::math::StarkField;
+use winterfell::math::ToElements;
+use winterfell::math::fields::f128::BaseElement as BE;
+use zk_lisp_proof::error;
 
 #[derive(Clone, Copy, Debug)]
 struct FriDeepSample {
@@ -35,12 +44,45 @@ struct FriDeepSample {
     deep_err: BE,
 }
 
-use winterfell::TraceTable;
-use winterfell::crypto::Digest as CryptoHashDigest;
-use winterfell::math::FieldElement;
-use winterfell::math::StarkField;
-use winterfell::math::fields::f128::BaseElement as BE;
-use zk_lisp_proof::error;
+#[derive(Clone, Copy, Debug)]
+struct AggFsWeights {
+    beta_deep: BE,
+    beta_fri_layer1: BE,
+    delta_depth: BE,
+    beta_paths: BE,
+}
+
+fn derive_agg_fs_weights(agg_pi: &AggAirPublicInputs) -> error::Result<AggFsWeights> {
+    // Derive aggregation weights from AggAirPublicInputs via a
+    // dedicated Fiat–Shamir coin so that DEEP / FRI aggregates use
+    // unpredictable challenges rather than fixed constants.
+    let mut seed_elems = agg_pi.to_elements();
+    // Simple domain separator to make aggregation FS distinct from
+    // other transcripts using the same hasher.
+    seed_elems.push(BE::from(0xA9u64));
+
+    let mut coin = DefaultRandomCoin::<PoseidonHasher<BE>>::new(&seed_elems);
+
+    let beta_deep: BE = coin
+        .draw()
+        .map_err(|_| error::Error::InvalidInput("failed to draw beta_deep in aggregation FS"))?;
+    let beta_fri_layer1: BE = coin.draw().map_err(|_| {
+        error::Error::InvalidInput("failed to draw beta_fri_layer1 in aggregation FS")
+    })?;
+    let delta_depth: BE = coin
+        .draw()
+        .map_err(|_| error::Error::InvalidInput("failed to draw delta_depth in aggregation FS"))?;
+    let beta_paths: BE = coin
+        .draw()
+        .map_err(|_| error::Error::InvalidInput("failed to draw beta_paths in aggregation FS"))?;
+
+    Ok(AggFsWeights {
+        beta_deep,
+        beta_fri_layer1,
+        delta_depth,
+        beta_paths,
+    })
+}
 
 /// Helper structure bundling an aggregation trace with
 /// its column layout.
@@ -484,6 +526,16 @@ pub fn build_agg_trace_from_transcripts(
     let fri_v1_sum = BE::ZERO;
     let fri_vnext_sum = BE::ZERO;
 
+    // Derive aggregation Fiat–Shamir weights once per aggregation
+    // instance and reuse them across all children so that DEEP and
+    // FRI aggregates are driven by unpredictable challenges.
+    let AggFsWeights {
+        beta_deep,
+        beta_fri_layer1,
+        delta_depth,
+        beta_paths,
+    } = derive_agg_fs_weights(agg_pi)?;
+
     for (i, tx) in transcripts.iter().enumerate() {
         let child = &tx.compact;
         let m = agg_pi.children_ms[i] as usize;
@@ -565,18 +617,17 @@ pub fn build_agg_trace_from_transcripts(
 
         // Aggregate DEEP vs FRI layer-0 errors across all
         // query positions for this child using a simple
-        // geometric weighting beta^k. For now we use a fixed
-        // beta; in future revisions this can be derived from
-        // the aggregator's own Fiat–Shamir transcript.
-        let deep_agg = compute_deep_agg_over_queries(tx, BE::from(3u64))?;
+        // geometric weighting beta^k drawn from the aggregation
+        // Fiat–Shamir transcript.
+        let deep_agg = compute_deep_agg_over_queries(tx, beta_deep)?;
 
         // Aggregate FRI layer-1 evaluations == query_values
         // errors across all query positions for this child.
-        // We use a separate geometric weighting beta_fri^k
-        // so that DEEP and FRI aggregates remain
-        // statistically independent.
+        // We use a separate geometric weighting beta_fri^k so
+        // that DEEP and FRI aggregates remain statistically
+        // independent.
         let fri_layer1_agg =
-            compute_fri_layer1_agg_over_queries(tx, &agg_pi.profile_fri, BE::from(5u64))?;
+            compute_fri_layer1_agg_over_queries(tx, &agg_pi.profile_fri, beta_fri_layer1)?;
 
         // Aggregate local FRI folding errors along a single
         // path across all layers, including the remainder
@@ -584,18 +635,14 @@ pub fn build_agg_trace_from_transcripts(
         // so that this aggregate stays statistically
         // independent from beta-based aggregates.
         let fri_path_agg =
-            compute_fri_path_agg_over_layers(tx, &agg_pi.profile_fri, BE::from(7u64), 0usize)?;
+            compute_fri_path_agg_over_layers(tx, &agg_pi.profile_fri, delta_depth, 0usize)?;
 
         // Aggregate FRI folding and remainder errors over all query
         // paths using a separate geometric weighting beta_paths^k so
         // that depth and path aggregates remain statistically
         // independent.
-        let fri_paths_agg = compute_fri_paths_agg_over_layers(
-            tx,
-            &agg_pi.profile_fri,
-            BE::from(7u64),
-            BE::from(11u64),
-        )?;
+        let fri_paths_agg =
+            compute_fri_paths_agg_over_layers(tx, &agg_pi.profile_fri, delta_depth, beta_paths)?;
 
         for r in 0..m {
             let cur_row = row + r;

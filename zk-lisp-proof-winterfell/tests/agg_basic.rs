@@ -10,7 +10,9 @@
 //! Basic tests for the aggregation AIR (ZlAggAir) and
 //! aggregation trace builder (build_agg_trace).
 
-use winterfell::crypto::{DefaultRandomCoin, MerkleTree};
+use std::panic;
+
+use winterfell::crypto::{DefaultRandomCoin, Hasher, MerkleTree};
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::matrix::ColMatrix;
@@ -700,7 +702,6 @@ fn agg_fri_binding_accepts_honest_child_transcript() {
 }
 
 #[test]
-#[ignore]
 fn agg_fri_binding_rejects_tampered_fri_final() {
     let program = build_step_program();
     let pi = build_step_public_inputs(&program);
@@ -759,11 +760,236 @@ fn agg_fri_binding_rejects_tampered_fri_final() {
     let agg_trace = build_agg_trace_from_transcripts(&agg_pi, &[transcript])
         .expect("agg trace build from tampered transcript must still succeed");
 
-    // NOTE: FRI remainder binding is not yet enforced on-circuit.
-    // This ignored test is kept as a placeholder and will be
-    // revisited once full DEEP/FRI wiring is implemented in
-    // ZlAggAir. For now we only ensure that the builder can
-    // construct a trace from a tampered transcript without
-    // panicking.
-    let _len = agg_trace.trace.length();
+    // Prove aggregation AIR and ensure that constraint evaluation fails
+    // for the tampered FRI remainder. In debug/profile builds Winterfell
+    // enforces this by panicking when a main transition constraint does
+    // not evaluate to zero.
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+
+    let result = panic::catch_unwind(|| {
+        let _proof: Proof = prover
+            .prove(agg_trace.trace.clone())
+            .expect("agg proof construction unexpectedly succeeded for tampered FRI remainder");
+    });
+
+    assert!(
+        result.is_err(),
+        "agg prover must panic when FRI remainder is inconsistent with FRI layers",
+    );
+}
+
+#[test]
+fn agg_fri_binding_rejects_tampered_fri_layer_value() {
+    let program = build_step_program();
+    let pi = build_step_public_inputs(&program);
+    let opts = make_step_opts();
+
+    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let mut transcript =
+        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
+
+    // Corrupt a single FRI layer-0 value while keeping the overall
+    // transcript shape consistent. This should break DEEP vs FRI
+    // layer-0 and FRI folding aggregates.
+    if let Some(layer0) = transcript.fri_layers.get_mut(0) {
+        if let Some(pair) = layer0.get_mut(0) {
+            pair[0] += BE::ONE;
+        }
+    }
+
+    let child = transcript.compact.clone();
+    let children = vec![child.clone()];
+    let children_root = children_root_from_compact(&child.suite_id, &children);
+
+    let profile_meta = AggProfileMeta {
+        m: child.meta.m,
+        rho: child.meta.rho,
+        q: child.meta.q,
+        o: child.meta.o,
+        lambda: child.meta.lambda,
+        pi_len: child.meta.pi_len,
+        v_units: child.meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: child.meta.rho as u32,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: transcript.fri_layers.len() as u8,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: child.meta.q,
+        grinding_factor: 0,
+    };
+
+    let agg_pi = AggAirPublicInputs {
+        children_root,
+        v_units_total: child.meta.v_units,
+        children_count: 1,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: child.suite_id,
+        children_ms: vec![child.meta.m],
+    };
+
+    let agg_trace = build_agg_trace_from_transcripts(&agg_pi, &[transcript])
+        .expect("agg trace build from tampered transcript must still succeed");
+
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+
+    let result = panic::catch_unwind(|| {
+        let _proof: Proof = prover
+            .prove(agg_trace.trace.clone())
+            .expect("agg proof construction unexpectedly succeeded for tampered FRI layer");
+    });
+
+    assert!(
+        result.is_err(),
+        "agg prover must panic when FRI layer values are inconsistent with DEEP/FRI aggregates",
+    );
+}
+
+#[test]
+fn agg_builder_rejects_inconsistent_query_count() {
+    let program = build_step_program();
+    let pi = build_step_public_inputs(&program);
+    let opts = make_step_opts();
+
+    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let mut transcript =
+        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
+
+    // Make transcript.num_queries inconsistent with FS query_positions
+    // length so that aggregation helpers detect the mismatch.
+    transcript.num_queries += 1;
+
+    let child = transcript.compact.clone();
+    let children = vec![child.clone()];
+    let children_root = children_root_from_compact(&child.suite_id, &children);
+
+    let profile_meta = AggProfileMeta {
+        m: child.meta.m,
+        rho: child.meta.rho,
+        q: child.meta.q,
+        o: child.meta.o,
+        lambda: child.meta.lambda,
+        pi_len: child.meta.pi_len,
+        v_units: child.meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: child.meta.rho as u32,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: transcript.fri_layers.len() as u8,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: child.meta.q,
+        grinding_factor: 0,
+    };
+
+    let agg_pi = AggAirPublicInputs {
+        children_root,
+        v_units_total: child.meta.v_units,
+        children_count: 1,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: child.suite_id,
+        children_ms: vec![child.meta.m],
+    };
+
+    let result = build_agg_trace_from_transcripts(&agg_pi, &[transcript]);
+
+    assert!(
+        result.is_err(),
+        "agg trace builder must reject transcripts with inconsistent num_queries",
+    );
+}
+
+#[test]
+fn agg_merkle_binding_rejects_tampered_trace_path() {
+    let program = build_step_program();
+    let pi = build_step_public_inputs(&program);
+    let opts = make_step_opts();
+
+    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let mut transcript =
+        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
+
+    // Corrupt a single trace Merkle leaf so that Merkle binding
+    // constraints detect an inconsistency with the trace root.
+    if let Some(merkle) = &mut transcript.compact.merkle_proofs {
+        if let Some(first_path) = merkle.trace_paths.get_mut(0) {
+            first_path.leaf = PoseidonHasher::<BE>::hash(b"tampered_trace_leaf");
+        }
+    }
+
+    let child = transcript.compact.clone();
+    let children = vec![child.clone()];
+    let children_root = children_root_from_compact(&child.suite_id, &children);
+
+    let profile_meta = AggProfileMeta {
+        m: child.meta.m,
+        rho: child.meta.rho,
+        q: child.meta.q,
+        o: child.meta.o,
+        lambda: child.meta.lambda,
+        pi_len: child.meta.pi_len,
+        v_units: child.meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: child.meta.rho as u32,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: transcript.fri_layers.len() as u8,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: child.meta.q,
+        grinding_factor: 0,
+    };
+
+    let agg_pi = AggAirPublicInputs {
+        children_root,
+        v_units_total: child.meta.v_units,
+        children_count: 1,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: child.suite_id,
+        children_ms: vec![child.meta.m],
+    };
+
+    let agg_trace = build_agg_trace_from_transcripts(&agg_pi, &[transcript])
+        .expect("agg trace build from tampered transcript must still succeed");
+
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+
+    let result = panic::catch_unwind(|| {
+        let _proof: Proof = prover
+            .prove(agg_trace.trace.clone())
+            .expect("agg proof construction unexpectedly succeeded for tampered Merkle paths");
+    });
+
+    assert!(
+        result.is_err(),
+        "agg prover must panic when Merkle paths are inconsistent with commitment roots",
+    );
 }
