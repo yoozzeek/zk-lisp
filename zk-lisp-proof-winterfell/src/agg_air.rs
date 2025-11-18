@@ -167,11 +167,11 @@ impl Air for ZlAggAir {
         let trace_len = info.length();
         assert!(trace_len > 0, "AggTrace must contain at least one row");
 
-        // We currently expose sixteen constraints:
+        // We currently expose seventeen constraints:
         // C0: ok == 0 on all rows;
         // C1: work accumulator chain gated to non-last rows.
         // C2: trace_root_err must be zero on all rows.
-        // C3: fri_root_err must be zero on all rows.
+        // C3: constraint_root_err must be zero on all rows.
         // C4–C7: FS challenges (r, alpha, beta, gamma) are constant
         //        across the trace (and thus per segment).
         // C8–C10: FRI layer-0 accumulators v0_sum, v1_sum and
@@ -183,6 +183,8 @@ impl Air for ZlAggAir {
         // C14: DEEP composition vs FRI layer-0 sample.
         // C15: aggregated FRI layer-1 evaluations == query_values
         //      error over all query positions.
+        // C16: local FRI path folding and remainder consistency
+        //      across all layers for a single query path.
         let degrees = vec![
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(2, vec![trace_len]),
@@ -200,6 +202,7 @@ impl Air for ZlAggAir {
             TransitionConstraintDegree::new(1), // C13
             TransitionConstraintDegree::new(1), // C14
             TransitionConstraintDegree::new(1), // C15
+            TransitionConstraintDegree::new(1), // C16
         ];
 
         // ok[0], v_units_acc[0], v_units_acc[last],
@@ -229,7 +232,7 @@ impl Air for ZlAggAir {
     ) where
         E: FieldElement<BaseField = Self::BaseField> + From<Self::BaseField>,
     {
-        debug_assert_eq!(result.len(), 16);
+        debug_assert_eq!(result.len(), 17);
         debug_assert_eq!(periodic_values.len(), 1);
 
         let cols = &self.cols;
@@ -272,6 +275,7 @@ impl Air for ZlAggAir {
 
         let comp_sum = current[cols.comp_sum];
         let fri_layer1_agg = current[cols.alpha_div_zm_sum];
+        let fri_path_agg = current[cols.map_l0_sum];
 
         let is_last = periodic_values[0];
         let not_last = E::ONE - is_last;
@@ -354,6 +358,13 @@ impl Air for ZlAggAir {
         // and zeros elsewhere; we require it to be identically
         // zero across the trace.
         result[15] = fri_layer1_agg;
+
+        // C16: local FRI path folding and remainder consistency
+        // across all FRI layers for a single query path. The
+        // trace builder wires the aggregate error into map_l0_sum
+        // on segment-first rows and zeros elsewhere; we require
+        // it to be identically zero across the trace.
+        result[16] = fri_path_agg;
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {

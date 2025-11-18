@@ -578,6 +578,14 @@ pub fn build_agg_trace_from_transcripts(
         let fri_layer1_agg =
             compute_fri_layer1_agg_over_queries(tx, &agg_pi.profile_fri, BE::from(5u64))?;
 
+        // Aggregate local FRI folding errors along a single
+        // path across all layers, including the remainder
+        // polynomial. We use an independent delta challenge
+        // so that this aggregate stays statistically
+        // independent from beta-based aggregates.
+        let fri_path_agg =
+            compute_fri_path_agg_over_layers(tx, &agg_pi.profile_fri, BE::from(7u64))?;
+
         for r in 0..m {
             let cur_row = row + r;
             let is_first = r == 0;
@@ -607,6 +615,7 @@ pub fn build_agg_trace_from_transcripts(
                 trace.set(cols.fri_q1_child, cur_row, fri_q1_child_fe);
                 trace.set(cols.comp_sum, cur_row, deep_agg);
                 trace.set(cols.alpha_div_zm_sum, cur_row, fri_layer1_agg);
+                trace.set(cols.map_l0_sum, cur_row, fri_path_agg);
 
                 trace.set(cols.v0_sum, cur_row, fri_v0_sum);
                 trace.set(cols.v1_sum, cur_row, fri_v1_sum);
@@ -666,22 +675,306 @@ pub fn build_agg_trace_from_transcripts(
         trace.set(cols.v1_sum, cur_row, fri_v1_sum);
         trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
         trace.set(cols.alpha_div_zm_sum, cur_row, BE::ZERO);
+        trace.set(cols.map_l0_sum, cur_row, BE::ZERO);
     }
 
     Ok(AggTrace::new(trace, cols))
 }
 
-/// Aggregate DEEP vs FRI layer-0 errors over all FS query
-/// positions for a single child transcript.
+/// Aggregate local FRI folding errors along a single path (sample
+/// index 0) across all FRI layers and the remainder polynomial for a
+/// child transcript.
 ///
-/// For each query position x_k this function reconstructs
-/// a DEEP-composed value Y(x_k) using fs.ood_points and
+/// This function mirrors the structure of FriVerifier::verify_generic
+/// for folding factor 2 but restricts to a single query path. For each
+/// FRI depth d it:
+/// - recovers the coset index for the path via fold_positions_usize;
+/// - reconstructs x-coordinates for the two points in the coset using
+///   the same domain generator and offset as Winterfell FRI;
+/// - computes the folded value v_{d+1} at alpha_d via the binary
+///   degree-respecting projection;
+/// - for all but the last layer, checks that v_{d+1} matches the
+///   committed evaluation in the next FRI layer for the same path;
+/// - on the last layer, treats v_{L} as the evaluation of the final
+///   folded polynomial on the smallest domain and compares it against
+///   the remainder polynomial at the corresponding point.
+///
+/// All errors are accumulated into a single scalar using a geometric
+/// weighting delta^d so that a non-zero result flags any inconsistency
+/// along the path. When FRI data or FS challenges are missing, or when
+/// num_layers < 2, the function falls back to zero so that the AIR
+/// constraint becomes vacuous.
+fn compute_fri_path_agg_over_layers(
+    tx: &ZlChildTranscript,
+    fri_profile: &AggFriProfile,
+    delta: BE,
+) -> error::Result<BE> {
+    let num_layers = tx.fri_layers.len();
+    let num_queries = tx.num_queries as usize;
+
+    if num_layers < 2 || num_queries == 0 {
+        return Ok(BE::ZERO);
+    }
+
+    let folding = fri_profile.folding_factor as usize;
+    if folding != 2 {
+        return Err(error::Error::InvalidInput(
+            "AggTrace currently supports only FRI folding factor 2 in compute_fri_path_agg_over_layers",
+        ));
+    }
+
+    let child = &tx.compact;
+    let fs = match &child.fs_challenges {
+        Some(fs) => fs,
+        None => {
+            // Without FS challenges we cannot reconstruct the FRI
+            // domain geometry or alphas; fall back to zero so that
+            // AIR constraints become vacuous.
+            return Ok(BE::ZERO);
+        }
+    };
+
+    if fs.query_positions.len() != num_queries {
+        return Err(error::Error::InvalidInput(
+            "FS query_positions length is inconsistent with child transcript num_queries in compute_fri_path_agg_over_layers",
+        ));
+    }
+
+    if fs.fri_alphas.len() < num_layers {
+        return Err(error::Error::InvalidInput(
+            "FS fri_alphas length is inconsistent with transcript fri_layers in compute_fri_path_agg_over_layers",
+        ));
+    }
+
+    // Reconstruct the LDE / FRI domain size as m * rho.
+    let lde_domain_size = (child.meta.m as usize)
+        .checked_mul(child.meta.rho as usize)
+        .ok_or(error::Error::InvalidInput(
+            "AggTrace LDE domain size overflow in compute_fri_path_agg_over_layers",
+        ))?;
+
+    if lde_domain_size == 0 || !lde_domain_size.is_power_of_two() {
+        return Err(error::Error::InvalidInput(
+            "AggTrace LDE domain size must be a non-zero power of two in compute_fri_path_agg_over_layers",
+        ));
+    }
+
+    let positions0: Vec<usize> = fs.query_positions.iter().map(|&p| p as usize).collect();
+    let mut positions_d = positions0.clone();
+    let mut domain_size_d = lde_domain_size;
+
+    // Domain generator at depth 0 matches Winterfell FRI domain
+    // generator used by the verifier; we update it by powering
+    // with folding_factor at each subsequent depth.
+    let mut domain_generator_d = BE::get_root_of_unity(lde_domain_size.ilog2());
+
+    // Folding roots are computed once from the base domain and
+    // reused across depths, mirroring FriVerifier::verify_generic.
+    let folding_root = domain_generator_d.exp_vartime(((lde_domain_size / folding) as u64).into());
+    let folding_roots = [BE::ONE, folding_root];
+    let offset = BE::GENERATOR;
+
+    let mut agg = BE::ZERO;
+    let mut delta_pow = BE::ONE;
+
+    // We track the final folded evaluation at the remainder domain
+    // for the chosen path so that we can compare it against
+    // fri_final at the end.
+    let mut v_remainder_path = BE::ZERO;
+    let mut pos_remainder = 0usize;
+
+    // We use sample index 0 consistently across depths, matching the
+    // minimal sample used by sample_fri_fold_child.
+    let sample_idx = 0usize;
+
+    for depth in 0..num_layers {
+        let layer_vals = &tx.fri_layers[depth];
+
+        if layer_vals.is_empty() {
+            return Err(error::Error::InvalidInput(
+                "ZlChildTranscript.fri_layers[depth] must be non-empty in compute_fri_path_agg_over_layers",
+            ));
+        }
+
+        // Fold positions for this depth to obtain coset indexes and
+        // next-layer positions.
+        let folded_positions = fold_positions_usize(&positions_d, domain_size_d, folding)?;
+
+        let q_count = layer_vals.len();
+        if q_count != folded_positions.len() {
+            return Err(error::Error::InvalidInput(
+                "FRI folded positions count is inconsistent with transcript layer values in compute_fri_path_agg_over_layers",
+            ));
+        }
+
+        if sample_idx >= q_count {
+            return Err(error::Error::InvalidInput(
+                "sample index out of bounds for FRI layer in compute_fri_path_agg_over_layers",
+            ));
+        }
+
+        let coset_pos = folded_positions[sample_idx] as u64;
+        let pair = layer_vals[sample_idx];
+
+        let xe = domain_generator_d.exp_vartime(coset_pos.into()) * offset;
+        let x0 = xe * folding_roots[0];
+        let x1 = xe * folding_roots[1];
+
+        let v0 = pair[0];
+        let v1 = pair[1];
+
+        let alpha_d = fs.fri_alphas[depth];
+
+        let den = x1 - x0;
+        if den == BE::ZERO {
+            return Err(error::Error::InvalidInput(
+                "FRI coset has zero denominator in compute_fri_path_agg_over_layers",
+            ));
+        }
+
+        let num = v1 * (alpha_d - x0) - v0 * (alpha_d - x1);
+        let vnext = num * den.inv();
+
+        // Prepare geometry for the next domain (after folding this
+        // layer) regardless of whether there is another FRI layer or
+        // we are at the remainder step.
+        let domain_size_next =
+            domain_size_d
+                .checked_div(folding)
+                .ok_or(error::Error::InvalidInput(
+                    "AggTrace domain size underflow in compute_fri_path_agg_over_layers",
+                ))?;
+
+        if domain_size_next == 0 || domain_size_next % folding != 0 {
+            return Err(error::Error::InvalidInput(
+                "AggTrace FRI domain size at next depth must be a positive multiple of folding in compute_fri_path_agg_over_layers",
+            ));
+        }
+
+        let positions_next = folded_positions.clone();
+
+        if depth + 1 < num_layers {
+            // There is a next FRI layer; check that the value obtained
+            // by folding this layer matches the committed
+            // evaluation in the next layer for the same path.
+            let layer_next_vals = &tx.fri_layers[depth + 1];
+
+            let folded_positions_next =
+                fold_positions_usize(&positions_next, domain_size_next, folding)?;
+
+            if layer_next_vals.is_empty() {
+                return Err(error::Error::InvalidInput(
+                    "ZlChildTranscript next FRI layer must be non-empty in compute_fri_path_agg_over_layers",
+                ));
+            }
+
+            if layer_next_vals.len() != folded_positions_next.len() {
+                return Err(error::Error::InvalidInput(
+                    "FRI folded positions count is inconsistent with next layer values in compute_fri_path_agg_over_layers",
+                ));
+            }
+
+            if sample_idx >= positions_next.len() {
+                return Err(error::Error::InvalidInput(
+                    "sample index out of bounds for positions_next in compute_fri_path_agg_over_layers",
+                ));
+            }
+
+            let pos_next = positions_next[sample_idx];
+            if pos_next >= domain_size_next {
+                return Err(error::Error::InvalidInput(
+                    "FRI sample position exceeds domain size at next depth in compute_fri_path_agg_over_layers",
+                ));
+            }
+
+            let row_length_next = domain_size_next / folding;
+            if row_length_next == 0 {
+                return Err(error::Error::InvalidInput(
+                    "FRI row length at next depth must be non-zero in compute_fri_path_agg_over_layers",
+                ));
+            }
+
+            let coset_idx_next = pos_next % row_length_next;
+            let elem_idx_next = pos_next / row_length_next;
+            if elem_idx_next >= folding {
+                return Err(error::Error::InvalidInput(
+                    "FRI element index exceeds folding factor at next depth in compute_fri_path_agg_over_layers",
+                ));
+            }
+
+            let folded_idx_next = folded_positions_next
+                .iter()
+                .position(|&p| p == coset_idx_next)
+                .ok_or(error::Error::InvalidInput(
+                    "FRI sample coset index not found in folded positions at next depth in compute_fri_path_agg_over_layers",
+                ))?;
+
+            if folded_idx_next >= layer_next_vals.len() {
+                return Err(error::Error::InvalidInput(
+                    "FRI layer values length is inconsistent with folded positions at next depth in compute_fri_path_agg_over_layers",
+                ));
+            }
+
+            let pair_next = layer_next_vals[folded_idx_next];
+            let q_next = pair_next[elem_idx_next];
+
+            let e_d = vnext - q_next;
+            agg += delta_pow * e_d;
+            delta_pow *= delta;
+        } else {
+            // Last FRI layer: vnext is the evaluation of the final
+            // folded polynomial (remainder) at the corresponding
+            // position in the smallest domain.
+            if sample_idx >= positions_next.len() {
+                return Err(error::Error::InvalidInput(
+                    "sample index out of bounds for remainder positions in compute_fri_path_agg_over_layers",
+                ));
+            }
+
+            v_remainder_path = vnext;
+            pos_remainder = positions_next[sample_idx];
+        }
+
+        // Advance domain geometry for the next depth (or remainder).
+        domain_generator_d = domain_generator_d.exp_vartime((folding as u32).into());
+        domain_size_d = domain_size_next;
+        positions_d = positions_next;
+    }
+
+    // Final remainder check using Horner evaluation over
+    // tx.fri_final.coeffs in the same reverse-coefficient convention
+    // as winter-fri's eval_horner_rev.
+    if tx.fri_final.coeffs.is_empty() {
+        return Err(error::Error::InvalidInput(
+            "ZlChildTranscript.fri_final.coeffs must be non-empty in compute_fri_path_agg_over_layers",
+        ));
+    }
+
+    if pos_remainder >= domain_size_d {
+        return Err(error::Error::InvalidInput(
+            "FRI sample position exceeds remainder domain size in compute_fri_path_agg_over_layers",
+        ));
+    }
+
+    let x_l = BE::GENERATOR * domain_generator_d.exp_vartime((pos_remainder as u64).into());
+
+    let rem_val = tx
+        .fri_final
+        .coeffs
+        .iter()
+        .fold(BE::ZERO, |acc, &coeff| acc * x_l + coeff);
+
+    let e_final = v_remainder_path - rem_val;
+    agg += delta_pow * e_final;
+
+    Ok(agg)
+}
 /// fs.deep_coeffs and matches it against the FRI layer-0
 /// query value q0_k obtained via `get_query_values`-style
 /// indexing into `fri_layers[0]`. It then computes a
 /// weighted sum
 ///
-///     deep_agg = Σ_{k=0..num_q-1} beta^k * (Y(x_k) - q0_k)
+///     deep_agg = sum_{k=0..num_q-1} beta^k * (Y(x_k) - q0_k)
 ///
 /// and returns deep_agg. When FRI/DEEP data is missing we
 /// fall back to zero so that the AIR constraint over
@@ -926,7 +1219,7 @@ fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Res
 /// obtained via `get_query_values` geometry. It then
 /// computes a weighted sum
 ///
-///     fri_agg = Σ_{k=0..num_q-1} beta^k * (v_next,k - q1_k)
+///     fri_agg = sum_{k=0..num_q-1} beta^k * (v_next,k - q1_k)
 ///
 /// and returns fri_agg. When FRI data is missing we
 /// fall back to zero so that the AIR constraint over
