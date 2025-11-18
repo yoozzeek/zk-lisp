@@ -167,7 +167,7 @@ impl Air for ZlAggAir {
         let trace_len = info.length();
         assert!(trace_len > 0, "AggTrace must contain at least one row");
 
-        // We currently expose fifteen constraints:
+        // We currently expose sixteen constraints:
         // C0: ok == 0 on all rows;
         // C1: work accumulator chain gated to non-last rows.
         // C2: trace_root_err must be zero on all rows.
@@ -181,6 +181,8 @@ impl Air for ZlAggAir {
         //      per-child binary FRI sample.
         // C13: FRI layer-1 evaluations == query_values sample.
         // C14: DEEP composition vs FRI layer-0 sample.
+        // C15: aggregated FRI layer-1 evaluations == query_values
+        //      error over all query positions.
         let degrees = vec![
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(2, vec![trace_len]),
@@ -197,6 +199,7 @@ impl Air for ZlAggAir {
             TransitionConstraintDegree::new(1), // C12
             TransitionConstraintDegree::new(1), // C13
             TransitionConstraintDegree::new(1), // C14
+            TransitionConstraintDegree::new(1), // C15
         ];
 
         // ok[0], v_units_acc[0], v_units_acc[last],
@@ -226,7 +229,7 @@ impl Air for ZlAggAir {
     ) where
         E: FieldElement<BaseField = Self::BaseField> + From<Self::BaseField>,
     {
-        debug_assert_eq!(result.len(), 15);
+        debug_assert_eq!(result.len(), 16);
         debug_assert_eq!(periodic_values.len(), 1);
 
         let cols = &self.cols;
@@ -268,6 +271,7 @@ impl Air for ZlAggAir {
         let fri_q1_child = current[cols.fri_q1_child];
 
         let comp_sum = current[cols.comp_sum];
+        let fri_layer1_agg = current[cols.alpha_div_zm_sum];
 
         let is_last = periodic_values[0];
         let not_last = E::ONE - is_last;
@@ -338,10 +342,18 @@ impl Air for ZlAggAir {
         result[13] = fri_vnext_child - fri_q1_child;
 
         // C14: DEEP composition vs FRI layer-0 sample.
-        // For now we wire a single per-child error into
-        // comp_sum on segment-first rows and require it
-        // to be identically zero across the trace.
+        // We aggregate DEEP vs FRI layer-0 errors across all
+        // query positions for each child and wire the result
+        // into comp_sum on segment-first rows. This must be
+        // identically zero across the trace.
         result[14] = comp_sum;
+
+        // C15: aggregated FRI layer-1 evaluations == query_values
+        // error over all query positions. The trace builder populates
+        // alpha_div_zm_sum with this aggregate on segment-first rows
+        // and zeros elsewhere; we require it to be identically
+        // zero across the trace.
+        result[15] = fri_layer1_agg;
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {
