@@ -27,8 +27,10 @@ use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::agg_air::{
     AggAirPublicInputs, AggFriProfile, AggProfileMeta, AggQueryProfile, ZlAggAir,
 };
-use zk_lisp_proof_winterfell::agg_child::{ZlChildCompact, children_root_from_compact};
-use zk_lisp_proof_winterfell::agg_trace::build_agg_trace;
+use zk_lisp_proof_winterfell::agg_child::{
+    ZlChildCompact, ZlChildTranscript, children_root_from_compact,
+};
+use zk_lisp_proof_winterfell::agg_trace::{build_agg_trace, build_agg_trace_from_transcripts};
 use zk_lisp_proof_winterfell::poseidon_hasher::PoseidonHasher;
 use zk_lisp_proof_winterfell::zl_step::StepMeta;
 
@@ -621,4 +623,147 @@ fn agg_merkle_binding_rejects_tampered_trace_root() {
     // Merkle error for trace root must be non-zero on the
     // first row of the child segment.
     assert_ne!(trace.get(cols.trace_root_err, 0), BE::ZERO);
+}
+
+#[test]
+fn agg_fri_binding_accepts_honest_child_transcript() {
+    let program = build_step_program();
+    let pi = build_step_public_inputs(&program);
+    let opts = make_step_opts();
+
+    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let transcript =
+        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
+
+    let child = transcript.compact.clone();
+    let children = vec![child.clone()];
+    let children_root = children_root_from_compact(&child.suite_id, &children);
+
+    let profile_meta = AggProfileMeta {
+        m: child.meta.m,
+        rho: child.meta.rho,
+        q: child.meta.q,
+        o: child.meta.o,
+        lambda: child.meta.lambda,
+        pi_len: child.meta.pi_len,
+        v_units: child.meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: child.meta.rho as u32,
+        folding_factor: 2,
+        redundancy: 1,
+        // We do not rely on num_layers here, but keeping it
+        // consistent with transcript does not hurt.
+        num_layers: transcript.fri_layers.len() as u8,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: child.meta.q,
+        grinding_factor: 0,
+    };
+
+    let agg_pi = AggAirPublicInputs {
+        children_root,
+        v_units_total: child.meta.v_units,
+        children_count: 1,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: child.suite_id,
+        children_ms: vec![child.meta.m],
+    };
+
+    let agg_trace = build_agg_trace_from_transcripts(&agg_pi, &[transcript])
+        .expect("agg trace build from transcripts must succeed for honest child");
+
+    // Prove and verify aggregation AIR with a trace that
+    // includes a minimal on-circuit FRI-folding sample.
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+    let proof: Proof = prover
+        .prove(agg_trace.trace.clone())
+        .expect("agg proof must be created for honest FRI transcript");
+
+    let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+
+    winterfell::verify::<
+        ZlAggAir,
+        PoseidonHasher<BE>,
+        DefaultRandomCoin<PoseidonHasher<BE>>,
+        MerkleTree<PoseidonHasher<BE>>,
+    >(proof, agg_pi, &acceptable)
+    .expect("agg proof with FRI binding must verify");
+}
+
+#[test]
+#[ignore]
+fn agg_fri_binding_rejects_tampered_fri_final() {
+    let program = build_step_program();
+    let pi = build_step_public_inputs(&program);
+    let opts = make_step_opts();
+
+    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let mut transcript =
+        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
+
+    // Corrupt the FRI remainder polynomial so that
+    // it no longer matches the recorded FRI layers.
+    if let Some(c_last) = transcript.fri_final.coeffs.last_mut() {
+        *c_last += BE::ONE;
+    }
+
+    let child = transcript.compact.clone();
+    let children = vec![child.clone()];
+    let children_root = children_root_from_compact(&child.suite_id, &children);
+
+    let profile_meta = AggProfileMeta {
+        m: child.meta.m,
+        rho: child.meta.rho,
+        q: child.meta.q,
+        o: child.meta.o,
+        lambda: child.meta.lambda,
+        pi_len: child.meta.pi_len,
+        v_units: child.meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: child.meta.rho as u32,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: transcript.fri_layers.len() as u8,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: child.meta.q,
+        grinding_factor: 0,
+    };
+
+    let agg_pi = AggAirPublicInputs {
+        children_root,
+        v_units_total: child.meta.v_units,
+        children_count: 1,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: child.suite_id,
+        children_ms: vec![child.meta.m],
+    };
+
+    let agg_trace = build_agg_trace_from_transcripts(&agg_pi, &[transcript])
+        .expect("agg trace build from tampered transcript must still succeed");
+
+    // NOTE: FRI remainder binding is not yet enforced on-circuit.
+    // This ignored test is kept as a placeholder and will be
+    // revisited once full DEEP/FRI wiring is implemented in
+    // ZlAggAir. For now we only ensure that the builder can
+    // construct a trace from a tampered transcript without
+    // panicking.
+    let _len = agg_trace.trace.length();
 }

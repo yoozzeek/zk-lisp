@@ -167,7 +167,7 @@ impl Air for ZlAggAir {
         let trace_len = info.length();
         assert!(trace_len > 0, "AggTrace must contain at least one row");
 
-        // We currently expose twelve constraints:
+        // We currently expose thirteen constraints:
         // C0: ok == 0 on all rows;
         // C1: work accumulator chain gated to non-last rows.
         // C2: trace_root_err must be zero on all rows.
@@ -177,6 +177,8 @@ impl Air for ZlAggAir {
         // C8–C10: FRI layer-0 accumulators v0_sum, v1_sum and
         //         vnext_sum form a gated chain over child segments.
         // C11: child_count_acc chain gated to non-last rows.
+        // C12: minimal on-circuit FRI-folding check for a
+        //      per-child binary FRI sample.
         let degrees = vec![
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(2, vec![trace_len]),
@@ -190,6 +192,7 @@ impl Air for ZlAggAir {
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(1, vec![trace_len]),
+            TransitionConstraintDegree::new(1),
         ];
 
         // ok[0], v_units_acc[0], v_units_acc[last],
@@ -219,7 +222,7 @@ impl Air for ZlAggAir {
     ) where
         E: FieldElement<BaseField = Self::BaseField> + From<Self::BaseField>,
     {
-        debug_assert_eq!(result.len(), 12);
+        debug_assert_eq!(result.len(), 13);
         debug_assert_eq!(periodic_values.len(), 1);
 
         let cols = &self.cols;
@@ -255,6 +258,9 @@ impl Air for ZlAggAir {
         let fri_v0_child = current[cols.fri_v0_child];
         let fri_v1_child = current[cols.fri_v1_child];
         let fri_vnext_child = current[cols.fri_vnext_child];
+        let fri_alpha_child = current[cols.fri_alpha_child];
+        let fri_x0_child = current[cols.fri_x0_child];
+        let fri_x1_child = current[cols.fri_x1_child];
 
         let is_last = periodic_values[0];
         let not_last = E::ONE - is_last;
@@ -291,16 +297,30 @@ impl Air for ZlAggAir {
         result[6] = not_last * (beta_next - beta);
         result[7] = not_last * (gamma_next - gamma);
 
-        // C8–C10: FRI layer-0 accumulators follow a gated
-        // chain over child segments. In the current skeleton
-        // fri_v*_child are zero, so the sums stay constant.
-        result[8] = not_last * (v0_sum_next - (v0_sum + fri_v0_child * seg_first));
-        result[9] = not_last * (v1_sum_next - (v1_sum + fri_v1_child * seg_first));
-        result[10] = not_last * (vnext_sum_next - (vnext_sum + fri_vnext_child * seg_first));
+        // C8–C10: FRI accumulators are currently kept constant
+        // across the trace; they are reserved for future use in
+        // DEEP/FRI composition checks. For now we simply enforce
+        // that v*_sum do not change between consecutive rows.
+        result[8] = not_last * (v0_sum_next - v0_sum);
+        result[9] = not_last * (v1_sum_next - v1_sum);
+        result[10] = not_last * (vnext_sum_next - vnext_sum);
 
         // C11: child_count_acc increments by 1 on
         // segment starts and stays constant otherwise.
         result[11] = not_last * (child_count_acc_next - (child_count_acc + seg_first));
+
+        // C12: minimal on-circuit FRI-folding constraint
+        // for a single binary FRI sample per child. On
+        // rows where fri_*_child are zero this vanishes
+        // automatically; on segment-first rows the trace
+        // builder populates (v0, v1, vnext, alpha, x0, x1)
+        // so that they satisfy the binary folding relation:
+        // (x1 - x0) * vnext == v1 * (alpha - x0) - v0 * (alpha - x1).
+        let x_diff = fri_x1_child - fri_x0_child;
+        let lhs = fri_vnext_child * x_diff;
+        let rhs = fri_v1_child * (fri_alpha_child - fri_x0_child)
+            - fri_v0_child * (fri_alpha_child - fri_x1_child);
+        result[12] = lhs - rhs;
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {

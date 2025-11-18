@@ -3,7 +3,9 @@ Third-Party Notices
 This project includes code derived from or
 inspired by the following third-party project(s).
 
-1. Winterfell
+---
+
+1) Winterfell
 
 Certain components of the STARK-in-STARK recursion (including
 parts of the verifier logic and random coin implementation) in
@@ -13,6 +15,8 @@ Name: Winterfell
 Source: https://github.com/facebook/winterfell
 Licence: MIT License
 Copyright: (c) Facebook, Inc. and its affiliates.
+
+The original license text for Winterfell is reproduced below:
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

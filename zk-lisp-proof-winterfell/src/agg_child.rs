@@ -1100,7 +1100,7 @@ pub fn merkle_root_from_leaf(
 /// folding factor, mirroring winter-fri's
 /// `fold_positions` helper. Duplicates are removed
 /// while preserving ascending order.
-fn fold_positions_usize(
+pub fn fold_positions_usize(
     positions: &[usize],
     source_domain_size: usize,
     folding_factor: usize,
