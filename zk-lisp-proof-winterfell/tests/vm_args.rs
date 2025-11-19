@@ -98,7 +98,7 @@ fn secret_arg_negative_fails_verify() {
                 prove::Error::Backend(_)
                 | prove::Error::BackendSource(_)
                 | prove::Error::PublicInputs(_)
-                | prove::Error::IvInvalid(_) => {}
+                | prove::Error::RecursionInvalid(_) => {}
             }
         }
         // Prove returned an error; acceptable failure mode

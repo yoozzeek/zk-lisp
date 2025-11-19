@@ -1035,7 +1035,7 @@ fn compute_fri_path_agg_over_layers(
 /// `path_err_k = compute_fri_path_agg_over_layers` with depth challenge
 /// `delta`, and then folds all such paths into a single scalar
 ///
-///     agg = sum_{k} beta^k * path_err_k
+/// agg = sum_{k} beta^k * path_err_k
 ///
 /// using an independent path-weighting challenge `beta`. When FRI data
 /// or FS challenges are missing, or when there are fewer than two FRI
@@ -1085,7 +1085,7 @@ fn compute_fri_paths_agg_over_layers(
 /// indexing into `fri_layers[0]`. It then computes a
 /// weighted sum
 ///
-///     deep_agg = sum_{k=0..num_q-1} beta^k * (Y(x_k) - q0_k)
+/// deep_agg = sum_{k=0..num_q-1} beta^k * (Y(x_k) - q0_k)
 ///
 /// and returns deep_agg. When FRI/DEEP data is missing we
 /// fall back to zero so that the AIR constraint over
@@ -1330,7 +1330,7 @@ fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Res
 /// obtained via `get_query_values` geometry. It then
 /// computes a weighted sum
 ///
-///     fri_agg = sum_{k=0..num_q-1} beta^k * (v_next,k - q1_k)
+/// fri_agg = sum_{k=0..num_q-1} beta^k * (v_next,k - q1_k)
 ///
 /// and returns fri_agg. When FRI data is missing we
 /// fall back to zero so that the AIR constraint over

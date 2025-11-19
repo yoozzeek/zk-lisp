@@ -11,8 +11,8 @@
 //!
 //! This module defines a minimal echo of per-proof
 //! parameters (`StepMeta`) and a Poseidon-based
-//! digest function (`step_digest`) used by
-//! higher-level IVC recursion, along with a
+//! digest function (`step_digest`) used by the
+//! STARK-in-STARK recursion layer, along with a
 //! concrete step proof wrapper (`ZlStepProof`).
 
 use crate::zl1;
@@ -52,7 +52,8 @@ pub struct StepMeta {
 }
 
 /// Concrete step-proof wrapper used as the
-/// backend-specific `StepProof` type for IVC.
+/// backend-specific `StepProof` type for
+/// the recursion layer.
 ///
 /// This structure carries the zl1 step proof container
 /// which in turn encapsulates profile metadata, public

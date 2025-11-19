@@ -40,8 +40,8 @@ pub mod format {
     }
 
     /// Minimal public input echo used at the step level for digest
-    /// computation and future IVC wiring. This is intentionally
-    /// narrower than the full AIR public inputs.
+    /// computation and future recursion/aggregation wiring. This is
+    /// intentionally narrower than the full AIR public inputs.
     #[derive(Clone, Debug)]
     pub struct PublicInputs {
         /// Deterministic identifier of the zk-lisp program.

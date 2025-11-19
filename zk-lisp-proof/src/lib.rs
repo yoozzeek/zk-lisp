@@ -15,8 +15,8 @@
 
 pub mod error;
 pub mod frontend;
-pub mod ivc;
 pub mod pi;
+pub mod recursion;
 
 /// Backend-agnostic proving options.
 /// These are enough to construct concrete

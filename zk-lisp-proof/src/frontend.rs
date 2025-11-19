@@ -15,7 +15,7 @@
 //! backends through a stable API.
 
 use crate::ZkBackend;
-use crate::ivc::{IvBackend, IvDigest, IvPublic, StepDigest};
+use crate::recursion::{RecursionBackend, RecursionDigest};
 
 /// Backend-provided proof serialization.
 ///
@@ -119,36 +119,23 @@ pub fn decode_proof<B: ProofCodec>(bytes: &[u8]) -> Result<B::Proof, B::CodecErr
     B::proof_from_bytes(bytes)
 }
 
-/// Thin wrapper over [`IvBackend::step_digest`].
-pub fn step_digest<B: IvBackend>(step: &B::StepProof) -> StepDigest {
-    B::step_digest(step)
-}
-
-/// Thin wrapper over [`IvBackend::exec_root`]
-/// with explicit suite identifier.
-pub fn exec_root<B: IvBackend>(
-    suite_id: &[u8; 32],
-    prev_iv_digest: &[u8; 32],
-    digests_sorted: &[StepDigest],
-) -> crate::ivc::ExecRoot {
-    B::exec_root(suite_id, prev_iv_digest, digests_sorted)
-}
-
-/// Produce a new IVC aggregation step.
-pub fn prove_ivc<B: IvBackend>(
-    prev: Option<B::IvProof>,
+/// Produce a new recursion aggregation step over a batch
+/// of step proofs using a backend implementing
+/// [`RecursionBackend`].
+pub fn recursion_prove<B: RecursionBackend>(
     steps: &[B::StepProof],
-    iv_pi: &IvPublic,
+    rc_pi: &B::RecursionPublic,
     opts: &B::ProverOptions,
-) -> Result<(B::IvProof, IvDigest), B::Error> {
-    B::prove_ivc(prev, steps, iv_pi, opts)
+) -> Result<(B::RecursionProof, RecursionDigest), B::Error> {
+    B::recursion_prove(steps, rc_pi, opts)
 }
 
-/// Verify an IVC aggregation step.
-pub fn verify_ivc<B: IvBackend>(
-    iv_proof: B::IvProof,
-    iv_pi: &IvPublic,
+/// Verify a recursion aggregation step against backend-specific
+/// recursion public inputs.
+pub fn recursion_verify<B: RecursionBackend>(
+    proof: B::RecursionProof,
+    rc_pi: &B::RecursionPublic,
     opts: &B::ProverOptions,
 ) -> Result<(), B::Error> {
-    B::verify_ivc(iv_proof, iv_pi, opts)
+    B::recursion_verify(proof, rc_pi, opts)
 }

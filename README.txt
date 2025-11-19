@@ -31,16 +31,17 @@ Example:
 
 Features:
 
-  Backend-agnostic Lisp DSL compiler
+  Backend-agnostic Lisp DSL compiler and virtual machine
   Abstract traits for plugging in multiple STARK backends
   Winterfell-based STARK implementation
+  Strict STARK-in-STARK recursion (aggregated proofs)
   zk-lisp CLI with run | prove | verify | repl commands
   Interactive REPL with :prove and :verify built-ins
 
 Roadmap:
 
-  [planned] STARK-in-STARK incrementally verifiable computation
-  [planned] Website, docs, and an online playground/REPL
+  [planned] Website, documentation, and an online playground/REPL
+  [planned] Program events and logs
   [planned] Cross-program invocations
 
 Quickstart:

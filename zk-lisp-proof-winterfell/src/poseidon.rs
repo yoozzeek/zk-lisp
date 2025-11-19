@@ -420,7 +420,7 @@ pub fn poseidon_ro_bytes_sponge(suite_id: &[u8; 32], domain: &str, data: &[u8]) 
 /// Public helper for domain-separated RO→field mapping.
 ///
 /// Kept thin and explicit so higher-level modules
-/// (e.g. IVC/digest code) can derive challenges and
+/// (e.g. recursion/digest code) can derive challenges and
 /// binders under their own string domains without
 /// re-implementing Blake3 plumbing.
 pub fn ro_to_fe(domain: &str, parts: &[&[u8]]) -> BE {

@@ -13,6 +13,7 @@
 //! preflight checks and delegates to the underlying
 //! Winterfell prover, mapping errors into a small enum.
 
+use blake3::Hasher;
 use std::error::Error as StdError;
 use thiserror::Error;
 use winterfell::{
@@ -28,15 +29,16 @@ use winterfell::{
 use zk_lisp_compiler::Program;
 use zk_lisp_proof::error;
 use zk_lisp_proof::frontend::PreflightMode;
-use zk_lisp_proof::ivc::IvPublic;
 use zk_lisp_proof::pi as core_pi;
 use zk_lisp_proof::pi::PublicInputs;
 
+use crate::agg_air::{AggAirPublicInputs, ZlAggAir};
+use crate::agg_child::ZlChildTranscript;
+use crate::agg_trace::build_agg_trace_from_transcripts;
 use crate::air::ZkLispAir;
-use crate::ivc_air::{IvAirPublicInputs, ZlIvAir};
 use crate::poseidon_hasher::PoseidonHasher;
 use crate::zl_step::{StepMeta, ZlStepProof};
-use crate::{ivc_trace, preflight::run as run_preflight, schedule, utils};
+use crate::{preflight::run as run_preflight, schedule, trace, utils};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -44,8 +46,8 @@ pub enum Error {
     Backend(String),
     #[error("backend error: {0}")]
     BackendSource(#[source] Box<dyn StdError + Send + Sync + 'static>),
-    #[error("ivc invalid input: {0}")]
-    IvInvalid(&'static str),
+    #[error("recursion invalid input: {0}")]
+    RecursionInvalid(&'static str),
     #[error(transparent)]
     PublicInputs(#[from] error::Error),
 }
@@ -224,17 +226,20 @@ impl WProver for ZkWinterfellProver {
 }
 
 // -----------------------------------------
-// IVC AIR PROVER
+// AGGREGATION AIR PROVER (ZlAggAir)
 // -----------------------------------------
 
-struct ZlIvWinterfellProver {
+/// Winterfell prover wrapper for the aggregation AIR
+/// `ZlAggAir`. This mirrors `ZlIvWinterfellProver` but
+/// uses `AggAirPublicInputs` as public inputs.
+struct ZlAggWinterfellProver {
     options: ProofOptions,
-    pub_inputs: IvAirPublicInputs,
+    pub_inputs: AggAirPublicInputs,
 }
 
-impl WProver for ZlIvWinterfellProver {
+impl WProver for ZlAggWinterfellProver {
     type BaseField = BE;
-    type Air = ZlIvAir;
+    type Air = ZlAggAir;
     type Trace = TraceTable<Self::BaseField>;
     type HashFn = PoseidonHasher<Self::BaseField>;
     type VC = MerkleTree<Self::HashFn>;
@@ -286,6 +291,202 @@ impl WProver for ZlIvWinterfellProver {
             domain,
             partition_options,
         )
+    }
+}
+
+/// Compute a 32-byte recursion digest from aggregation
+/// public inputs. This binds the aggregation proof to
+/// its batch configuration (suite, batch id, children
+/// root, counts and global profiles).
+pub(crate) fn recursion_digest_from_agg_pi(agg_pi: &AggAirPublicInputs) -> [u8; 32] {
+    let mut h = Hasher::new();
+    h.update(b"zkl/recursion/agg");
+    h.update(&agg_pi.suite_id);
+    h.update(&agg_pi.batch_id);
+    h.update(&agg_pi.children_root);
+
+    h.update(&agg_pi.children_count.to_le_bytes());
+    h.update(&agg_pi.v_units_total.to_le_bytes());
+
+    h.update(&agg_pi.profile_meta.m.to_le_bytes());
+    h.update(&agg_pi.profile_meta.rho.to_le_bytes());
+    h.update(&agg_pi.profile_meta.q.to_le_bytes());
+    h.update(&agg_pi.profile_meta.o.to_le_bytes());
+    h.update(&agg_pi.profile_meta.lambda.to_le_bytes());
+    h.update(&agg_pi.profile_meta.pi_len.to_le_bytes());
+    h.update(&agg_pi.profile_meta.v_units.to_le_bytes());
+
+    h.update(&agg_pi.profile_fri.lde_blowup.to_le_bytes());
+    h.update(&agg_pi.profile_fri.folding_factor.to_le_bytes());
+    h.update(&agg_pi.profile_fri.redundancy.to_le_bytes());
+    h.update(&agg_pi.profile_fri.num_layers.to_le_bytes());
+
+    h.update(&agg_pi.profile_queries.num_queries.to_le_bytes());
+    h.update(&agg_pi.profile_queries.grinding_factor.to_le_bytes());
+
+    let digest = h.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(digest.as_bytes());
+
+    out
+}
+
+/// Prove a single aggregation step over `ZlAggAir` using
+/// fully decoded child transcripts and aggregation public
+/// inputs.
+#[tracing::instrument(
+    level = "info",
+    skip(agg_pi, transcripts, opts),
+    fields(
+        q = %opts.queries,
+        blowup = %opts.blowup,
+        grind = %opts.grind,
+    )
+)]
+pub fn prove_agg_air(
+    agg_pi: &AggAirPublicInputs,
+    transcripts: &[ZlChildTranscript],
+    opts: &zk_lisp_proof::ProverOptions,
+) -> Result<Proof, Error> {
+    let min_bits = opts.min_security_bits;
+    let blowup = if min_bits >= 128 && opts.blowup < 16 {
+        16
+    } else {
+        opts.blowup
+    };
+    let grind = if min_bits >= 128 && opts.grind < 16 {
+        16
+    } else {
+        opts.grind
+    };
+
+    // Build aggregation trace first to size partition options.
+    let agg_trace = build_agg_trace_from_transcripts(agg_pi, transcripts)?;
+    let trace = agg_trace.trace;
+    let trace_width = trace.width();
+    let trace_length = trace.length();
+
+    let (num_partitions, hash_rate) = trace::select_partitions_for_trace(trace_width, trace_length);
+
+    // Use at least 16 queries for the aggregation AIR.
+    let agg_queries = core::cmp::max(opts.queries as usize, 16usize);
+
+    let wf_opts = ProofOptions::new(
+        agg_queries,
+        blowup as usize,
+        grind,
+        winterfell::FieldExtension::None,
+        2,
+        1,
+        winterfell::BatchingMethod::Linear,
+        winterfell::BatchingMethod::Linear,
+    )
+    .with_partitions(num_partitions, hash_rate);
+
+    let prover = ZlAggWinterfellProver {
+        options: wf_opts,
+        pub_inputs: agg_pi.clone(),
+    };
+
+    tracing::info!(
+        target = "proof.agg.prove",
+        q = %prover.options.num_queries(),
+        blowup = %prover.options.blowup_factor(),
+        grind = %prover.options.grinding_factor(),
+        width = %trace_width,
+        length = %trace.length(),
+        num_partitions = num_partitions,
+        hash_rate = hash_rate,
+        "agg prove start",
+    );
+
+    let t0 = std::time::Instant::now();
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prover.prove(trace)))
+        .map_err(|_| Error::Backend("winterfell panic during agg proving".into()))
+        .and_then(|r| r.map_err(|e| Error::BackendSource(Box::new(e))));
+
+    match res {
+        Ok(proof) => {
+            let dt = t0.elapsed();
+            tracing::info!(
+                target = "proof.agg.prove",
+                elapsed_ms = %dt.as_millis(),
+                "agg proof created",
+            );
+
+            Ok(proof)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Verify an aggregation proof under `ZlAggAir`.
+#[tracing::instrument(
+    level = "info",
+    skip(proof, agg_pi, opts),
+    fields(
+        q = %opts.num_queries(),
+        blowup = %opts.blowup_factor(),
+        grind = %opts.grinding_factor(),
+    )
+)]
+pub fn verify_agg_air(
+    proof: Proof,
+    agg_pi: &AggAirPublicInputs,
+    opts: &ProofOptions,
+    min_bits: u32,
+) -> Result<(), Error> {
+    let acceptable = winterfell::AcceptableOptions::MinConjecturedSecurity(min_bits);
+
+    tracing::info!(
+        target = "proof.agg.verify",
+        q = %opts.num_queries(),
+        blowup = %opts.blowup_factor(),
+        grind = %opts.grinding_factor(),
+        "verify agg proof",
+    );
+
+    let t0 = std::time::Instant::now();
+    let pi = agg_pi.clone();
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        winterfell::verify::<
+            ZlAggAir,
+            PoseidonHasher<BE>,
+            DefaultRandomCoin<PoseidonHasher<BE>>,
+            MerkleTree<PoseidonHasher<BE>>,
+        >(proof, pi, &acceptable)
+    }));
+
+    match res {
+        Ok(Ok(())) => {
+            let dt = t0.elapsed();
+            tracing::info!(
+                target = "proof.agg.verify",
+                elapsed_ms = %dt.as_millis(),
+                "agg proof verified",
+            );
+
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            tracing::error!(
+                target = "proof.agg.verify",
+                error = %e,
+                debug_error = ?e,
+                min_bits,
+                "verify agg backend error",
+            );
+
+            Err(Error::BackendSource(Box::new(e)))
+        }
+        Err(_) => {
+            tracing::error!(
+                target = "proof.agg.verify",
+                "winterfell panic during agg verify"
+            );
+
+            Err(Error::Backend("winterfell panic during agg verify".into()))
+        }
     }
 }
 
@@ -374,7 +575,8 @@ pub fn verify_proof(
 /// Produce a step-level proof wrapper for a single
 /// zk-lisp execution segment. This helper mirrors
 /// the configuration used by `WinterfellBackend` and
-/// returns a `ZlStepProof` ready to be used by IVC.
+/// returns a `ZlStepProof` ready to be used by 
+/// the recursion layer.
 #[tracing::instrument(
     level = "info",
     skip(program, pub_inputs, opts),
@@ -412,11 +614,10 @@ pub fn prove_step(
         winterfell::BatchingMethod::Linear,
     );
 
-    let trace = crate::trace::build_trace(program, pub_inputs)?;
+    let trace = trace::build_trace(program, pub_inputs)?;
     let trace_len = trace.length();
 
-    let (num_partitions, hash_rate) =
-        crate::trace::select_partitions_for_trace(trace.width(), trace_len);
+    let (num_partitions, hash_rate) = trace::select_partitions_for_trace(trace.width(), trace_len);
     let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
 
     // Derive VM state hashes at the beginning
@@ -464,162 +665,4 @@ pub fn prove_step(
         pi_core: pub_inputs.clone(),
         rom_acc,
     })
-}
-
-/// Prove a single IVC aggregation step
-/// over ZlIvAir using the provided public
-/// inputs and step proofs.
-#[tracing::instrument(
-    level = "info",
-    skip(iv_pi, steps, opts),
-    fields(
-        q = %opts.queries,
-        blowup = %opts.blowup,
-        grind = %opts.grind,
-    )
-)]
-pub fn prove_ivc_air(
-    iv_pi: &IvPublic,
-    steps: &[ZlStepProof],
-    opts: &zk_lisp_proof::ProverOptions,
-) -> Result<Proof, Error> {
-    let min_bits = opts.min_security_bits;
-    let blowup = if min_bits >= 128 && opts.blowup < 16 {
-        16
-    } else {
-        opts.blowup
-    };
-    let grind = if min_bits >= 128 && opts.grind < 16 {
-        16
-    } else {
-        opts.grind
-    };
-
-    // Build IVC trace first
-    // to size partition options.
-    let iv_trace = ivc_trace::build_iv_trace(iv_pi, steps)?;
-    let trace = iv_trace.trace;
-    let trace_width = trace.width();
-    let trace_length = trace.length();
-
-    let (num_partitions, hash_rate) =
-        crate::trace::select_partitions_for_trace(trace_width, trace_length);
-
-    let wf_opts = ProofOptions::new(
-        opts.queries as usize,
-        blowup as usize,
-        grind,
-        winterfell::FieldExtension::None,
-        2,
-        1,
-        winterfell::BatchingMethod::Linear,
-        winterfell::BatchingMethod::Linear,
-    )
-    .with_partitions(num_partitions, hash_rate);
-
-    let prover = ZlIvWinterfellProver {
-        options: wf_opts,
-        pub_inputs: IvAirPublicInputs::from(iv_pi),
-    };
-
-    tracing::info!(
-        target = "proof.ivc.prove",
-        q = %prover.options.num_queries(),
-        blowup = %prover.options.blowup_factor(),
-        grind = %prover.options.grinding_factor(),
-        width = %trace_width,
-        length = %trace.length(),
-        num_partitions = num_partitions,
-        hash_rate = hash_rate,
-        "ivc prove start",
-    );
-
-    let t0 = std::time::Instant::now();
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prover.prove(trace)))
-        .map_err(|_| Error::Backend("winterfell panic during ivc proving".into()))
-        .and_then(|r| r.map_err(|e| Error::BackendSource(Box::new(e))));
-
-    match res {
-        Ok(proof) => {
-            let dt = t0.elapsed();
-            tracing::info!(
-                target = "proof.ivc.prove",
-                elapsed_ms = %dt.as_millis(),
-                "ivc proof created",
-            );
-
-            Ok(proof)
-        }
-        Err(e) => Err(e),
-    }
-}
-
-/// Verify an IVC aggregation proof under ZlIvAir.
-#[tracing::instrument(
-    level = "info",
-    skip(proof, iv_pi, opts),
-    fields(
-        q = %opts.num_queries(),
-        blowup = %opts.blowup_factor(),
-        grind = %opts.grinding_factor(),
-    )
-)]
-pub fn verify_ivc_air(
-    proof: Proof,
-    iv_pi: &IvPublic,
-    opts: &ProofOptions,
-    min_bits: u32,
-) -> Result<(), Error> {
-    let acceptable = winterfell::AcceptableOptions::MinConjecturedSecurity(min_bits);
-    let pi = IvAirPublicInputs::from(iv_pi);
-
-    tracing::info!(
-        target = "proof.ivc.verify",
-        q = %opts.num_queries(),
-        blowup = %opts.blowup_factor(),
-        grind = %opts.grinding_factor(),
-        "verify ivc proof",
-    );
-
-    let t0 = std::time::Instant::now();
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        winterfell::verify::<
-            ZlIvAir,
-            PoseidonHasher<BE>,
-            DefaultRandomCoin<PoseidonHasher<BE>>,
-            MerkleTree<PoseidonHasher<BE>>,
-        >(proof, pi, &acceptable)
-    }));
-
-    match res {
-        Ok(Ok(())) => {
-            let dt = t0.elapsed();
-            tracing::info!(
-                target = "proof.ivc.verify",
-                elapsed_ms = %dt.as_millis(),
-                "ivc proof verified",
-            );
-
-            Ok(())
-        }
-        Ok(Err(e)) => {
-            tracing::error!(
-                target = "proof.ivc.verify",
-                error = %e,
-                debug_error = ?e,
-                min_bits,
-                "verify ivc backend error",
-            );
-
-            Err(Error::BackendSource(Box::new(e)))
-        }
-        Err(_) => {
-            tracing::error!(
-                target = "proof.ivc.verify",
-                "winterfell panic during ivc verify"
-            );
-
-            Err(Error::Backend("winterfell panic during ivc verify".into()))
-        }
-    }
 }

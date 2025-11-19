@@ -21,9 +21,6 @@ pub mod agg_trace;
 pub mod air;
 pub mod commit;
 pub mod fs;
-pub mod ivc_air;
-pub mod ivc_layout;
-pub mod ivc_trace;
 pub mod layout;
 pub mod poseidon;
 pub mod poseidon_hasher;
@@ -34,7 +31,6 @@ pub mod schedule;
 pub mod trace;
 pub mod utils;
 pub mod zl1;
-pub mod zl_ivc;
 pub mod zl_step;
 
 use winterfell::math::fields::f128::BaseElement as BE;
@@ -44,10 +40,12 @@ use zk_lisp_compiler::Program;
 use zk_lisp_proof::frontend::{
     PreflightBackend, PreflightMode, ProofCodec, VmBackend, VmRunResult,
 };
-use zk_lisp_proof::ivc::{ExecRoot, IvBackend, IvDigest, IvPublic, StepDigest};
 use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
+use zk_lisp_proof::recursion::{RecursionBackend, RecursionDigest};
 use zk_lisp_proof::{ProverOptions, ZkBackend, ZkField};
 
+use crate::agg_air::AggAirPublicInputs;
+use crate::agg_child::{ZlChildTranscript, verify_child_transcript};
 use crate::trace::build_trace;
 
 /// Newtype wrapper for the Winterfell
@@ -168,7 +166,7 @@ impl ZkBackend for WinterfellBackend {
         let trace_width = trace.width();
         let trace_length = trace.length();
         let (num_partitions, hash_rate) =
-            crate::trace::select_partitions_for_trace(trace_width, trace_length);
+            trace::select_partitions_for_trace(trace_width, trace_length);
 
         let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
 
@@ -257,7 +255,7 @@ impl PreflightBackend for WinterfellBackend {
         let trace = build_trace(program, pub_inputs)?;
 
         let (num_partitions, hash_rate) =
-            crate::trace::select_partitions_for_trace(trace.width(), trace.length());
+            trace::select_partitions_for_trace(trace.width(), trace.length());
         let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
 
         preflight::run(mode, &wf_opts, pub_inputs, &trace)
@@ -276,71 +274,61 @@ impl ProofCodec for WinterfellBackend {
     }
 }
 
-impl IvBackend for WinterfellBackend {
-    type StepProof = crate::zl_step::ZlStepProof;
-    type IvProof = Proof;
+impl RecursionBackend for WinterfellBackend {
+    type StepProof = zl_step::ZlStepProof;
+    type RecursionProof = Proof;
+    type RecursionPublic = AggAirPublicInputs;
 
-    fn step_digest(step: &Self::StepProof) -> StepDigest {
-        step.digest()
-    }
-
-    fn exec_root(
-        suite_id: &[u8; 32],
-        prev_iv_digest: &[u8; 32],
-        digests: &[StepDigest],
-    ) -> ExecRoot {
-        // Canonicalise the multiset of digests inside
-        // `exec_root_from_digests`, so callers do not need
-        // to pre-sort them.
-        crate::zl_ivc::exec_root_from_digests(suite_id, prev_iv_digest, digests)
-    }
-
-    fn prove_ivc(
-        prev: Option<Self::IvProof>,
+    fn recursion_prove(
         steps: &[Self::StepProof],
-        iv_pi: &IvPublic,
+        rc_pi: &Self::RecursionPublic,
         opts: &Self::ProverOptions,
-    ) -> Result<(Self::IvProof, IvDigest), Self::Error> {
-        let has_prev_proof = prev.is_some();
-        let has_prev_digest = iv_pi.prev_iv_digest.iter().any(|b| *b != 0);
-
-        if has_prev_proof && !has_prev_digest {
-            return Err(crate::prove::Error::IvInvalid(
-                "IvPublic.prev_iv_digest must be non-zero when prev proof is supplied",
-            ));
-        }
-
-        if !has_prev_proof && has_prev_digest {
-            return Err(crate::prove::Error::IvInvalid(
-                "IvPublic.prev_iv_digest must be zero for the first IVC step",
-            ));
-        }
-
+    ) -> Result<(Self::RecursionProof, RecursionDigest), Self::Error> {
         if steps.is_empty() {
-            return Err(crate::prove::Error::IvInvalid(
-                "IvBackend::prove_ivc requires at least one step proof",
+            return Err(prove::Error::RecursionInvalid(
+                "RecursionBackend::recursion_prove requires at least one step proof",
             ));
         }
 
-        // Produce an IVC AIR proof over
-        // the additive state/root chains.
-        let iv_proof = crate::prove::prove_ivc_air(iv_pi, steps, opts)?;
-
-        // Compute the public IvDigest
-        // from IvPublic and step digests.
-        let mut digests = Vec::with_capacity(steps.len());
+        let mut transcripts = Vec::with_capacity(steps.len());
         for step in steps {
-            digests.push(step.digest());
+            let tx = ZlChildTranscript::from_step(step)?;
+            verify_child_transcript(&tx)?;
+            transcripts.push(tx);
         }
 
-        let iv_digest = crate::zl_ivc::iv_digest(iv_pi, &digests);
+        // Derive helper fields of AggAirPublicInputs from
+        // steps so callers do not need to supply them manually.
+        let mut agg_pi = rc_pi.clone();
 
-        Ok((iv_proof, iv_digest))
+        // Suite id must be consistent across all children;
+        // derive it from the first step and enforce equality.
+        let suite_id = steps[0].proof.header.suite_id;
+        for step in steps.iter().skip(1) {
+            if step.proof.header.suite_id != suite_id {
+                return Err(prove::Error::RecursionInvalid(
+                    "RecursionBackend::recursion_prove requires all steps to share the same suite_id",
+                ));
+            }
+        }
+
+        agg_pi.suite_id = suite_id;
+        agg_pi.children_count = steps.len() as u32;
+        agg_pi.children_ms = steps.iter().map(|s| s.proof.meta.m).collect();
+
+        let proof = prove::prove_agg_air(&agg_pi, &transcripts, opts)?;
+
+        // Compute a recursion digest from the effective
+        // aggregation public inputs; this binds the proof
+        // to its batch config.
+        let digest = prove::recursion_digest_from_agg_pi(&agg_pi);
+
+        Ok((proof, digest))
     }
 
-    fn verify_ivc(
-        iv_proof: Self::IvProof,
-        iv_pi: &IvPublic,
+    fn recursion_verify(
+        proof: Self::RecursionProof,
+        rc_pi: &Self::RecursionPublic,
         opts: &Self::ProverOptions,
     ) -> Result<(), Self::Error> {
         let min_bits = opts.min_security_bits;
@@ -355,8 +343,11 @@ impl IvBackend for WinterfellBackend {
             opts.grind
         };
 
+        // Use at least 16 queries for the aggregation AIR.
+        let agg_queries = core::cmp::max(opts.queries as usize, 16usize);
+
         let wf_opts = ProofOptions::new(
-            opts.queries as usize,
+            agg_queries,
             blowup as usize,
             grind,
             FieldExtension::None,
@@ -366,6 +357,6 @@ impl IvBackend for WinterfellBackend {
             BatchingMethod::Linear,
         );
 
-        crate::prove::verify_ivc_air(iv_proof, iv_pi, &wf_opts, min_bits)
+        prove::verify_agg_air(proof, rc_pi, &wf_opts, min_bits)
     }
 }
