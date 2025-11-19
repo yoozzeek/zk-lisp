@@ -138,23 +138,11 @@ impl ZkBackend for WinterfellBackend {
         pub_inputs: &Self::PublicInputs,
         opts: &Self::ProverOptions,
     ) -> Result<Self::Proof, Self::Error> {
-        let min_bits = opts.min_security_bits;
-        let blowup = if min_bits >= 128 && opts.blowup < 16 {
-            16
-        } else {
-            opts.blowup
-        };
-        let grind = if min_bits >= 128 && opts.grind < 16 {
-            16
-        } else {
-            opts.grind
-        };
-
         let base_opts = ProofOptions::new(
             opts.queries as usize,
-            blowup as usize,
-            grind,
-            FieldExtension::None,
+            opts.blowup as usize,
+            opts.grind,
+            FieldExtension::Quadratic,
             2,
             1,
             BatchingMethod::Linear,
@@ -189,22 +177,11 @@ impl ZkBackend for WinterfellBackend {
         opts: &Self::ProverOptions,
     ) -> Result<(), Self::Error> {
         let min_bits = opts.min_security_bits;
-        let blowup = if min_bits >= 128 && opts.blowup < 16 {
-            16
-        } else {
-            opts.blowup
-        };
-        let grind = if min_bits >= 128 && opts.grind < 16 {
-            16
-        } else {
-            opts.grind
-        };
-
         let wf_opts = ProofOptions::new(
             opts.queries as usize,
-            blowup as usize,
-            grind,
-            FieldExtension::None,
+            opts.blowup as usize,
+            opts.grind,
+            FieldExtension::Quadratic,
             2,
             1,
             BatchingMethod::Linear,
@@ -332,25 +309,15 @@ impl RecursionBackend for WinterfellBackend {
         opts: &Self::ProverOptions,
     ) -> Result<(), Self::Error> {
         let min_bits = opts.min_security_bits;
-        let blowup = if min_bits >= 128 && opts.blowup < 16 {
-            16
-        } else {
-            opts.blowup
-        };
-        let grind = if min_bits >= 128 && opts.grind < 16 {
-            16
-        } else {
-            opts.grind
-        };
 
         // Use at least 16 queries for the aggregation AIR.
         let agg_queries = core::cmp::max(opts.queries as usize, 16usize);
 
         let wf_opts = ProofOptions::new(
             agg_queries,
-            blowup as usize,
-            grind,
-            FieldExtension::None,
+            opts.blowup as usize,
+            opts.grind,
+            FieldExtension::Quadratic,
             2,
             1,
             BatchingMethod::Linear,

@@ -334,7 +334,7 @@ fn recursion_prove_rejects_wrong_v_units_total() {
 
     let msg = format!("{err}");
     assert!(
-        msg.contains("v_units_total must equal sum of transcript meta.v_units"),
+        msg.contains("AggAirPublicInputs.v_units_total must equal sum of child meta.v_units"),
         "error message must mention v_units_total mismatch",
     );
 }

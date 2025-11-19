@@ -121,13 +121,13 @@ struct ProveArgs {
     #[arg(long = "secret", value_delimiter = ',')]
     secrets: Vec<String>,
     /// Number of FRI queries
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 32)]
     queries: u8,
     /// Blowup factor
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 16)]
     blowup: u8,
     /// Grinding factor
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 16)]
     grind: u32,
     /// Optional deterministic seed
     #[arg(long)]
@@ -159,10 +159,10 @@ struct VerifyArgs {
     #[arg(long, default_value_t = 64)]
     queries: u8,
     /// Blowup factor
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 16)]
     blowup: u8,
     /// Grinding factor
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 16)]
     grind: u32,
     /// Optional seed
     #[arg(long)]

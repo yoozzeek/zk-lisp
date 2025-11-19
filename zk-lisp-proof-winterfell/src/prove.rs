@@ -575,7 +575,7 @@ pub fn verify_proof(
 /// Produce a step-level proof wrapper for a single
 /// zk-lisp execution segment. This helper mirrors
 /// the configuration used by `WinterfellBackend` and
-/// returns a `ZlStepProof` ready to be used by 
+/// returns a `ZlStepProof` ready to be used by
 /// the recursion layer.
 #[tracing::instrument(
     level = "info",

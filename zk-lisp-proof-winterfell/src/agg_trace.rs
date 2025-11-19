@@ -17,8 +17,8 @@
 
 use crate::agg_air::{AggAirPublicInputs, AggFriProfile};
 use crate::agg_child::{
-    ZlChildCompact, ZlChildTranscript, children_root_from_compact, fold_positions_usize,
-    merkle_root_from_leaf,
+    ZlChildCompact, ZlChildTranscript, ZlFsChallenges, children_root_from_compact,
+    fold_positions_usize, merkle_root_from_leaf,
 };
 use crate::agg_layout::AggColumns;
 use crate::poseidon_hasher::PoseidonHasher;
@@ -31,6 +31,19 @@ use winterfell::math::StarkField;
 use winterfell::math::ToElements;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_proof::error;
+
+#[derive(Debug)]
+pub struct AggTrace {
+    pub trace: TraceTable<BE>,
+    pub cols: AggColumns,
+}
+
+impl AggTrace {
+    #[inline]
+    pub fn new(trace: TraceTable<BE>, cols: AggColumns) -> Self {
+        Self { trace, cols }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct FriDeepSample {
@@ -52,11 +65,38 @@ struct AggFsWeights {
     beta_paths: BE,
 }
 
+/// Shared context for DEEP aggregation over all query positions
+/// for a single child transcript. This bundles together domain
+/// geometry, FS challenges and widths.
+struct DeepContext<'a> {
+    _child: &'a ZlChildCompact,
+    trace_width: usize,
+    constraint_width: usize,
+    lde_domain_size: usize,
+    positions: Vec<usize>,
+    folded_positions: Vec<usize>,
+    layer0_vals: &'a Vec<[BE; 2]>,
+    base_g: BE,
+    offset: BE,
+    z: BE,
+    z_g: BE,
+    deep_trace_coeffs: &'a [BE],
+    deep_constraint_coeffs: &'a [BE],
+    row_length_0: usize,
+    trace_rows: &'a Vec<Vec<BE>>,
+    constraint_rows: &'a Vec<Vec<BE>>,
+    ood_main_current: &'a [BE],
+    ood_main_next: &'a [BE],
+    ood_quotient_current: &'a [BE],
+    ood_quotient_next: &'a [BE],
+}
+
 fn derive_agg_fs_weights(agg_pi: &AggAirPublicInputs) -> error::Result<AggFsWeights> {
     // Derive aggregation weights from AggAirPublicInputs via a
     // dedicated Fiat–Shamir coin so that DEEP / FRI aggregates use
     // unpredictable challenges rather than fixed constants.
     let mut seed_elems = agg_pi.to_elements();
+
     // Simple domain separator to make aggregation FS distinct from
     // other transcripts using the same hasher.
     seed_elems.push(BE::from(0xA9u64));
@@ -84,21 +124,6 @@ fn derive_agg_fs_weights(agg_pi: &AggAirPublicInputs) -> error::Result<AggFsWeig
     })
 }
 
-/// Helper structure bundling an aggregation trace with
-/// its column layout.
-#[derive(Debug)]
-pub struct AggTrace {
-    pub trace: TraceTable<BE>,
-    pub cols: AggColumns,
-}
-
-impl AggTrace {
-    #[inline]
-    pub fn new(trace: TraceTable<BE>, cols: AggColumns) -> Self {
-        Self { trace, cols }
-    }
-}
-
 /// Build an aggregation trace from compact child proofs
 /// and aggregation public inputs.
 ///
@@ -121,6 +146,133 @@ pub fn build_agg_trace(
     agg_pi: &AggAirPublicInputs,
     children: &[ZlChildCompact],
 ) -> error::Result<AggTrace> {
+    let (agg_trace, _child_start_rows) = build_agg_trace_core(agg_pi, children)?;
+    Ok(agg_trace)
+}
+
+/// Build an aggregation trace from full child transcripts
+/// (ZlChildTranscript) and aggregation public inputs.
+///
+/// This builder reuses `build_agg_trace_core` for all
+/// shape checks, Merkle binding and segment layout, and
+/// then overlays per-child FRI/DEEP aggregates on the
+/// first row of each child segment.
+pub fn build_agg_trace_from_transcripts(
+    agg_pi: &AggAirPublicInputs,
+    transcripts: &[ZlChildTranscript],
+) -> error::Result<AggTrace> {
+    if transcripts.is_empty() {
+        return Err(error::Error::InvalidInput(
+            "AggTrace requires at least one child transcript",
+        ));
+    }
+
+    let children: Vec<ZlChildCompact> = transcripts.iter().map(|tx| tx.compact.clone()).collect();
+
+    let (mut agg_trace, child_start_rows) = build_agg_trace_core(agg_pi, &children)?;
+
+    if child_start_rows.len() != transcripts.len() {
+        return Err(error::Error::InvalidInput(
+            "AggTrace internal error: child_start_rows length mismatch in build_agg_trace_from_transcripts",
+        ));
+    }
+
+    // Derive aggregation Fiat–Shamir weights once per aggregation
+    // instance and reuse them across all children so that DEEP and
+    // FRI aggregates are driven by unpredictable challenges.
+    let AggFsWeights {
+        beta_deep,
+        beta_fri_layer1,
+        delta_depth,
+        beta_paths,
+    } = derive_agg_fs_weights(agg_pi)?;
+
+    let cols = agg_trace.cols;
+    let trace = &mut agg_trace.trace;
+
+    for (i, tx) in transcripts.iter().enumerate() {
+        let start_row = child_start_rows[i];
+
+        // Minimal per-child FRI-folding sample: we pick a
+        // single binary FRI coset from the first layer and
+        // compute (v0, v1, vnext, alpha, x0, x1) for it. These
+        // values are wired into dedicated columns so that the
+        // AIR can enforce the binary folding relation. When FRI
+        // data or query positions are unavailable, we fall back
+        // to zeros so that the constraint becomes vacuous.
+        let FriDeepSample {
+            v0: fri_v0_child_fe,
+            v1: fri_v1_child_fe,
+            vnext: fri_vnext_child_fe,
+            alpha: fri_alpha_child_fe,
+            x0: fri_x0_child_fe,
+            x1: fri_x1_child_fe,
+            q1: fri_q1_child_fe,
+            deep_err: _fri_deep_err_fe,
+        } = sample_fri_fold_child(tx, &agg_pi.profile_fri)?;
+
+        // Aggregate DEEP vs FRI layer-0 errors across all
+        // query positions for this child using a simple
+        // geometric weighting beta^k drawn from the aggregation
+        // Fiat–Shamir transcript.
+        let deep_agg = compute_deep_agg_over_queries(tx, beta_deep)?;
+
+        // Aggregate FRI layer-1 evaluations == query_values
+        // errors across all query positions for this child.
+        // We use a separate geometric weighting beta_fri^k so
+        // that DEEP and FRI aggregates remain statistically
+        // independent.
+        let fri_layer1_agg =
+            compute_fri_layer1_agg_over_queries(tx, &agg_pi.profile_fri, beta_fri_layer1)?;
+
+        // Aggregate local FRI folding errors along a single
+        // path across all layers, including the remainder
+        // polynomial. We use an independent delta challenge
+        // so that this aggregate stays statistically
+        // independent from beta-based aggregates.
+        let fri_path_agg =
+            compute_fri_path_agg_over_layers(tx, &agg_pi.profile_fri, delta_depth, 0usize)?;
+
+        // Aggregate FRI folding and remainder errors over all query
+        // paths using a separate geometric weighting beta_paths^k so
+        // that depth and path aggregates remain statistically
+        // independent.
+        let fri_paths_agg =
+            compute_fri_paths_agg_over_layers(tx, &agg_pi.profile_fri, delta_depth, beta_paths)?;
+
+        // Overlay FRI/DEEP aggregates on the first row of the
+        // corresponding child segment. All other rows and padding
+        // remain at their default zero values for these columns.
+        trace.set(cols.fri_v0_child, start_row, fri_v0_child_fe);
+        trace.set(cols.fri_v1_child, start_row, fri_v1_child_fe);
+        trace.set(cols.fri_vnext_child, start_row, fri_vnext_child_fe);
+        trace.set(cols.fri_alpha_child, start_row, fri_alpha_child_fe);
+        trace.set(cols.fri_x0_child, start_row, fri_x0_child_fe);
+        trace.set(cols.fri_x1_child, start_row, fri_x1_child_fe);
+        trace.set(cols.fri_q1_child, start_row, fri_q1_child_fe);
+        trace.set(cols.comp_sum, start_row, deep_agg);
+        trace.set(cols.alpha_div_zm_sum, start_row, fri_layer1_agg);
+        trace.set(cols.map_l0_sum, start_row, fri_path_agg);
+        trace.set(cols.final_llast_sum, start_row, fri_paths_agg);
+    }
+
+    Ok(agg_trace)
+}
+
+/// Core builder shared by both compact and transcript-based
+/// aggregation trace constructors. This function performs all
+/// shape checks against `AggAirPublicInputs`, enforces the
+/// canonical `children_root` and constructs the base layout
+/// over `AggColumns` with Merkle root error accumulators.
+///
+/// It returns the constructed `AggTrace` together with the
+/// starting row index for each child segment so that callers
+/// can overlay additional per-child data (e.g. FRI/DEEP
+/// aggregates) only on `seg_first` rows.
+fn build_agg_trace_core(
+    agg_pi: &AggAirPublicInputs,
+    children: &[ZlChildCompact],
+) -> error::Result<(AggTrace, Vec<usize>)> {
     if children.is_empty() {
         return Err(error::Error::InvalidInput(
             "AggTrace requires at least one child proof",
@@ -130,7 +282,6 @@ pub fn build_agg_trace(
     let cols = AggColumns::baseline();
     let n_children = children.len();
 
-    // Basic shape checks against public inputs.
     if agg_pi.children_count != n_children as u32 {
         return Err(error::Error::InvalidInput(
             "AggAirPublicInputs.children_count must match number of children",
@@ -142,8 +293,7 @@ pub fn build_agg_trace(
         ));
     }
 
-    // Enforce suite_id consistency
-    // across children and public inputs.
+    // Enforce suite_id consistency across children and public inputs.
     for child in children {
         if child.suite_id != agg_pi.suite_id {
             return Err(error::Error::InvalidInput(
@@ -152,14 +302,9 @@ pub fn build_agg_trace(
         }
     }
 
-    // Enforce that all children share the same
-    // global STARK profile as advertised in
-    // AggAirPublicInputs.profile_meta and
-    // AggAirPublicInputs.profile_queries. We
-    // deliberately do not constrain per-child
-    // quantities such as base trace length `m`
-    // or `v_units` here; those are handled via
-    // `children_ms` and the work accumulator.
+    // Enforce that all children share the same global STARK profile
+    // as advertised in AggAirPublicInputs.profile_meta and
+    // AggAirPublicInputs.profile_queries.
     let pm = &agg_pi.profile_meta;
     let pq = &agg_pi.profile_queries;
 
@@ -189,7 +334,7 @@ pub fn build_agg_trace(
         ));
     }
 
-    // Enforce per-child m and aggregate v_units.
+    // Enforce per-child m and aggregate v_units
     let mut base_rows: usize = 0;
     let mut v_units_sum: u64 = 0;
 
@@ -241,10 +386,13 @@ pub fn build_agg_trace(
     let mut v_acc = BE::from(0u64);
     let mut child_count_acc = BE::from(0u64);
 
-    // Global FRI accumulators over all children.
+    // Global FRI accumulators over all children remain zero in the
+    // current aggregator; we keep them explicit for clarity.
     let fri_v0_sum = BE::ZERO;
     let fri_v1_sum = BE::ZERO;
     let fri_vnext_sum = BE::ZERO;
+
+    let mut child_start_rows = Vec::with_capacity(n_children);
 
     for (i, child) in children.iter().enumerate() {
         let m = agg_pi.children_ms[i] as usize;
@@ -260,7 +408,6 @@ pub fn build_agg_trace(
 
         if let (Some(fs), Some(merkle)) = (&child.fs_challenges, &child.merkle_proofs) {
             let num_q = fs.query_positions.len();
-
             if num_q != merkle.trace_paths.len() || num_q != merkle.constraint_paths.len() {
                 return Err(error::Error::InvalidInput(
                     "ZlChildCompact.merkle_proofs path lengths are inconsistent with fs_challenges",
@@ -306,6 +453,9 @@ pub fn build_agg_trace(
             }
         }
 
+        let child_start_row = row;
+        child_start_rows.push(child_start_row);
+
         for r in 0..m {
             let cur_row = row + r;
             let is_first = r == 0;
@@ -317,8 +467,7 @@ pub fn build_agg_trace(
                 if is_first { BE::ONE } else { BE::ZERO },
             );
 
-            // v_units_child: only on the
-            // first row of the segment.
+            // v_units_child: only on the first row of the segment.
             if is_first {
                 trace.set(cols.v_units_child, cur_row, v_child_fe);
                 trace.set(cols.v_units_acc, cur_row, v_acc);
@@ -367,10 +516,8 @@ pub fn build_agg_trace(
         row += m;
     }
 
-    // Padding rows (if any):
-    // keep accumulator constant and
-    // disable seg_first, v_units_child
-    // and trace_root_err / fri_root_err.
+    // Padding rows (if any): keep accumulator constant and disable
+    // seg_first, v_units_child and trace_root_err / fri_root_err.
     for cur_row in row..n_rows {
         trace.set(cols.seg_first, cur_row, BE::ZERO);
         trace.set(cols.v_units_child, cur_row, BE::ZERO);
@@ -392,353 +539,7 @@ pub fn build_agg_trace(
         trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
     }
 
-    Ok(AggTrace::new(trace, cols))
-}
-
-/// Build an aggregation trace from full child transcripts
-/// (ZlChildTranscript) and aggregation public inputs.
-///
-/// This builder mirrors `build_agg_trace` but also
-/// wires a minimal binary FRI-folding sample per child
-/// into dedicated columns so that `ZlAggAir` can enforce
-/// an on-circuit FRI-folding relation.
-pub fn build_agg_trace_from_transcripts(
-    agg_pi: &AggAirPublicInputs,
-    transcripts: &[ZlChildTranscript],
-) -> error::Result<AggTrace> {
-    if transcripts.is_empty() {
-        return Err(error::Error::InvalidInput(
-            "AggTrace requires at least one child transcript",
-        ));
-    }
-
-    let cols = AggColumns::baseline();
-    let n_children = transcripts.len();
-
-    // Basic shape checks against public inputs.
-    if agg_pi.children_count != n_children as u32 {
-        return Err(error::Error::InvalidInput(
-            "AggAirPublicInputs.children_count must match number of transcripts",
-        ));
-    }
-    if agg_pi.children_ms.len() != n_children {
-        return Err(error::Error::InvalidInput(
-            "AggAirPublicInputs.children_ms length must match number of transcripts",
-        ));
-    }
-
-    // Enforce suite_id consistency across children and public inputs.
-    for tx in transcripts {
-        if tx.compact.suite_id != agg_pi.suite_id {
-            return Err(error::Error::InvalidInput(
-                "AggAirPublicInputs.suite_id must match suite_id of all transcripts",
-            ));
-        }
-    }
-
-    // Enforce that all children share the same global STARK profile
-    // as advertised in AggAirPublicInputs.profile_meta and
-    // AggAirPublicInputs.profile_queries.
-    let pm = &agg_pi.profile_meta;
-    let pq = &agg_pi.profile_queries;
-
-    for tx in transcripts {
-        let meta = &tx.compact.meta;
-        if meta.rho != pm.rho
-            || meta.o != pm.o
-            || meta.lambda != pm.lambda
-            || meta.pi_len != pm.pi_len
-        {
-            return Err(error::Error::InvalidInput(
-                "AggAirPublicInputs.profile_meta is inconsistent with transcript StepMeta",
-            ));
-        }
-
-        if meta.q != pq.num_queries {
-            return Err(error::Error::InvalidInput(
-                "AggAirPublicInputs.profile_queries.num_queries is inconsistent with transcript meta.q",
-            ));
-        }
-    }
-
-    // Enforce canonical children_root via compact views.
-    let children: Vec<ZlChildCompact> = transcripts.iter().map(|tx| tx.compact.clone()).collect();
-    let children_root_expected = children_root_from_compact(&agg_pi.suite_id, &children);
-    if children_root_expected != agg_pi.children_root {
-        return Err(error::Error::InvalidInput(
-            "AggAirPublicInputs.children_root is inconsistent with transcript commitments",
-        ));
-    }
-
-    // Enforce per-child m and aggregate v_units.
-    let mut base_rows: usize = 0;
-    let mut v_units_sum: u64 = 0;
-
-    for (i, tx) in transcripts.iter().enumerate() {
-        let child = &tx.compact;
-        let m = agg_pi.children_ms[i];
-        if m == 0 {
-            return Err(error::Error::InvalidInput(
-                "AggAirPublicInputs.children_ms entries must be non-zero",
-            ));
-        }
-
-        if m != child.meta.m {
-            return Err(error::Error::InvalidInput(
-                "AggAirPublicInputs.children_ms entry does not match transcript meta.m",
-            ));
-        }
-
-        base_rows = base_rows
-            .checked_add(m as usize)
-            .ok_or(error::Error::InvalidInput(
-                "AggTrace length overflow when summing children_ms (transcripts)",
-            ))?;
-
-        v_units_sum = v_units_sum.checked_add(child.meta.v_units).ok_or(
-            error::Error::InvalidInput(
-                "AggAirPublicInputs.v_units_total overflow when summing transcript meta.v_units",
-            ),
-        )?;
-    }
-
-    if agg_pi.v_units_total != v_units_sum {
-        return Err(error::Error::InvalidInput(
-            "AggAirPublicInputs.v_units_total must equal sum of transcript meta.v_units",
-        ));
-    }
-
-    if base_rows == 0 {
-        return Err(error::Error::InvalidInput(
-            "AggTrace requires a positive total number of rows (transcripts)",
-        ));
-    }
-
-    let n_rows = base_rows.next_power_of_two();
-
-    let mut trace = TraceTable::new(cols.width(), n_rows);
-
-    let mut row = 0usize;
-    let mut v_acc = BE::from(0u64);
-    let mut child_count_acc = BE::from(0u64);
-
-    let fri_v0_sum = BE::ZERO;
-    let fri_v1_sum = BE::ZERO;
-    let fri_vnext_sum = BE::ZERO;
-
-    // Derive aggregation Fiat–Shamir weights once per aggregation
-    // instance and reuse them across all children so that DEEP and
-    // FRI aggregates are driven by unpredictable challenges.
-    let AggFsWeights {
-        beta_deep,
-        beta_fri_layer1,
-        delta_depth,
-        beta_paths,
-    } = derive_agg_fs_weights(agg_pi)?;
-
-    for (i, tx) in transcripts.iter().enumerate() {
-        let child = &tx.compact;
-        let m = agg_pi.children_ms[i] as usize;
-        let v_child_fe = BE::from(child.meta.v_units);
-
-        // Aggregate Merkle root errors for trace and constraint
-        // commitments for this child. When Fiat–Shamir challenges
-        // or Merkle proofs are missing (e.g. for synthetic children
-        // in tests or zero-query profiles), we keep the errors at
-        // zero so that the AIR does not enforce Merkle binding.
-        let mut trace_root_err_fe = BE::ZERO;
-        let mut constraint_root_err_fe = BE::ZERO;
-
-        if let (Some(fs), Some(merkle)) = (&child.fs_challenges, &child.merkle_proofs) {
-            let num_q = fs.query_positions.len();
-
-            if num_q != merkle.trace_paths.len() || num_q != merkle.constraint_paths.len() {
-                return Err(error::Error::InvalidInput(
-                    "ZlChildCompact.merkle_proofs path lengths are inconsistent with fs_challenges",
-                ));
-            }
-
-            if num_q > 0 {
-                if child.trace_roots.is_empty() {
-                    return Err(error::Error::InvalidInput(
-                        "ZlChildCompact.trace_roots must be non-empty when Merkle proofs are present",
-                    ));
-                }
-
-                let trace_root_expected_fe = utils::fold_bytes32_to_fe(&child.trace_roots[0]);
-                let constraint_root_expected_fe = utils::fold_bytes32_to_fe(&child.constraint_root);
-
-                let lde_domain_size = (child.meta.m as usize)
-                    .checked_mul(child.meta.rho as usize)
-                    .ok_or(error::Error::InvalidInput(
-                        "AggTrace LDE domain size overflow when checking Merkle paths",
-                    ))?;
-
-                for (k, &pos) in fs.query_positions.iter().enumerate() {
-                    let idx = pos as usize;
-                    if idx >= lde_domain_size {
-                        return Err(error::Error::InvalidInput(
-                            "AggTrace encountered an FS query position outside LDE domain",
-                        ));
-                    }
-
-                    let t_path = &merkle.trace_paths[k];
-                    let c_path = &merkle.constraint_paths[k];
-
-                    let t_root = merkle_root_from_leaf(&t_path.leaf, idx, &t_path.siblings);
-                    let c_root = merkle_root_from_leaf(&c_path.leaf, idx, &c_path.siblings);
-
-                    let t_root_fe = utils::fold_bytes32_to_fe(&t_root.as_bytes());
-                    let c_root_fe = utils::fold_bytes32_to_fe(&c_root.as_bytes());
-
-                    trace_root_err_fe += t_root_fe - trace_root_expected_fe;
-                    constraint_root_err_fe += c_root_fe - constraint_root_expected_fe;
-                }
-            }
-        }
-
-        // Minimal per-child FRI-folding sample: we pick a
-        // single binary FRI coset from the first layer and
-        // compute (v0, v1, vnext, alpha, x0, x1) for it. These
-        // values are wired into dedicated columns so that the
-        // AIR can enforce the binary folding relation. When FRI
-        // data or query positions are unavailable, we fall back
-        // to zeros so that the constraint becomes vacuous.
-        let FriDeepSample {
-            v0: fri_v0_child_fe,
-            v1: fri_v1_child_fe,
-            vnext: fri_vnext_child_fe,
-            alpha: fri_alpha_child_fe,
-            x0: fri_x0_child_fe,
-            x1: fri_x1_child_fe,
-            q1: fri_q1_child_fe,
-            deep_err: _fri_deep_err_fe,
-        } = sample_fri_fold_child(tx, &agg_pi.profile_fri)?;
-
-        // Aggregate DEEP vs FRI layer-0 errors across all
-        // query positions for this child using a simple
-        // geometric weighting beta^k drawn from the aggregation
-        // Fiat–Shamir transcript.
-        let deep_agg = compute_deep_agg_over_queries(tx, beta_deep)?;
-
-        // Aggregate FRI layer-1 evaluations == query_values
-        // errors across all query positions for this child.
-        // We use a separate geometric weighting beta_fri^k so
-        // that DEEP and FRI aggregates remain statistically
-        // independent.
-        let fri_layer1_agg =
-            compute_fri_layer1_agg_over_queries(tx, &agg_pi.profile_fri, beta_fri_layer1)?;
-
-        // Aggregate local FRI folding errors along a single
-        // path across all layers, including the remainder
-        // polynomial. We use an independent delta challenge
-        // so that this aggregate stays statistically
-        // independent from beta-based aggregates.
-        let fri_path_agg =
-            compute_fri_path_agg_over_layers(tx, &agg_pi.profile_fri, delta_depth, 0usize)?;
-
-        // Aggregate FRI folding and remainder errors over all query
-        // paths using a separate geometric weighting beta_paths^k so
-        // that depth and path aggregates remain statistically
-        // independent.
-        let fri_paths_agg =
-            compute_fri_paths_agg_over_layers(tx, &agg_pi.profile_fri, delta_depth, beta_paths)?;
-
-        for r in 0..m {
-            let cur_row = row + r;
-            let is_first = r == 0;
-
-            // seg_first flag
-            trace.set(
-                cols.seg_first,
-                cur_row,
-                if is_first { BE::ONE } else { BE::ZERO },
-            );
-
-            // v_units_child: only on the
-            // first row of the segment.
-            if is_first {
-                trace.set(cols.v_units_child, cur_row, v_child_fe);
-                trace.set(cols.v_units_acc, cur_row, v_acc);
-                trace.set(cols.child_count_acc, cur_row, child_count_acc);
-                trace.set(cols.trace_root_err, cur_row, trace_root_err_fe);
-                trace.set(cols.constraint_root_err, cur_row, constraint_root_err_fe);
-
-                trace.set(cols.fri_v0_child, cur_row, fri_v0_child_fe);
-                trace.set(cols.fri_v1_child, cur_row, fri_v1_child_fe);
-                trace.set(cols.fri_vnext_child, cur_row, fri_vnext_child_fe);
-                trace.set(cols.fri_alpha_child, cur_row, fri_alpha_child_fe);
-                trace.set(cols.fri_x0_child, cur_row, fri_x0_child_fe);
-                trace.set(cols.fri_x1_child, cur_row, fri_x1_child_fe);
-                trace.set(cols.fri_q1_child, cur_row, fri_q1_child_fe);
-                trace.set(cols.comp_sum, cur_row, deep_agg);
-                trace.set(cols.alpha_div_zm_sum, cur_row, fri_layer1_agg);
-                trace.set(cols.map_l0_sum, cur_row, fri_path_agg);
-                trace.set(cols.final_llast_sum, cur_row, fri_paths_agg);
-
-                trace.set(cols.v0_sum, cur_row, fri_v0_sum);
-                trace.set(cols.v1_sum, cur_row, fri_v1_sum);
-                trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
-
-                v_acc += v_child_fe;
-                child_count_acc += BE::ONE;
-            } else {
-                trace.set(cols.v_units_child, cur_row, BE::ZERO);
-                trace.set(cols.v_units_acc, cur_row, v_acc);
-                trace.set(cols.child_count_acc, cur_row, child_count_acc);
-                trace.set(cols.trace_root_err, cur_row, BE::ZERO);
-                trace.set(cols.constraint_root_err, cur_row, BE::ZERO);
-
-                trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_vnext_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_alpha_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_x0_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_x1_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_q1_child, cur_row, BE::ZERO);
-
-                trace.set(cols.v0_sum, cur_row, fri_v0_sum);
-                trace.set(cols.v1_sum, cur_row, fri_v1_sum);
-                trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
-                trace.set(cols.alpha_div_zm_sum, cur_row, BE::ZERO);
-            }
-
-            // ok and other composition-related columns
-            // remain at their default zero values.
-        }
-
-        row += m;
-    }
-
-    // Padding rows (if any):
-    // keep accumulator constant and
-    // disable seg_first, v_units_child
-    // and trace_root_err / fri_root_err.
-    for cur_row in row..n_rows {
-        trace.set(cols.seg_first, cur_row, BE::ZERO);
-        trace.set(cols.v_units_child, cur_row, BE::ZERO);
-        trace.set(cols.v_units_acc, cur_row, v_acc);
-        trace.set(cols.child_count_acc, cur_row, child_count_acc);
-        trace.set(cols.trace_root_err, cur_row, BE::ZERO);
-        trace.set(cols.constraint_root_err, cur_row, BE::ZERO);
-
-        trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
-        trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
-        trace.set(cols.fri_vnext_child, cur_row, BE::ZERO);
-        trace.set(cols.fri_alpha_child, cur_row, BE::ZERO);
-        trace.set(cols.fri_x0_child, cur_row, BE::ZERO);
-        trace.set(cols.fri_x1_child, cur_row, BE::ZERO);
-        trace.set(cols.fri_q1_child, cur_row, BE::ZERO);
-
-        trace.set(cols.v0_sum, cur_row, fri_v0_sum);
-        trace.set(cols.v1_sum, cur_row, fri_v1_sum);
-        trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
-        trace.set(cols.alpha_div_zm_sum, cur_row, BE::ZERO);
-        trace.set(cols.map_l0_sum, cur_row, BE::ZERO);
-        trace.set(cols.final_llast_sum, cur_row, BE::ZERO);
-    }
-
-    Ok(AggTrace::new(trace, cols))
+    Ok((AggTrace::new(trace, cols), child_start_rows))
 }
 
 /// Aggregate local FRI folding errors along a single FRI query path
@@ -915,7 +716,6 @@ fn compute_fri_path_agg_over_layers(
             // by folding this layer matches the committed
             // evaluation in the next layer for the same path.
             let layer_next_vals = &tx.fri_layers[depth + 1];
-
             let folded_positions_next =
                 fold_positions_usize(&positions_next, domain_size_next, folding)?;
 
@@ -953,6 +753,7 @@ fn compute_fri_path_agg_over_layers(
 
             let coset_idx_next = pos_next % row_length_next;
             let elem_idx_next = pos_next / row_length_next;
+
             if elem_idx_next >= folding {
                 return Err(error::Error::InvalidInput(
                     "FRI element index exceeds folding factor at next depth in compute_fri_path_agg_over_layers",
@@ -992,14 +793,16 @@ fn compute_fri_path_agg_over_layers(
             pos_remainder = positions_next[sample_idx];
         }
 
-        // Advance domain geometry for the next depth (or remainder).
+        // Advance domain geometry for
+        // the next depth (or remainder).
         domain_generator_d = domain_generator_d.exp_vartime((folding as u32).into());
         domain_size_d = domain_size_next;
         positions_d = positions_next;
     }
 
-    // Final remainder check using Horner evaluation over
-    // tx.fri_final.coeffs in the same reverse-coefficient convention
+    // Final remainder check using Horner evaluation
+    // over tx.fri_final.coeffs in the same
+    // reverse-coefficient convention
     // as winter-fri's eval_horner_rev.
     if tx.fri_final.coeffs.is_empty() {
         return Err(error::Error::InvalidInput(
@@ -1014,7 +817,6 @@ fn compute_fri_path_agg_over_layers(
     }
 
     let x_l = BE::GENERATOR * domain_generator_d.exp_vartime((pos_remainder as u64).into());
-
     let rem_val = tx
         .fri_final
         .coeffs
@@ -1080,6 +882,7 @@ fn compute_fri_paths_agg_over_layers(
 
     Ok(agg)
 }
+
 /// fs.deep_coeffs and matches it against the FRI layer-0
 /// query value q0_k obtained via `get_query_values`-style
 /// indexing into `fri_layers[0]`. It then computes a
@@ -1090,45 +893,11 @@ fn compute_fri_paths_agg_over_layers(
 /// and returns deep_agg. When FRI/DEEP data is missing we
 /// fall back to zero so that the AIR constraint over
 /// `comp_sum` becomes vacuous.
-fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Result<BE> {
-    let num_layers = tx.fri_layers.len();
+fn prepare_deep_context<'a>(
+    tx: &'a ZlChildTranscript,
+    fs: &'a ZlFsChallenges,
+) -> error::Result<Option<DeepContext<'a>>> {
     let num_queries = tx.num_queries as usize;
-
-    if num_layers == 0 || num_queries == 0 {
-        return Ok(BE::ZERO);
-    }
-
-    let folding = 2usize;
-
-    let child = &tx.compact;
-    let fs = match &child.fs_challenges {
-        Some(fs) => fs,
-        None => {
-            // Without FS challenges we cannot reconstruct
-            // the FRI / DEEP domain geometry; fall back to
-            // zero so that AIR constraints become vacuous.
-            return Ok(BE::ZERO);
-        }
-    };
-
-    if fs.query_positions.len() != num_queries {
-        return Err(error::Error::InvalidInput(
-            "FS query_positions length is inconsistent with child transcript num_queries in compute_deep_agg_over_queries",
-        ));
-    }
-
-    if fs.ood_points.len() != 1 {
-        return Err(error::Error::InvalidInput(
-            "AggTrace expects exactly one OOD point in compute_deep_agg_over_queries",
-        ));
-    }
-
-    if fs.deep_coeffs.is_empty() {
-        return Err(error::Error::InvalidInput(
-            "AggTrace requires non-empty DEEP coefficients in compute_deep_agg_over_queries",
-        ));
-    }
-
     let trace_width = tx.main_trace_width as usize;
     let constraint_width = tx.constraint_frame_width as usize;
 
@@ -1169,6 +938,8 @@ fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Res
         ));
     }
 
+    let child = &tx.compact;
+
     // Reconstruct the LDE / FRI domain size as m * rho.
     let lde_domain_size = (child.meta.m as usize)
         .checked_mul(child.meta.rho as usize)
@@ -1182,6 +953,8 @@ fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Res
         ));
     }
 
+    let folding = 2usize;
+
     let positions: Vec<usize> = fs.query_positions.iter().map(|&p| p as usize).collect();
     let folded_positions = fold_positions_usize(&positions, lde_domain_size, folding)?;
 
@@ -1190,7 +963,7 @@ fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Res
     ))?;
 
     if folded_positions.is_empty() || layer0_vals.is_empty() {
-        return Ok(BE::ZERO);
+        return Ok(None);
     }
 
     let q_count = layer0_vals.len();
@@ -1205,6 +978,7 @@ fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Res
 
     let z = fs.ood_points[0];
     let m = child.meta.m as usize;
+
     if m == 0 || !m.is_power_of_two() {
         return Err(error::Error::InvalidInput(
             "child.meta.m must be a non-zero power of two in compute_deep_agg_over_queries",
@@ -1216,101 +990,167 @@ fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Res
 
     let (deep_trace_coeffs, deep_constraint_coeffs) = fs.deep_coeffs.split_at(trace_width);
 
-    let mut deep_agg = BE::ZERO;
-    let mut beta_pow = BE::ONE;
-
     let domain_size_0 = lde_domain_size;
     let row_length_0 = domain_size_0 / folding;
+
     if row_length_0 == 0 {
         return Err(error::Error::InvalidInput(
             "FRI row length at depth 0 must be non-zero in compute_deep_agg_over_queries",
         ));
     }
 
-    for (k, &pos_k) in positions.iter().enumerate() {
-        if pos_k >= lde_domain_size {
+    Ok(Some(DeepContext {
+        _child: child,
+        trace_width,
+        constraint_width,
+        lde_domain_size,
+        positions,
+        folded_positions,
+        layer0_vals,
+        base_g,
+        offset,
+        z,
+        z_g,
+        deep_trace_coeffs,
+        deep_constraint_coeffs,
+        row_length_0,
+        trace_rows: &tx.trace_main_openings,
+        constraint_rows: &tx.constraint_openings,
+        ood_main_current: &tx.ood_main_current,
+        ood_main_next: &tx.ood_main_next,
+        ood_quotient_current: &tx.ood_quotient_current,
+        ood_quotient_next: &tx.ood_quotient_next,
+    }))
+}
+
+fn deep_eval_at_position(ctx: &DeepContext<'_>, k: usize) -> error::Result<(BE, BE)> {
+    let pos_k = ctx.positions[k];
+    if pos_k >= ctx.lde_domain_size {
+        return Err(error::Error::InvalidInput(
+            "FRI sample position exceeds LDE domain size in compute_deep_agg_over_queries",
+        ));
+    }
+
+    let x = ctx.base_g.exp_vartime((pos_k as u64).into()) * ctx.offset;
+
+    let x_minus_z = x - ctx.z;
+    let x_minus_zg = x - ctx.z_g;
+
+    if x_minus_z == BE::ZERO || x_minus_zg == BE::ZERO {
+        return Err(error::Error::InvalidInput(
+            "evaluation point x collides with OOD point in compute_deep_agg_over_queries",
+        ));
+    }
+
+    let inv_x_minus_z = x_minus_z.inv();
+    let inv_x_minus_zg = x_minus_zg.inv();
+
+    // Trace contribution
+    let mut y_trace = BE::ZERO;
+    let row_x = &ctx.trace_rows[k];
+
+    if row_x.len() != ctx.trace_width {
+        return Err(error::Error::InvalidInput(
+            "ZlChildTranscript.trace_main_openings row width is inconsistent with main_trace_width in compute_deep_agg_over_queries",
+        ));
+    }
+
+    for (i, &t_x) in row_x.iter().enumerate().take(ctx.trace_width) {
+        let coeff = ctx.deep_trace_coeffs[i];
+        let t_z = ctx.ood_main_current[i];
+        let t_zg = ctx.ood_main_next[i];
+
+        let term_z = (t_x - t_z) * inv_x_minus_z;
+        let term_zg = (t_x - t_zg) * inv_x_minus_zg;
+
+        y_trace += coeff * (term_z + term_zg);
+    }
+
+    // Constraint composition
+    // contribution (if present)
+    let mut y_constraints = BE::ZERO;
+
+    if ctx.constraint_width > 0 && !ctx.constraint_rows.is_empty() {
+        let row_c = &ctx.constraint_rows[k];
+        if row_c.len() != ctx.constraint_width {
             return Err(error::Error::InvalidInput(
-                "FRI sample position exceeds LDE domain size in compute_deep_agg_over_queries",
+                "ZlChildTranscript.constraint_openings row width is inconsistent with constraint_frame_width in compute_deep_agg_over_queries",
             ));
         }
 
-        let x = base_g.exp_vartime((pos_k as u64).into()) * offset;
+        for (j, &c_x) in row_c.iter().enumerate().take(ctx.constraint_width) {
+            let coeff = ctx.deep_constraint_coeffs[j];
+            let c_z = ctx.ood_quotient_current[j];
+            let c_zg = ctx.ood_quotient_next[j];
 
-        let x_minus_z = x - z;
-        let x_minus_zg = x - z_g;
+            let term_c_z = (c_x - c_z) * inv_x_minus_z;
+            let term_c_zg = (c_x - c_zg) * inv_x_minus_zg;
 
-        if x_minus_z == BE::ZERO || x_minus_zg == BE::ZERO {
-            return Err(error::Error::InvalidInput(
-                "evaluation point x collides with OOD point in compute_deep_agg_over_queries",
-            ));
+            y_constraints += coeff * (term_c_z + term_c_zg);
         }
+    }
 
-        let inv_x_minus_z = x_minus_z.inv();
-        let inv_x_minus_zg = x_minus_zg.inv();
+    let y_k = y_trace + y_constraints;
 
-        // Trace contribution
-        let mut y_trace = BE::ZERO;
-        let row_x = &tx.trace_main_openings[k];
-        if row_x.len() != trace_width {
-            return Err(error::Error::InvalidInput(
-                "ZlChildTranscript.trace_main_openings row width is inconsistent with main_trace_width in compute_deep_agg_over_queries",
-            ));
+    // FRI layer-0 query value q0_k
+    // via get_query_values geometry.
+    let coset_idx_0 = pos_k % ctx.row_length_0;
+    let elem_idx_0 = pos_k / ctx.row_length_0;
+    let folding = 2usize;
+
+    if elem_idx_0 >= folding {
+        return Err(error::Error::InvalidInput(
+            "FRI element index exceeds folding factor at depth 0 in compute_deep_agg_over_queries",
+        ));
+    }
+
+    let folded_idx_0 = ctx
+        .folded_positions
+        .iter()
+        .position(|&p| p == coset_idx_0)
+        .ok_or(error::Error::InvalidInput(
+            "FRI sample coset index not found in folded positions at depth 0 in compute_deep_agg_over_queries",
+        ))?;
+
+    let pair_0 = ctx.layer0_vals[folded_idx_0];
+    let q0_k = pair_0[elem_idx_0];
+
+    Ok((y_k, q0_k))
+}
+
+fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Result<BE> {
+    let num_layers = tx.fri_layers.len();
+    let num_queries = tx.num_queries as usize;
+
+    if num_layers == 0 || num_queries == 0 {
+        return Ok(BE::ZERO);
+    }
+
+    let child = &tx.compact;
+    let fs = match &child.fs_challenges {
+        Some(fs) => fs,
+        None => {
+            // Without FS challenges we cannot reconstruct
+            // the FRI / DEEP domain geometry; fall back to
+            // zero so that AIR constraints become vacuous.
+            return Ok(BE::ZERO);
         }
+    };
 
-        for i in 0..trace_width {
-            let coeff = deep_trace_coeffs[i];
-            let t_x = row_x[i];
-            let t_z = tx.ood_main_current[i];
-            let t_zg = tx.ood_main_next[i];
+    // Prepare shared DEEP context;
+    // when folded positions or layer-0
+    // values are empty the aggregate
+    // becomes vacuous.
+    let ctx = match prepare_deep_context(tx, fs)? {
+        Some(ctx) => ctx,
+        None => return Ok(BE::ZERO),
+    };
 
-            let term_z = (t_x - t_z) * inv_x_minus_z;
-            let term_zg = (t_x - t_zg) * inv_x_minus_zg;
-            y_trace += coeff * (term_z + term_zg);
-        }
+    let mut deep_agg = BE::ZERO;
+    let mut beta_pow = BE::ONE;
 
-        // Constraint composition contribution (if present)
-        let mut y_constraints = BE::ZERO;
-        if constraint_width > 0 && !tx.constraint_openings.is_empty() {
-            let row_c = &tx.constraint_openings[k];
-            if row_c.len() != constraint_width {
-                return Err(error::Error::InvalidInput(
-                    "ZlChildTranscript.constraint_openings row width is inconsistent with constraint_frame_width in compute_deep_agg_over_queries",
-                ));
-            }
-
-            for j in 0..constraint_width {
-                let coeff = deep_constraint_coeffs[j];
-                let c_x = row_c[j];
-                let c_z = tx.ood_quotient_current[j];
-                let c_zg = tx.ood_quotient_next[j];
-
-                let term_c_z = (c_x - c_z) * inv_x_minus_z;
-                let term_c_zg = (c_x - c_zg) * inv_x_minus_zg;
-                y_constraints += coeff * (term_c_z + term_c_zg);
-            }
-        }
-
-        let y_k = y_trace + y_constraints;
-
-        // FRI layer-0 query value q0_k via get_query_values geometry.
-        let coset_idx_0 = pos_k % row_length_0;
-        let elem_idx_0 = pos_k / row_length_0;
-        if elem_idx_0 >= folding {
-            return Err(error::Error::InvalidInput(
-                "FRI element index exceeds folding factor at depth 0 in compute_deep_agg_over_queries",
-            ));
-        }
-
-        let folded_idx_0 = folded_positions
-            .iter()
-            .position(|&p| p == coset_idx_0)
-            .ok_or(error::Error::InvalidInput(
-                "FRI sample coset index not found in folded positions at depth 0 in compute_deep_agg_over_queries",
-            ))?;
-
-        let pair_0 = layer0_vals[folded_idx_0];
-        let q0_k = pair_0[elem_idx_0];
-
+    for k in 0..ctx.positions.len() {
+        let (y_k, q0_k) = deep_eval_at_position(&ctx, k)?;
         let e_k = y_k - q0_k;
         deep_agg += beta_pow * e_k;
         beta_pow *= beta;
@@ -1748,170 +1588,25 @@ fn sample_fri_fold_child(
     // --- DEEP composition vs FRI layer-0 sample ---
     // Reconstruct a single DEEP composition value Y(x_0)
     // for the same query position and compare it to the
-    // corresponding FRI layer-0 query value q0.
-    let trace_width = tx.main_trace_width as usize;
-    let constraint_width = tx.constraint_frame_width as usize;
-
-    if trace_width == 0 && constraint_width == 0 {
-        return Err(error::Error::InvalidInput(
-            "ZlChildTranscript must have non-zero trace or constraint width in sample_fri_fold_child",
-        ));
-    }
-
-    if fs.deep_coeffs.len() != trace_width + constraint_width {
-        return Err(error::Error::InvalidInput(
-            "FS deep_coeffs length is inconsistent with trace/constraint widths in sample_fri_fold_child",
-        ));
-    }
-
-    if tx.trace_main_openings.len() != num_queries {
-        return Err(error::Error::InvalidInput(
-            "ZlChildTranscript.trace_main_openings length is inconsistent with num_queries in sample_fri_fold_child",
-        ));
-    }
-
-    if !tx.constraint_openings.is_empty() && tx.constraint_openings.len() != num_queries {
-        return Err(error::Error::InvalidInput(
-            "ZlChildTranscript.constraint_openings length is inconsistent with num_queries in sample_fri_fold_child",
-        ));
-    }
-
-    if tx.ood_main_current.len() != trace_width
-        || tx.ood_main_next.len() != trace_width
-        || tx.ood_quotient_current.len() != constraint_width
-    {
-        return Err(error::Error::InvalidInput(
-            "ZlChildTranscript OOD row lengths are inconsistent with trace/constraint widths in sample_fri_fold_child",
-        ));
-    }
-
-    if trace_width > 0 && tx.trace_main_openings[sample_idx].len() != trace_width {
-        return Err(error::Error::InvalidInput(
-            "ZlChildTranscript.trace_main_openings row width is inconsistent with main_trace_width in sample_fri_fold_child",
-        ));
-    }
-
-    if constraint_width > 0
-        && !tx.constraint_openings.is_empty()
-        && tx.constraint_openings[sample_idx].len() != constraint_width
-    {
-        return Err(error::Error::InvalidInput(
-            "ZlChildTranscript.constraint_openings row width is inconsistent with constraint_frame_width in sample_fri_fold_child",
-        ));
-    }
-
-    let z = fs.ood_points[0];
-
-    // Reconstruct the evaluation point x_0 in the LDE domain
-    // matching the sample query position.
-    let pos_0 = positions[sample_idx];
-    if pos_0 >= lde_domain_size {
-        return Err(error::Error::InvalidInput(
-            "FRI sample position exceeds LDE domain size in sample_fri_fold_child",
-        ));
-    }
-
-    let x = base_g.exp_vartime((pos_0 as u64).into()) * offset;
-
-    // Reconstruct the trace-domain generator and z * g for
-    // the OOD "next" row. We require m to be a power of two
-    // so that get_root_of_unity(m.ilog2()) is well-defined.
-    let m = child.meta.m as usize;
-    if m == 0 || !m.is_power_of_two() {
-        return Err(error::Error::InvalidInput(
-            "child.meta.m must be a non-zero power of two in sample_fri_fold_child",
-        ));
-    }
-
-    let g_trace = BE::get_root_of_unity(m.ilog2());
-    let z_g = z * g_trace;
-
-    let x_minus_z = x - z;
-    let x_minus_zg = x - z_g;
-
-    if x_minus_z == BE::ZERO || x_minus_zg == BE::ZERO {
-        return Err(error::Error::InvalidInput(
-            "evaluation point x collides with OOD point in sample_fri_fold_child",
-        ));
-    }
-
-    let inv_x_minus_z = x_minus_z.inv();
-    let inv_x_minus_zg = x_minus_zg.inv();
-
-    let (deep_trace_coeffs, deep_constraint_coeffs) = fs.deep_coeffs.split_at(trace_width);
-
-    let mut deep_val = BE::ZERO;
-
-    // Trace contribution: use both current and next OOD
-    // rows with a single coefficient per column, mirroring
-    // DeepComposer semantics.
-    if trace_width > 0 {
-        let row_x = &tx.trace_main_openings[sample_idx];
-        for i in 0..trace_width {
-            let coeff = deep_trace_coeffs[i];
-            let t_x = row_x[i];
-            let t_z = tx.ood_main_current[i];
-            let t_zg = tx.ood_main_next[i];
-
-            let term_z = (t_x - t_z) * inv_x_minus_z;
-            let term_zg = (t_x - t_zg) * inv_x_minus_zg;
-            deep_val += coeff * (term_z + term_zg);
+    // corresponding FRI layer-0 query value q0 using the
+    // shared DEEP context helper.
+    let ctx = match prepare_deep_context(tx, fs)? {
+        Some(ctx) => ctx,
+        None => {
+            return Ok(FriDeepSample {
+                v0,
+                v1,
+                vnext,
+                alpha,
+                x0,
+                x1,
+                q1,
+                deep_err: BE::ZERO,
+            });
         }
-    }
+    };
 
-    // Constraint composition contribution: use both
-    // current and next OOD rows with the same common
-    // denominator as for trace columns, mirroring
-    // DeepComposer semantics.
-    if constraint_width > 0 && !tx.constraint_openings.is_empty() {
-        let row_c = &tx.constraint_openings[sample_idx];
-        for j in 0..constraint_width {
-            let coeff = deep_constraint_coeffs[j];
-            let c_x = row_c[j];
-            let c_z = tx.ood_quotient_current[j];
-            let c_zg = tx.ood_quotient_next[j];
-
-            let term_c_z = (c_x - c_z) * inv_x_minus_z;
-            let term_c_zg = (c_x - c_zg) * inv_x_minus_zg;
-            deep_val += coeff * (term_c_z + term_c_zg);
-        }
-    }
-
-    // FRI layer-0 query value q0 for the same sample
-    // path, computed via get_query_values geometry.
-    let domain_size_0 = lde_domain_size;
-    let row_length_0 = domain_size_0 / folding;
-    if row_length_0 == 0 {
-        return Err(error::Error::InvalidInput(
-            "FRI row length at depth 0 must be non-zero in sample_fri_fold_child",
-        ));
-    }
-
-    let pos_0_fe = positions[sample_idx];
-    if pos_0_fe >= domain_size_0 {
-        return Err(error::Error::InvalidInput(
-            "FRI sample position exceeds domain size at depth 0 in sample_fri_fold_child",
-        ));
-    }
-
-    let coset_idx_0 = pos_0_fe % row_length_0;
-    let elem_idx_0 = pos_0_fe / row_length_0;
-    if elem_idx_0 >= folding {
-        return Err(error::Error::InvalidInput(
-            "FRI element index exceeds folding factor at depth 0 in sample_fri_fold_child",
-        ));
-    }
-
-    let folded_idx_0 = folded_positions
-        .iter()
-        .position(|&p| p == coset_idx_0)
-        .ok_or(error::Error::InvalidInput(
-            "FRI sample coset index not found in folded positions at depth 0 in sample_fri_fold_child",
-        ))?;
-
-    let pair_0 = layer0_vals[folded_idx_0];
-    let q0 = pair_0[elem_idx_0];
-
+    let (deep_val, q0) = deep_eval_at_position(&ctx, sample_idx)?;
     let deep_err = deep_val - q0;
 
     Ok(FriDeepSample {
