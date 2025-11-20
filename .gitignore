@@ -1,5 +1,4 @@
-/target/**
-/target
+target
 .idea
 *.bin
 .zk-lisp_history
