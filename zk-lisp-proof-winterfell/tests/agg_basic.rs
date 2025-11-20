@@ -762,21 +762,24 @@ fn agg_fri_binding_rejects_tampered_fri_final() {
 
     // Prove aggregation AIR and ensure that constraint evaluation fails
     // for the tampered FRI remainder. In debug/profile builds Winterfell
-    // enforces this by panicking when a main transition constraint does
-    // not evaluate to zero.
+    // may panic when a main transition constraint does not evaluate to
+    // zero, while in release it may return an error instead. In all
+    // cases the prover must not produce a valid proof.
     let opts = make_wf_opts();
     let prover = AggProver::new(opts.clone(), agg_pi.clone());
 
-    let result = panic::catch_unwind(|| {
-        let _proof: Proof = prover
-            .prove(agg_trace.trace.clone())
-            .expect("agg proof construction unexpectedly succeeded for tampered FRI remainder");
-    });
+    let result = panic::catch_unwind(|| prover.prove(agg_trace.trace.clone()));
 
-    assert!(
-        result.is_err(),
-        "agg prover must panic when FRI remainder is inconsistent with FRI layers",
-    );
+    match result {
+        // Panic during constraint evaluation (e.g. debug assertions).
+        Err(_) => {}
+        // Backend reported an error instead of panicking.
+        Ok(Err(_)) => {}
+        // Prover must not succeed on tampered FRI remainder.
+        Ok(Ok(_)) => {
+            panic!("agg proof construction unexpectedly succeeded for tampered FRI remainder");
+        }
+    }
 }
 
 #[test]
@@ -844,16 +847,18 @@ fn agg_fri_binding_rejects_tampered_fri_layer_value() {
     let opts = make_wf_opts();
     let prover = AggProver::new(opts.clone(), agg_pi.clone());
 
-    let result = panic::catch_unwind(|| {
-        let _proof: Proof = prover
-            .prove(agg_trace.trace.clone())
-            .expect("agg proof construction unexpectedly succeeded for tampered FRI layer");
-    });
+    let result = panic::catch_unwind(|| prover.prove(agg_trace.trace.clone()));
 
-    assert!(
-        result.is_err(),
-        "agg prover must panic when FRI layer values are inconsistent with DEEP/FRI aggregates",
-    );
+    match result {
+        // Panic during constraint evaluation (e.g. debug assertions).
+        Err(_) => {}
+        // Backend reported an error instead of panicking.
+        Ok(Err(_)) => {}
+        // Prover must not succeed on tampered FRI layer values.
+        Ok(Ok(_)) => {
+            panic!("agg proof construction unexpectedly succeeded for tampered FRI layer");
+        }
+    }
 }
 
 #[test]
@@ -982,14 +987,16 @@ fn agg_merkle_binding_rejects_tampered_trace_path() {
     let opts = make_wf_opts();
     let prover = AggProver::new(opts.clone(), agg_pi.clone());
 
-    let result = panic::catch_unwind(|| {
-        let _proof: Proof = prover
-            .prove(agg_trace.trace.clone())
-            .expect("agg proof construction unexpectedly succeeded for tampered Merkle paths");
-    });
+    let result = panic::catch_unwind(|| prover.prove(agg_trace.trace.clone()));
 
-    assert!(
-        result.is_err(),
-        "agg prover must panic when Merkle paths are inconsistent with commitment roots",
-    );
+    match result {
+        // Panic during constraint evaluation (e.g. debug assertions).
+        Err(_) => {}
+        // Backend reported an error instead of panicking.
+        Ok(Err(_)) => {}
+        // Prover must not succeed on tampered Merkle paths.
+        Ok(Ok(_)) => {
+            panic!("agg proof construction unexpectedly succeeded for tampered Merkle paths");
+        }
+    }
 }

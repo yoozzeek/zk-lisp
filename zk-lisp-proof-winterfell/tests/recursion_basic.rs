@@ -13,12 +13,7 @@ use zk_lisp_proof::frontend::{recursion_prove, recursion_verify};
 use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof::{ProverOptions, pi::PublicInputs as CorePublicInputs};
 use zk_lisp_proof_winterfell::WinterfellBackend;
-use zk_lisp_proof_winterfell::agg_air::{
-    AggAirPublicInputs, AggFriProfile, AggProfileMeta, AggQueryProfile,
-};
-use zk_lisp_proof_winterfell::agg_child::{
-    ZlChildCompact, ZlChildTranscript, children_root_from_compact,
-};
+use zk_lisp_proof_winterfell::agg_air::AggAirPublicInputs;
 
 fn make_opts() -> ProverOptions {
     ProverOptions {
@@ -45,59 +40,24 @@ fn build_public_inputs(program: &zk_lisp_compiler::Program) -> CorePublicInputs 
         .expect("pi build")
 }
 
+fn build_agg_pi_for_single_step(
+    step: &zk_lisp_proof_winterfell::zl_step::ZlStepProof,
+) -> AggAirPublicInputs {
+    AggAirPublicInputs::from_step_proof(step).expect("agg PI build must succeed for step")
+}
+
 #[test]
 fn recursion_single_step_roundtrip() {
     let program = build_tiny_program();
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    // Build a real step proof and derive a compact child
-    // and transcript from it, mirroring agg_basic tests.
+    // Build a real step proof and derive aggregation public inputs
+    // via the backend helper.
     let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let compact = ZlChildCompact::from_step(&step).expect("compact child must build");
-    let transcript =
-        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
-
-    let children = vec![compact.clone()];
-    let children_root = children_root_from_compact(&compact.suite_id, &children);
-
-    let profile_meta = AggProfileMeta {
-        m: compact.meta.m,
-        rho: compact.meta.rho,
-        q: compact.meta.q,
-        o: compact.meta.o,
-        lambda: compact.meta.lambda,
-        pi_len: compact.meta.pi_len,
-        v_units: compact.meta.v_units,
-    };
-
-    let profile_fri = AggFriProfile {
-        lde_blowup: compact.meta.rho as u32,
-        folding_factor: 2,
-        redundancy: 1,
-        // Keep num_layers consistent with transcript even though
-        // aggregation helpers only require folding_factor.
-        num_layers: transcript.fri_layers.len() as u8,
-    };
-
-    let profile_queries = AggQueryProfile {
-        num_queries: compact.meta.q,
-        grinding_factor: 0,
-    };
-
-    let agg_pi = AggAirPublicInputs {
-        children_root,
-        v_units_total: compact.meta.v_units,
-        children_count: 1,
-        batch_id: [0u8; 32],
-        profile_meta,
-        profile_fri,
-        profile_queries,
-        suite_id: compact.suite_id,
-        children_ms: vec![compact.meta.m],
-    };
+    let agg_pi = build_agg_pi_for_single_step(&step);
 
     // Expected recursion digest from the effective aggregation
     // public inputs used by ZlAggAir. We intentionally mirror
@@ -162,46 +122,7 @@ fn recursion_rejects_tampered_v_units_total_at_verify() {
     let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let compact = ZlChildCompact::from_step(&step).expect("compact child must build");
-    let transcript =
-        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
-
-    let children = vec![compact.clone()];
-    let children_root = children_root_from_compact(&compact.suite_id, &children);
-
-    let profile_meta = AggProfileMeta {
-        m: compact.meta.m,
-        rho: compact.meta.rho,
-        q: compact.meta.q,
-        o: compact.meta.o,
-        lambda: compact.meta.lambda,
-        pi_len: compact.meta.pi_len,
-        v_units: compact.meta.v_units,
-    };
-
-    let profile_fri = AggFriProfile {
-        lde_blowup: compact.meta.rho as u32,
-        folding_factor: 2,
-        redundancy: 1,
-        num_layers: transcript.fri_layers.len() as u8,
-    };
-
-    let profile_queries = AggQueryProfile {
-        num_queries: compact.meta.q,
-        grinding_factor: 0,
-    };
-
-    let agg_pi = AggAirPublicInputs {
-        children_root,
-        v_units_total: compact.meta.v_units,
-        children_count: 1,
-        batch_id: [0u8; 32],
-        profile_meta,
-        profile_fri,
-        profile_queries,
-        suite_id: compact.suite_id,
-        children_ms: vec![compact.meta.m],
-    };
+    let agg_pi = build_agg_pi_for_single_step(&step);
 
     let (rc_proof, _rc_digest) =
         recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step), &agg_pi, &opts)
@@ -228,46 +149,9 @@ fn recursion_prove_rejects_wrong_children_root() {
     let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let compact = ZlChildCompact::from_step(&step).expect("compact child must build");
-    let transcript =
-        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
-
     // Use an incorrect children_root to trigger builder error inside recursion_prove.
-    let children_root = [1u8; 32];
-
-    let profile_meta = AggProfileMeta {
-        m: compact.meta.m,
-        rho: compact.meta.rho,
-        q: compact.meta.q,
-        o: compact.meta.o,
-        lambda: compact.meta.lambda,
-        pi_len: compact.meta.pi_len,
-        v_units: compact.meta.v_units,
-    };
-
-    let profile_fri = AggFriProfile {
-        lde_blowup: compact.meta.rho as u32,
-        folding_factor: 2,
-        redundancy: 1,
-        num_layers: transcript.fri_layers.len() as u8,
-    };
-
-    let profile_queries = AggQueryProfile {
-        num_queries: compact.meta.q,
-        grinding_factor: 0,
-    };
-
-    let agg_pi = AggAirPublicInputs {
-        children_root,
-        v_units_total: compact.meta.v_units,
-        children_count: 1,
-        batch_id: [0u8; 32],
-        profile_meta,
-        profile_fri,
-        profile_queries,
-        suite_id: compact.suite_id,
-        children_ms: vec![compact.meta.m],
-    };
+    let mut agg_pi = build_agg_pi_for_single_step(&step);
+    agg_pi.children_root = [1u8; 32];
 
     let err = recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step), &agg_pi, &opts)
         .expect_err("recursion_prove must fail when children_root is inconsistent");
@@ -288,46 +172,8 @@ fn recursion_prove_rejects_wrong_v_units_total() {
     let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let compact = ZlChildCompact::from_step(&step).expect("compact child must build");
-    let transcript =
-        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
-
-    let children = vec![compact.clone()];
-    let children_root = children_root_from_compact(&compact.suite_id, &children);
-
-    let profile_meta = AggProfileMeta {
-        m: compact.meta.m,
-        rho: compact.meta.rho,
-        q: compact.meta.q,
-        o: compact.meta.o,
-        lambda: compact.meta.lambda,
-        pi_len: compact.meta.pi_len,
-        v_units: compact.meta.v_units,
-    };
-
-    let profile_fri = AggFriProfile {
-        lde_blowup: compact.meta.rho as u32,
-        folding_factor: 2,
-        redundancy: 1,
-        num_layers: transcript.fri_layers.len() as u8,
-    };
-
-    let profile_queries = AggQueryProfile {
-        num_queries: compact.meta.q,
-        grinding_factor: 0,
-    };
-
-    let agg_pi = AggAirPublicInputs {
-        children_root,
-        v_units_total: compact.meta.v_units + 1, // mismatch
-        children_count: 1,
-        batch_id: [0u8; 32],
-        profile_meta,
-        profile_fri,
-        profile_queries,
-        suite_id: compact.suite_id,
-        children_ms: vec![compact.meta.m],
-    };
+    let mut agg_pi = build_agg_pi_for_single_step(&step);
+    agg_pi.v_units_total = agg_pi.v_units_total.saturating_add(1); // mismatch
 
     let err = recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step), &agg_pi, &opts)
         .expect_err("recursion_prove must fail when v_units_total mismatches transcripts");

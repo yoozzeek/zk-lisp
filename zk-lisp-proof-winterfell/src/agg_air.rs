@@ -15,8 +15,10 @@
 //! iterations will extend this AIR with full composition, Merkle and
 //! FRI checks over compact child proofs.
 
+use crate::agg_child::{ZlChildCompact, ZlChildTranscript, children_root_from_compact};
 use crate::agg_layout::AggColumns;
 use crate::utils;
+use crate::zl_step::ZlStepProof;
 
 use winterfell::math::fft;
 use winterfell::math::fields::f128::BaseElement as BE;
@@ -25,6 +27,7 @@ use winterfell::{
     Air, AirContext, Assertion, EvaluationFrame, ProofOptions, TraceInfo,
     TransitionConstraintDegree,
 };
+use zk_lisp_proof::error;
 
 /// Public inputs for the aggregation AIR.
 ///
@@ -118,6 +121,55 @@ pub struct AggFriProfile {
 pub struct AggQueryProfile {
     pub num_queries: u16,
     pub grinding_factor: u32,
+}
+
+impl AggAirPublicInputs {
+    /// Build aggregation public inputs for a single zk-lisp
+    /// step proof by deriving a compact child view and child
+    /// transcript from `ZlStepProof`. This mirrors the helper
+    /// logic used in recursion tests and provides a stable
+    /// construction for frontends.
+    pub fn from_step_proof(step: &ZlStepProof) -> error::Result<Self> {
+        let compact = ZlChildCompact::from_step(step)?;
+        let transcript = ZlChildTranscript::from_step(step)?;
+
+        let children = vec![compact.clone()];
+        let children_root = children_root_from_compact(&compact.suite_id, &children);
+
+        let profile_meta = AggProfileMeta {
+            m: compact.meta.m,
+            rho: compact.meta.rho,
+            q: compact.meta.q,
+            o: compact.meta.o,
+            lambda: compact.meta.lambda,
+            pi_len: compact.meta.pi_len,
+            v_units: compact.meta.v_units,
+        };
+
+        let profile_fri = AggFriProfile {
+            lde_blowup: compact.meta.rho as u32,
+            folding_factor: 2,
+            redundancy: 1,
+            num_layers: transcript.fri_layers.len() as u8,
+        };
+
+        let profile_queries = AggQueryProfile {
+            num_queries: compact.meta.q,
+            grinding_factor: 0,
+        };
+
+        Ok(AggAirPublicInputs {
+            children_root,
+            v_units_total: compact.meta.v_units,
+            children_count: 1,
+            batch_id: [0u8; 32],
+            profile_meta,
+            profile_fri,
+            profile_queries,
+            suite_id: compact.suite_id,
+            children_ms: vec![compact.meta.m],
+        })
+    }
 }
 
 impl ToElements<BE> for AggAirPublicInputs {

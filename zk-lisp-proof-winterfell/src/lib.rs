@@ -267,6 +267,24 @@ impl RecursionBackend for WinterfellBackend {
             ));
         }
 
+        // Basic shape validation for aggregation public inputs relative to
+        // the number of step proofs supplied. Callers may either leave
+        // children_count/children_ms unset (0/empty) or provide values
+        // consistent with `steps.len()`; any other configuration is
+        // rejected early to avoid surprising aggregation profiles.
+        let expected_children = steps.len() as u32;
+        if rc_pi.children_count != 0 && rc_pi.children_count != expected_children {
+            return Err(prove::Error::RecursionInvalid(
+                "RecursionBackend::recursion_prove requires AggAirPublicInputs.children_count to be 0 or match number of step proofs",
+            ));
+        }
+
+        if !rc_pi.children_ms.is_empty() && rc_pi.children_ms.len() != steps.len() {
+            return Err(prove::Error::RecursionInvalid(
+                "RecursionBackend::recursion_prove requires AggAirPublicInputs.children_ms length to be 0 or match number of step proofs",
+            ));
+        }
+
         let mut transcripts = Vec::with_capacity(steps.len());
         for step in steps {
             let tx = ZlChildTranscript::from_step(step)?;

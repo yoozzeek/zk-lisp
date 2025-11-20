@@ -423,8 +423,8 @@ pub fn run(
                     "ok": true,
                     "rows": trace.length(),
                     "constraints": res_len,
-                    "peak_live": compilers_stats.reuse_dst,
-                    "reuse_dst": compilers_stats.su_reorders,
+                    "peak_live": compilers_stats.peak_live,
+                    "reuse_dst": compilers_stats.reuse_dst,
                     "su_reorders": compilers_stats.su_reorders,
                     "balanced_chains": compilers_stats.balanced_chains,
                     "mov_elided": compilers_stats.mov_elided

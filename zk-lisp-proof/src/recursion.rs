@@ -147,9 +147,12 @@ where
     let mut suite_id: Option<[u8; 32]> = None;
     let mut program_id: Option<[u8; 32]> = None;
     let mut program_commitment: Option<[u8; 32]> = None;
+    let mut saw_step = false;
 
     for (rc_proof, rc_digest, backend_pi, rc_pi) in chain.into_iter() {
         B::recursion_verify(rc_proof, &backend_pi, opts).map_err(RecursionChainError::Backend)?;
+
+        saw_step = true;
 
         match suite_id {
             None => {
@@ -209,6 +212,12 @@ where
 
         prev_digest = Some(rc_digest);
         prev_pi = Some(rc_pi);
+    }
+
+    if !saw_step {
+        return Err(RecursionChainError::Invalid(
+            "recursion chain must contain at least one step",
+        ));
     }
 
     Ok(())

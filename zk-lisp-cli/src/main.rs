@@ -28,6 +28,7 @@ use zk_lisp_compiler as compiler;
 use zk_lisp_proof::frontend::{self, PreflightMode};
 use zk_lisp_proof::pi::{PublicInputs, PublicInputsBuilder, VmArg};
 use zk_lisp_proof::{ProverOptions, ZkField, error};
+use zk_lisp_proof_winterfell::zl_step::ZlStepProof;
 use zk_lisp_proof_winterfell::{WinterfellBackend, prove};
 
 // Max file size for REPL
@@ -132,10 +133,15 @@ struct ProveArgs {
     /// Optional deterministic seed
     #[arg(long)]
     seed: Option<u64>,
-    /// Write proof to file (binary);
-    /// still prints hex to stdout unless --quiet
+    /// Write base STARK proof to file (binary);
+    /// still prints preview to stdout unless --quiet
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Optional step-level proof output path (binary ZlStepProof encoding).
+    /// When set, `prove` will also generate a step proof suitable
+    /// for recursion and save it in this file.
+    #[arg(long)]
+    step_out: Option<PathBuf>,
     /// Quiet mode (suppress non-essential output)
     #[arg(long, default_value_t = false)]
     quiet: bool,
@@ -154,7 +160,6 @@ struct VerifyArgs {
     /// currently only `u64` is supported for main here.
     #[arg(long = "arg", value_delimiter = ',')]
     args: Vec<String>,
-
     /// Number of FRI queries
     #[arg(long, default_value_t = 64)]
     queries: u8,
@@ -645,11 +650,11 @@ fn cmd_prove(
     let proof =
         frontend::prove::<WinterfellBackend>(&program, &pi, &opts).map_err(CliError::Prover)?;
 
-    // Serialize proof to bytes
+    // Serialize base STARK proof to bytes
     let proof_bytes =
         frontend::encode_proof::<WinterfellBackend>(&proof).map_err(CliError::Prover)?;
 
-    // Determine output path:
+    // Determine output path for base proof:
     // use --out if provided, otherwise
     // derive a readable name from source path.
     let out_path = if let Some(path) = args.out {
@@ -664,6 +669,26 @@ fn cmd_prove(
             source: e,
             path: out_path,
         });
+    }
+
+    // Optionally also emit a step-level
+    // proof suitable for recursion.
+    let mut step_path: Option<PathBuf> = None;
+    let mut step_digest: Option<[u8; 32]> = None;
+
+    if let Some(ref step_out) = args.step_out {
+        let step = prove::prove_step(&program, &pi, &opts).map_err(CliError::Prover)?;
+        let bytes = step.to_bytes().map_err(|e| CliError::Build(e))?;
+
+        if let Err(e) = fs::write(step_out, &bytes) {
+            return Err(CliError::IoPath {
+                source: e,
+                path: step_out.clone(),
+            });
+        }
+
+        step_digest = Some(step.digest());
+        step_path = Some(step_out.clone());
     }
 
     if !args.quiet {
@@ -687,6 +712,8 @@ fn cmd_prove(
                     "proof_preview_b64": preview_core,
                     "opts": {"queries": args.queries, "blowup": args.blowup, "grind": args.grind},
                     "commitment": format!("0x{:02x?}", program.commitment),
+                    "step_proof_path": step_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+                    "step_proof_digest_hex": step_digest.map(|d| format!("0x{}", hex::encode(d))),
                 })
             );
         } else {
@@ -697,6 +724,10 @@ fn cmd_prove(
                 proof_bytes.len(),
                 len_b64
             );
+
+            if let Some(p) = step_path {
+                println!("step proof saved to {}", p.display());
+            }
         }
     }
 
@@ -738,11 +769,49 @@ fn cmd_verify(
 
     // Rebuild PI similarly to Prove
     let pi = build_pi_for_program(&program, &public_vmargs, &[])?;
-    let proof = frontend::decode_proof::<WinterfellBackend>(&proof_bytes)
-        .map_err(|e| CliError::InvalidInput(format!("invalid proof encoding: {e}")))?;
-
     let opts = proof_opts(args.queries, args.blowup, args.grind, security_bits);
-    frontend::verify::<WinterfellBackend>(proof, &program, &pi, &opts).map_err(CliError::Verify)?;
+
+    // Auto-detect whether this is a base STARK proof or a step-level
+    // proof encoded via ZlStepProof::to_bytes() by inspecting the
+    // magic prefix.
+    if proof_bytes.starts_with(b"ZKLSTP1") {
+        // Step-level proof:
+        // decode, sanity-check that public inputs
+        // match CLI program/args, then verify the
+        // inner Winterfell proof via the generic backend.
+        let step = ZlStepProof::from_bytes(&proof_bytes).map_err(CliError::Build)?;
+
+        if step.pi_core.program_id != pi.program_id
+            || step.pi_core.program_commitment != pi.program_commitment
+        {
+            return Err(CliError::InvalidInput(
+                "step proof program_id/program_commitment do not match CLI program".into(),
+            ));
+        }
+
+        if step.pi_core.feature_mask != pi.feature_mask {
+            return Err(CliError::InvalidInput(
+                "step proof feature_mask does not match CLI public inputs".into(),
+            ));
+        }
+
+        if step.pi_core.main_args != pi.main_args {
+            return Err(CliError::InvalidInput(
+                "step proof main_args do not match CLI public main args".into(),
+            ));
+        }
+
+        frontend::verify::<WinterfellBackend>(step.proof.inner, &program, &pi, &opts)
+            .map_err(CliError::Verify)?;
+    } else {
+        // Legacy/base proof path:
+        // decode via backend codec and verify.
+        let proof = frontend::decode_proof::<WinterfellBackend>(&proof_bytes)
+            .map_err(|e| CliError::InvalidInput(format!("invalid proof encoding: {e}")))?;
+
+        frontend::verify::<WinterfellBackend>(proof, &program, &pi, &opts)
+            .map_err(CliError::Verify)?;
+    }
 
     if json {
         println!(

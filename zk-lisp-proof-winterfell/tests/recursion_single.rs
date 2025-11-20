@@ -18,12 +18,7 @@ use zk_lisp_proof::recursion::{
 };
 use zk_lisp_proof::{ProverOptions, pi::PublicInputs as CorePublicInputs};
 use zk_lisp_proof_winterfell::WinterfellBackend;
-use zk_lisp_proof_winterfell::agg_air::{
-    AggAirPublicInputs, AggFriProfile, AggProfileMeta, AggQueryProfile,
-};
-use zk_lisp_proof_winterfell::agg_child::{
-    ZlChildCompact, ZlChildTranscript, children_root_from_compact,
-};
+use zk_lisp_proof_winterfell::agg_air::AggAirPublicInputs;
 
 fn make_opts() -> ProverOptions {
     ProverOptions {
@@ -53,46 +48,7 @@ fn build_public_inputs(program: &zk_lisp_compiler::Program) -> CorePublicInputs 
 fn build_agg_pi_for_single_step(
     step: &zk_lisp_proof_winterfell::zl_step::ZlStepProof,
 ) -> AggAirPublicInputs {
-    let compact = ZlChildCompact::from_step(step).expect("compact child must build");
-    let transcript =
-        ZlChildTranscript::from_step(step).expect("child transcript extraction must succeed");
-
-    let children = vec![compact.clone()];
-    let children_root = children_root_from_compact(&compact.suite_id, &children);
-
-    let profile_meta = AggProfileMeta {
-        m: compact.meta.m,
-        rho: compact.meta.rho,
-        q: compact.meta.q,
-        o: compact.meta.o,
-        lambda: compact.meta.lambda,
-        pi_len: compact.meta.pi_len,
-        v_units: compact.meta.v_units,
-    };
-
-    let profile_fri = AggFriProfile {
-        lde_blowup: compact.meta.rho as u32,
-        folding_factor: 2,
-        redundancy: 1,
-        num_layers: transcript.fri_layers.len() as u8,
-    };
-
-    let profile_queries = AggQueryProfile {
-        num_queries: compact.meta.q,
-        grinding_factor: 0,
-    };
-
-    AggAirPublicInputs {
-        children_root,
-        v_units_total: compact.meta.v_units,
-        children_count: 1,
-        batch_id: [0u8; 32],
-        profile_meta,
-        profile_fri,
-        profile_queries,
-        suite_id: compact.suite_id,
-        children_ms: vec![compact.meta.m],
-    }
+    AggAirPublicInputs::from_step_proof(step).expect("agg PI build must succeed for step")
 }
 
 fn build_recursion_public_single_step(
