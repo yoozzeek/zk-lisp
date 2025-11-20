@@ -59,6 +59,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
         ctx: &TraceBuilderContext,
         trace: &mut TraceTable<BE>,
     ) -> error::Result<()> {
+        let t_all = std::time::Instant::now();
         let mut regs = [BE::ZERO; NR];
 
         // Reserve tail of register
@@ -105,6 +106,9 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
         let mut pending_regs: ArrayVec<u8, 10> = ArrayVec::new();
 
         let commitment = &ctx.prog.commitment;
+
+        let total_lvls = ctx.prog.ops.len();
+        tracing::info!(target="trace.vm", levels=%total_lvls, "vm fill start");
 
         for (lvl, op) in ctx.prog.ops.iter().enumerate() {
             // snapshot current regs and
@@ -824,7 +828,17 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
             }
 
             regs = next_regs;
+
+            if lvl % 512 == 0 || lvl + 1 == total_lvls {
+                tracing::info!(target="trace.vm", lvl=%lvl, "% progressed");
+            }
         }
+
+        tracing::info!(
+            target="trace.vm",
+            elapsed_ms=%t_all.elapsed().as_millis(),
+            "vm fill done",
+        );
 
         Ok(())
     }

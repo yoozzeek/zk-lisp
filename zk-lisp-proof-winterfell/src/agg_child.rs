@@ -68,6 +68,30 @@ pub struct ZlChildCompact {
     /// refined as the recursion layer evolves.
     pub trace_root: [u8; 32],
 
+    /// Segment index and total segment count as
+    /// recorded in the zl1 step public inputs.
+    pub segment_index: u32,
+    pub segments_total: u32,
+
+    /// VM state hash at the beginning and end of
+    /// this segment, as exposed via zl1 public
+    /// inputs.
+    pub state_in_hash: [u8; 32],
+    pub state_out_hash: [u8; 32],
+
+    /// RAM grand-product accumulators at the
+    /// boundaries of this segment for unsorted
+    /// and sorted RAM tables.
+    pub ram_gp_unsorted_in: [u8; 32],
+    pub ram_gp_unsorted_out: [u8; 32],
+    pub ram_gp_sorted_in: [u8; 32],
+    pub ram_gp_sorted_out: [u8; 32],
+
+    /// ROM t=3 state at the logical beginning and
+    /// end of this segment.
+    pub rom_s_in: [[u8; 32]; 3],
+    pub rom_s_out: [[u8; 32]; 3],
+
     /// Per-trace-segment Merkle roots for the
     /// base execution trace as exposed by the
     /// underlying Winterfell proof.
@@ -184,6 +208,18 @@ impl ZlChildCompact {
         let rom_acc = step.rom_acc;
         let step_digest = step.digest();
         let trace_root = step.proof.commits.root_trace;
+
+        let pi_zl1 = &step.proof.pi;
+        let segment_index = pi_zl1.segment_index;
+        let segments_total = pi_zl1.segments_total;
+        let state_in_hash = pi_zl1.state_in_hash;
+        let state_out_hash = pi_zl1.state_out_hash;
+        let ram_gp_unsorted_in = pi_zl1.ram_gp_unsorted_in;
+        let ram_gp_unsorted_out = pi_zl1.ram_gp_unsorted_out;
+        let ram_gp_sorted_in = pi_zl1.ram_gp_sorted_in;
+        let ram_gp_sorted_out = pi_zl1.ram_gp_sorted_out;
+        let rom_s_in = [pi_zl1.rom_s_in_0, pi_zl1.rom_s_in_1, pi_zl1.rom_s_in_2];
+        let rom_s_out = [pi_zl1.rom_s_out_0, pi_zl1.rom_s_out_1, pi_zl1.rom_s_out_2];
 
         let wf_proof = &step.proof.inner;
         let trace_info = wf_proof.trace_info();
@@ -522,6 +558,16 @@ impl ZlChildCompact {
             rom_acc,
             step_digest,
             trace_root,
+            segment_index,
+            segments_total,
+            state_in_hash,
+            state_out_hash,
+            ram_gp_unsorted_in,
+            ram_gp_unsorted_out,
+            ram_gp_sorted_in,
+            ram_gp_sorted_out,
+            rom_s_in,
+            rom_s_out,
             trace_roots,
             constraint_root,
             fri_roots,

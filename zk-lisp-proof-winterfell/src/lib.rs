@@ -28,6 +28,7 @@ pub mod preflight;
 pub mod prove;
 pub mod romacc;
 pub mod schedule;
+pub mod segment_planner;
 pub mod trace;
 pub mod utils;
 pub mod zl1;
@@ -75,14 +76,41 @@ impl ZkField for WinterfellField {
 /// Public inputs visible to the Winterfell AIR.
 ///
 /// `core` wraps backend-agnostic public inputs used
-/// across backends. `rom_acc` carries the final ROM
-/// accumulator state lanes (t=3 sponge) and is used
-/// only internally by this backend's AIR; it is not
-/// currently exposed in the public input encoding.
+/// across backends. `rom_acc` carries the offline ROM
+/// accumulator state lanes (t=3 sponge) computed from
+/// the program; it is currently kept for backwards
+/// compatibility and debugging. Segment-local boundary
+/// state (PC, RAM GPs, ROM lanes) is provided via
+/// dedicated fields below and derived directly from the
+/// concrete execution trace for each proof.
 #[derive(Clone, Debug)]
 pub struct AirPublicInputs {
     pub core: CorePublicInputs,
+
+    /// Offline ROM accumulator derived from the program
+    /// commitment. Not used directly by the AIR for
+    /// segment-local ROM binding but preserved for
+    /// backwards compatibility and potential cross-checks.
     pub rom_acc: [BE; 3],
+
+    /// Program counter value at the first map row of the
+    /// trace segment proved by this AIR instance.
+    pub pc_init: BE,
+
+    /// RAM grand-product accumulators for the unsorted and
+    /// sorted RAM tables at the first and last rows of the
+    /// trace segment.
+    pub ram_gp_unsorted_in: BE,
+    pub ram_gp_unsorted_out: BE,
+    pub ram_gp_sorted_in: BE,
+    pub ram_gp_sorted_out: BE,
+
+    /// ROM t=3 accumulator state at the logical beginning
+    /// and end of the trace segment. `rom_s_in` is taken at
+    /// the map row of the first level; `rom_s_out` at the
+    /// final row of the last level.
+    pub rom_s_in: [BE; 3],
+    pub rom_s_out: [BE; 3],
 }
 
 impl Default for AirPublicInputs {
@@ -90,6 +118,13 @@ impl Default for AirPublicInputs {
         Self {
             core: CorePublicInputs::default(),
             rom_acc: [BE::ZERO; 3],
+            pc_init: BE::ZERO,
+            ram_gp_unsorted_in: BE::ZERO,
+            ram_gp_unsorted_out: BE::ZERO,
+            ram_gp_sorted_in: BE::ZERO,
+            ram_gp_sorted_out: BE::ZERO,
+            rom_s_in: [BE::ZERO; 3],
+            rom_s_out: [BE::ZERO; 3],
         }
     }
 }
@@ -97,7 +132,7 @@ impl Default for AirPublicInputs {
 impl ToElements<BE> for AirPublicInputs {
     fn to_elements(&self) -> Vec<BE> {
         // Encode feature mask + commitments first
-        let mut out = Vec::with_capacity(5);
+        let mut out = Vec::with_capacity(16);
 
         out.push(BE::from(self.core.feature_mask));
         out.push(utils::be_from_le8(&self.core.program_commitment));
@@ -116,8 +151,24 @@ impl ToElements<BE> for AirPublicInputs {
         // base-field elements using the same layout as
         // VM registers / AIR assertions.
         let main_slots = utils::encode_main_args_to_slots(&self.core.main_args);
-        out.reserve(main_slots.len());
+        out.reserve(main_slots.len() + 16);
         out.extend_from_slice(&main_slots);
+
+        // Include segment-local boundary state into the
+        // public-element vector so that Fiat–Shamir
+        // challenges depend on these values.
+        out.push(self.pc_init);
+        out.push(self.ram_gp_unsorted_in);
+        out.push(self.ram_gp_unsorted_out);
+        out.push(self.ram_gp_sorted_in);
+        out.push(self.ram_gp_sorted_out);
+
+        for lane in &self.rom_s_in {
+            out.push(*lane);
+        }
+        for lane in &self.rom_s_out {
+            out.push(*lane);
+        }
 
         out
     }

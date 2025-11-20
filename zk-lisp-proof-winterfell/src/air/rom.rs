@@ -124,33 +124,26 @@ impl AirModule for RomAir {
         out: &mut Vec<Assertion<<BE as FieldElement>::BaseField>>,
         last: usize,
     ) {
-        // Initial accumulator zero at the first
-        // map row. Subsequent ROM state is fully
-        // determined by transition constraints
-        // and map-row encodings.
+        // Bind ROM state at the first map row and at the
+        // final row of the trace segment to the segment-
+        // local boundary values supplied via AirPublicInputs.
         let row_map0 = crate::schedule::pos_map();
-        out.push(Assertion::single(
-            ctx.cols.rom_s_index(0),
-            row_map0,
-            BE::from(0u32),
-        ));
 
-        // Bind final ROM accumulator lanes to
-        // the backend-supplied handle derived
-        // deterministically from the program.
-        // This ties the ROM trace to the offline
-        // accumulator and ensures ROM↔VM/program
-        // consistency across prove/verify.
-        out.push(Assertion::single(
-            ctx.cols.rom_s_index(0),
-            last,
-            ctx.rom_acc[0],
-        ));
-        out.push(Assertion::single(
-            ctx.cols.rom_s_index(1),
-            last,
-            ctx.rom_acc[1],
-        ));
+        for i in 0..3 {
+            out.push(Assertion::single(
+                ctx.cols.rom_s_index(i),
+                row_map0,
+                ctx.rom_s_initial[i],
+            ));
+        }
+
+        for i in 0..3 {
+            out.push(Assertion::single(
+                ctx.cols.rom_s_index(i),
+                last,
+                ctx.rom_s_final[i],
+            ));
+        }
     }
 }
 
@@ -218,7 +211,9 @@ mod tests {
             rom_mds: mds3,
             rom_w_enc0: w_enc0_box,
             rom_w_enc1: w_enc1_box,
-            rom_acc: [BE::ZERO; 3],
+            rom_s_initial: [BE::ZERO; 3],
+            rom_s_final: [BE::ZERO; 3],
+            pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
         };
@@ -276,7 +271,9 @@ mod tests {
             rom_mds: mds3_box,
             rom_w_enc0: w_enc0_box,
             rom_w_enc1: w_enc1_box,
-            rom_acc: [BE::ZERO; 3],
+            rom_s_initial: [BE::ZERO; 3],
+            rom_s_final: [BE::ZERO; 3],
+            pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
         };

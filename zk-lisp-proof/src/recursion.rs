@@ -95,6 +95,19 @@ pub struct RecursionPublic {
     /// Global VM state at the end of the aggregated prefix.
     pub state_final: [u8; 32],
 
+    /// Global RAM grand-product accumulators for the
+    /// unsorted and sorted RAM tables at the beginning
+    /// and end of the aggregated prefix.
+    pub ram_gp_unsorted_initial: [u8; 32],
+    pub ram_gp_unsorted_final: [u8; 32],
+    pub ram_gp_sorted_initial: [u8; 32],
+    pub ram_gp_sorted_final: [u8; 32],
+
+    /// Global ROM t=3 accumulator state at the beginning
+    /// and end of the aggregated prefix.
+    pub rom_s_initial: [[u8; 32]; 3],
+    pub rom_s_final: [[u8; 32]; 3],
+
     /// Digest of the previous recursion step in the chain.
     ///
     /// When this value is all zeros, the current recursion
@@ -125,6 +138,11 @@ pub struct RecursionPublic {
 /// - the first step must have `prev_digest == 0`;
 /// - for every k > 0, `rc_k.prev_digest == digest_{k-1}`;
 /// - for every k > 0, `rc_k.state_initial == rc_{k-1}.state_final`;
+/// - for every k > 0, RAM and ROM global boundary values
+///   chain across steps:
+///   - `rc_k.ram_gp_unsorted_initial == rc_{k-1}.ram_gp_unsorted_final`;
+///   - `rc_k.ram_gp_sorted_initial == rc_{k-1}.ram_gp_sorted_final`;
+///   - `rc_k.rom_s_initial == rc_{k-1}.rom_s_final`;
 /// - all steps share the same `suite_id`, `program_id` and
 ///   `program_commitment`.
 pub fn verify_recursion_chain<B, I>(
@@ -204,6 +222,24 @@ where
                 if rc_pi.state_initial != prev_pi.state_final {
                     return Err(RecursionChainError::Invalid(
                         "RecursionPublic.state_initial must match previous state_final",
+                    ));
+                }
+
+                if rc_pi.ram_gp_unsorted_initial != prev_pi.ram_gp_unsorted_final {
+                    return Err(RecursionChainError::Invalid(
+                        "RecursionPublic.ram_gp_unsorted_initial must match previous ram_gp_unsorted_final",
+                    ));
+                }
+
+                if rc_pi.ram_gp_sorted_initial != prev_pi.ram_gp_sorted_final {
+                    return Err(RecursionChainError::Invalid(
+                        "RecursionPublic.ram_gp_sorted_initial must match previous ram_gp_sorted_final",
+                    ));
+                }
+
+                if rc_pi.rom_s_initial != prev_pi.rom_s_final {
+                    return Err(RecursionChainError::Invalid(
+                        "RecursionPublic.rom_s_initial must match previous rom_s_final",
                     ));
                 }
             }

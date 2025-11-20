@@ -96,6 +96,13 @@ pub fn run(
     let air_pi = AirPublicInputs {
         core: pub_inputs.clone(),
         rom_acc,
+        pc_init: BE::ZERO,
+        ram_gp_unsorted_in: BE::ZERO,
+        ram_gp_unsorted_out: BE::ZERO,
+        ram_gp_sorted_in: BE::ZERO,
+        ram_gp_sorted_out: BE::ZERO,
+        rom_s_in: [BE::ZERO; 3],
+        rom_s_out: [BE::ZERO; 3],
     };
 
     let air = ZkLispAir::new(ti, air_pi, options.clone());

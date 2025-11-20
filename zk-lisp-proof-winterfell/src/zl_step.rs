@@ -137,9 +137,26 @@ impl ZlStepProof {
             }
         }
 
-        // State hashes for recursion semantics
-        out.extend_from_slice(&self.state_in_hash());
-        out.extend_from_slice(&self.state_out_hash());
+        // Segment indexing and pc_init
+        out.extend_from_slice(&self.proof.pi.segment_index.to_le_bytes());
+        out.extend_from_slice(&self.proof.pi.segments_total.to_le_bytes());
+        out.extend_from_slice(&self.proof.pi.pc_init);
+
+        // State hashes and per-segment RAM / ROM boundary
+        // state used by the recursion layer.
+        let pi = &self.proof.pi;
+        out.extend_from_slice(&pi.state_in_hash);
+        out.extend_from_slice(&pi.state_out_hash);
+        out.extend_from_slice(&pi.ram_gp_unsorted_in);
+        out.extend_from_slice(&pi.ram_gp_unsorted_out);
+        out.extend_from_slice(&pi.ram_gp_sorted_in);
+        out.extend_from_slice(&pi.ram_gp_sorted_out);
+        out.extend_from_slice(&pi.rom_s_in_0);
+        out.extend_from_slice(&pi.rom_s_in_1);
+        out.extend_from_slice(&pi.rom_s_in_2);
+        out.extend_from_slice(&pi.rom_s_out_0);
+        out.extend_from_slice(&pi.rom_s_out_1);
+        out.extend_from_slice(&pi.rom_s_out_2);
 
         // Inner Winterfell proof bytes (length-prefixed)
         let inner_bytes = self.proof.inner.to_bytes();
@@ -192,6 +209,18 @@ impl ZlStepProof {
                     "merkle_root" => "step proof truncated before merkle_root bytes",
                     "state_in_hash" => "step proof truncated before state_in_hash bytes",
                     "state_out_hash" => "step proof truncated before state_out_hash bytes",
+                    "ram_gp_unsorted_in" => "step proof truncated before ram_gp_unsorted_in bytes",
+                    "ram_gp_unsorted_out" => {
+                        "step proof truncated before ram_gp_unsorted_out bytes"
+                    }
+                    "ram_gp_sorted_in" => "step proof truncated before ram_gp_sorted_in bytes",
+                    "ram_gp_sorted_out" => "step proof truncated before ram_gp_sorted_out bytes",
+                    "rom_s_in_0" => "step proof truncated before rom_s_in_0 bytes",
+                    "rom_s_in_1" => "step proof truncated before rom_s_in_1 bytes",
+                    "rom_s_in_2" => "step proof truncated before rom_s_in_2 bytes",
+                    "rom_s_out_0" => "step proof truncated before rom_s_out_0 bytes",
+                    "rom_s_out_1" => "step proof truncated before rom_s_out_1 bytes",
+                    "rom_s_out_2" => "step proof truncated before rom_s_out_2 bytes",
                     _ => "step proof truncated before 32-byte field",
                 };
 
@@ -301,9 +330,43 @@ impl ZlStepProof {
             }
         }
 
-        // state_in_hash, state_out_hash
+        // segment_index / segments_total / pc_init
+        if bytes.len() < cursor + 4 {
+            return Err(error::Error::InvalidInput(
+                "step proof truncated before segment_index",
+            ));
+        }
+        let mut u32buf = [0u8; 4];
+        u32buf.copy_from_slice(&bytes[cursor..cursor + 4]);
+        let segment_index = u32::from_le_bytes(u32buf);
+        cursor += 4;
+
+        if bytes.len() < cursor + 4 {
+            return Err(error::Error::InvalidInput(
+                "step proof truncated before segments_total",
+            ));
+        }
+        let mut u32buf2 = [0u8; 4];
+        u32buf2.copy_from_slice(&bytes[cursor..cursor + 4]);
+        let segments_total = u32::from_le_bytes(u32buf2);
+        cursor += 4;
+
+        let pc_init = take_32(bytes, &mut cursor, "pc_init")?;
+
+        // state_in_hash, state_out_hash and per-segment
+        // RAM / ROM boundary state.
         let state_in_hash = take_32(bytes, &mut cursor, "state_in_hash")?;
         let state_out_hash = take_32(bytes, &mut cursor, "state_out_hash")?;
+        let ram_gp_unsorted_in = take_32(bytes, &mut cursor, "ram_gp_unsorted_in")?;
+        let ram_gp_unsorted_out = take_32(bytes, &mut cursor, "ram_gp_unsorted_out")?;
+        let ram_gp_sorted_in = take_32(bytes, &mut cursor, "ram_gp_sorted_in")?;
+        let ram_gp_sorted_out = take_32(bytes, &mut cursor, "ram_gp_sorted_out")?;
+        let rom_s_in_0 = take_32(bytes, &mut cursor, "rom_s_in_0")?;
+        let rom_s_in_1 = take_32(bytes, &mut cursor, "rom_s_in_1")?;
+        let rom_s_in_2 = take_32(bytes, &mut cursor, "rom_s_in_2")?;
+        let rom_s_out_0 = take_32(bytes, &mut cursor, "rom_s_out_0")?;
+        let rom_s_out_1 = take_32(bytes, &mut cursor, "rom_s_out_1")?;
+        let rom_s_out_2 = take_32(bytes, &mut cursor, "rom_s_out_2")?;
 
         // inner proof length and bytes
         if bytes.len() < cursor + 4 {
@@ -343,6 +406,13 @@ impl ZlStepProof {
         let air_pi = AirPublicInputs {
             core: core_pi.clone(),
             rom_acc: [BE::ZERO; 3],
+            pc_init: BE::ZERO,
+            ram_gp_unsorted_in: BE::ZERO,
+            ram_gp_unsorted_out: BE::ZERO,
+            ram_gp_sorted_in: BE::ZERO,
+            ram_gp_sorted_out: BE::ZERO,
+            rom_s_in: [BE::ZERO; 3],
+            rom_s_out: [BE::ZERO; 3],
         };
         let pi_len = air_pi.to_elements().len() as u32;
 
@@ -350,14 +420,49 @@ impl ZlStepProof {
         let wf_opts = inner_proof.options().clone();
         let meta = StepMeta::from_env(trace_len, &wf_opts, lambda_bits, pi_len);
 
-        let zl1_proof = zl1::format::Proof::new_single_segment(
-            suite_id,
-            meta,
-            &core_pi,
-            state_in_hash,
-            state_out_hash,
-            inner_proof,
-        )?;
+        let zl1_proof = if segments_total <= 1 {
+            zl1::format::Proof::new_single_segment(
+                suite_id,
+                meta,
+                &core_pi,
+                pc_init,
+                state_in_hash,
+                state_out_hash,
+                ram_gp_unsorted_in,
+                ram_gp_unsorted_out,
+                ram_gp_sorted_in,
+                ram_gp_sorted_out,
+                rom_s_in_0,
+                rom_s_in_1,
+                rom_s_in_2,
+                rom_s_out_0,
+                rom_s_out_1,
+                rom_s_out_2,
+                inner_proof,
+            )?
+        } else {
+            zl1::format::Proof::new_multi_segment(
+                suite_id,
+                meta,
+                &core_pi,
+                segment_index,
+                segments_total,
+                pc_init,
+                state_in_hash,
+                state_out_hash,
+                ram_gp_unsorted_in,
+                ram_gp_unsorted_out,
+                ram_gp_sorted_in,
+                ram_gp_sorted_out,
+                rom_s_in_0,
+                rom_s_in_1,
+                rom_s_in_2,
+                rom_s_out_0,
+                rom_s_out_1,
+                rom_s_out_2,
+                inner_proof,
+            )?
+        };
 
         Ok(ZlStepProof {
             proof: zl1_proof,

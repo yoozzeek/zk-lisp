@@ -394,3 +394,12 @@ pub fn fe_to_bytes_fold(x: BE) -> [u8; 32] {
 
     out
 }
+
+/// Inverse of `fe_to_bytes_fold`: interpret low 16 bytes (LE)
+/// as a base-field element and ignore the upper half.
+#[inline]
+pub fn fe_from_bytes_fold(bytes32: &[u8; 32]) -> BE {
+    let mut lo16 = [0u8; 16];
+    lo16.copy_from_slice(&bytes32[0..16]);
+    be_from_le_bytes16(&lo16)
+}

@@ -45,9 +45,26 @@ pub fn replay_fs_from_step(step: &ZlStepProof) -> error::Result<ZlFsChallenges> 
     let wf_proof = &step.proof.inner;
 
     // Rebuild AIR public inputs for this proof instance.
+    let pi_zl1 = &step.proof.pi;
+
     let air_pi = AirPublicInputs {
         core: step.pi_core.clone(),
         rom_acc: step.rom_acc,
+        pc_init: crate::utils::fe_from_bytes_fold(&pi_zl1.pc_init),
+        ram_gp_unsorted_in: crate::utils::fe_from_bytes_fold(&pi_zl1.ram_gp_unsorted_in),
+        ram_gp_unsorted_out: crate::utils::fe_from_bytes_fold(&pi_zl1.ram_gp_unsorted_out),
+        ram_gp_sorted_in: crate::utils::fe_from_bytes_fold(&pi_zl1.ram_gp_sorted_in),
+        ram_gp_sorted_out: crate::utils::fe_from_bytes_fold(&pi_zl1.ram_gp_sorted_out),
+        rom_s_in: [
+            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_in_0),
+            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_in_1),
+            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_in_2),
+        ],
+        rom_s_out: [
+            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_0),
+            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_1),
+            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_2),
+        ],
     };
 
     // Seed for the public coin:

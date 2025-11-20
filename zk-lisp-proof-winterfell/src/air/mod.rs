@@ -74,13 +74,13 @@ struct AirSharedContext {
     pub rom_w_enc0: [BaseElement; 59],
     pub rom_w_enc1: [BaseElement; 59],
 
-    /// Final ROM accumulator state lanes
-    /// (t=3 sponge) as observed by the prover.
-    // Final ROM accumulator lanes (t=3 sponge). Currently
-    // kept only for backwards compatibility; ROM binding
-    // uses internal trace wiring and does not rely on this
-    // handle in the AIR.
-    pub rom_acc: [BaseElement; 3],
+    /// Segment-local ROM t=3 state at the beginning and end
+    /// of the trace as observed by the prover.
+    pub rom_s_initial: [BaseElement; 3],
+    pub rom_s_final: [BaseElement; 3],
+
+    /// Program counter at the first map row of the trace.
+    pub pc_init: BaseElement,
 
     /// Field-level program commitment derived from the
     /// Blake3 program_commitment (two field elements).
@@ -191,7 +191,9 @@ impl Air for ZkLispAir {
             rom_mds: rom_mds_arr,
             rom_w_enc0,
             rom_w_enc1,
-            rom_acc: pub_inputs.rom_acc,
+            rom_s_initial: pub_inputs.rom_s_in,
+            rom_s_final: pub_inputs.rom_s_out,
+            pc_init: pub_inputs.pc_init,
             program_fe,
             main_args: main_args_fe,
         });
@@ -262,7 +264,8 @@ impl Air for ZkLispAir {
         // - final lanes 0/1 at last row bound
         //   to rom_acc[0/1].
         if core.program_commitment.iter().any(|b| *b != 0) {
-            num_assertions += 3;
+            // ROM now binds three lanes at both the initial map row and the final row.
+            num_assertions += 6;
         }
 
         print_evals_debug(&core, &info, &features, &degrees);
@@ -391,17 +394,12 @@ impl Air for ZkLispAir {
         }
 
         if ctx.features.ram {
-            // Final equality of grand-products
-            out.push(Assertion::single(
-                ctx.cols.ram_gp_unsorted,
-                last,
-                BE::from(0u32),
-            ));
-            out.push(Assertion::single(
-                ctx.cols.ram_gp_sorted,
-                last,
-                BE::from(0u32),
-            ));
+            // RAM grand-product accumulators are wired via transition
+            // constraints (including final-row equality between unsorted
+            // and sorted views). Global initial/final values are
+            // tracked at the recursion layer via AggAirPublicInputs and
+            // RecursionPublic; we intentionally avoid forcing them to
+            // zero here to keep the AIR usable for segment-local proofs.
         }
 
         if out.is_empty() {

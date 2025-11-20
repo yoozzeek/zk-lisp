@@ -41,7 +41,9 @@ pub mod format {
 
     /// Minimal public input echo used at the step level for digest
     /// computation and future recursion/aggregation wiring. This is
-    /// intentionally narrower than the full AIR public inputs.
+    /// intentionally narrower than the full AIR public inputs, but it
+    /// is rich enough to expose all per-segment boundary state needed
+    /// for strict STARK-in-STARK recursion (VM, RAM and ROM chains).
     #[derive(Clone, Debug)]
     pub struct PublicInputs {
         /// Deterministic identifier of the zk-lisp program.
@@ -60,6 +62,8 @@ pub mod format {
         pub segment_index: u32,
         /// Total number of segments; 1 for single-segment proofs.
         pub segments_total: u32,
+        /// Program counter at the first map row of this segment.
+        pub pc_init: [u8; 32],
         /// VM state hash at the beginning of this segment.
         ///
         /// This is a 32-byte digest derived from the initial
@@ -72,6 +76,30 @@ pub mod format {
         /// row where the final VM result is observed in the
         /// execution trace.
         pub state_out_hash: [u8; 32],
+        /// RAM grand-product accumulator at the first row of
+        /// this segment for the unsorted RAM event stream.
+        pub ram_gp_unsorted_in: [u8; 32],
+        /// RAM grand-product accumulator at the last row of
+        /// this segment for the unsorted RAM event stream.
+        pub ram_gp_unsorted_out: [u8; 32],
+        /// RAM grand-product accumulator at the first row of
+        /// this segment for the sorted RAM table.
+        pub ram_gp_sorted_in: [u8; 32],
+        /// RAM grand-product accumulator at the last row of
+        /// this segment for the sorted RAM table.
+        pub ram_gp_sorted_out: [u8; 32],
+        /// ROM t=3 state at the logical beginning of this
+        /// segment. For single-segment proofs this is the
+        /// state on the map row of level 0.
+        pub rom_s_in_0: [u8; 32],
+        pub rom_s_in_1: [u8; 32],
+        pub rom_s_in_2: [u8; 32],
+        /// ROM t=3 state at the logical end of this segment.
+        /// For single-segment proofs this is the state on the
+        /// final row of the last level.
+        pub rom_s_out_0: [u8; 32],
+        pub rom_s_out_1: [u8; 32],
+        pub rom_s_out_2: [u8; 32],
     }
 
     /// Commitment echo for the underlying Winterfell proof.
@@ -102,15 +130,76 @@ pub mod format {
     }
 
     impl Proof {
+        /// Construct a multi-segment zl1 proof with explicit segment indices.
+        pub fn new_multi_segment(
+            suite_id: [u8; 32],
+            meta: StepMeta,
+            core_pi: &zk_lisp_proof::pi::PublicInputs,
+            segment_index: u32,
+            segments_total: u32,
+            pc_init: [u8; 32],
+            state_in_hash: [u8; 32],
+            state_out_hash: [u8; 32],
+            ram_gp_unsorted_in: [u8; 32],
+            ram_gp_unsorted_out: [u8; 32],
+            ram_gp_sorted_in: [u8; 32],
+            ram_gp_sorted_out: [u8; 32],
+            rom_s_in_0: [u8; 32],
+            rom_s_in_1: [u8; 32],
+            rom_s_in_2: [u8; 32],
+            rom_s_out_0: [u8; 32],
+            rom_s_out_1: [u8; 32],
+            rom_s_out_2: [u8; 32],
+            wf_proof: WProof,
+        ) -> zk_lisp_proof::error::Result<Self> {
+            let mut p = Self::new_single_segment(
+                suite_id,
+                meta,
+                core_pi,
+                pc_init,
+                state_in_hash,
+                state_out_hash,
+                ram_gp_unsorted_in,
+                ram_gp_unsorted_out,
+                ram_gp_sorted_in,
+                ram_gp_sorted_out,
+                rom_s_in_0,
+                rom_s_in_1,
+                rom_s_in_2,
+                rom_s_out_0,
+                rom_s_out_1,
+                rom_s_out_2,
+                wf_proof,
+            )?;
+            p.pi.segment_index = segment_index;
+            p.pi.segments_total = segments_total;
+            Ok(p)
+        }
         /// Construct a single-segment zl1 proof from the
         /// suite id, per-proof metadata, backend-agnostic
         /// public inputs and the underlying Winterfell proof.
+        ///
+        /// Besides VM state hashes this constructor also expects
+        /// per-segment RAM and ROM boundary state in a backend-
+        /// neutral, byte-encoded form so that the recursion layer
+        /// can reconstruct them as field elements when needed.
         pub fn new_single_segment(
             suite_id: [u8; 32],
             meta: StepMeta,
             core_pi: &zk_lisp_proof::pi::PublicInputs,
+            pc_init: [u8; 32],
             state_in_hash: [u8; 32],
             state_out_hash: [u8; 32],
+            ram_gp_unsorted_in: [u8; 32],
+            ram_gp_unsorted_out: [u8; 32],
+            ram_gp_sorted_in: [u8; 32],
+            ram_gp_sorted_out: [u8; 32],
+            rom_s_in_0: [u8; 32],
+            rom_s_in_1: [u8; 32],
+            rom_s_in_2: [u8; 32],
+            rom_s_out_0: [u8; 32],
+            rom_s_out_1: [u8; 32],
+            rom_s_out_2: [u8; 32],
             wf_proof: WProof,
         ) -> zk_lisp_proof::error::Result<Self> {
             // Header echoes the effective proving profile
@@ -140,8 +229,19 @@ pub mod format {
                 feature_mask,
                 segment_index: 0,
                 segments_total: 1,
+                pc_init,
                 state_in_hash,
                 state_out_hash,
+                ram_gp_unsorted_in,
+                ram_gp_unsorted_out,
+                ram_gp_sorted_in,
+                ram_gp_sorted_out,
+                rom_s_in_0,
+                rom_s_in_1,
+                rom_s_in_2,
+                rom_s_out_0,
+                rom_s_out_1,
+                rom_s_out_2,
             };
 
             // Derive a single commitment root
@@ -235,14 +335,25 @@ pub mod digest {
             poseidon::poseidon_hash_two_lanes(&proof.header.suite_id, meta_ro, BE::from(0u64));
 
         // H_pi = Poseidon2(RO2F("zkl/step/digest/pi", pi_bytes), 0)
-        let mut pi_bytes = Vec::with_capacity(32 * 4 + 8 + 4 + 4);
+        let mut pi_bytes = Vec::with_capacity(32 * 17 + 8 + 4 + 4);
         pi_bytes.extend_from_slice(&proof.pi.program_id);
         pi_bytes.extend_from_slice(&proof.pi.program_commitment);
         pi_bytes.extend_from_slice(&proof.pi.feature_mask.to_le_bytes());
         pi_bytes.extend_from_slice(&proof.pi.segment_index.to_le_bytes());
         pi_bytes.extend_from_slice(&proof.pi.segments_total.to_le_bytes());
+        pi_bytes.extend_from_slice(&proof.pi.pc_init);
         pi_bytes.extend_from_slice(&proof.pi.state_in_hash);
         pi_bytes.extend_from_slice(&proof.pi.state_out_hash);
+        pi_bytes.extend_from_slice(&proof.pi.ram_gp_unsorted_in);
+        pi_bytes.extend_from_slice(&proof.pi.ram_gp_unsorted_out);
+        pi_bytes.extend_from_slice(&proof.pi.ram_gp_sorted_in);
+        pi_bytes.extend_from_slice(&proof.pi.ram_gp_sorted_out);
+        pi_bytes.extend_from_slice(&proof.pi.rom_s_in_0);
+        pi_bytes.extend_from_slice(&proof.pi.rom_s_in_1);
+        pi_bytes.extend_from_slice(&proof.pi.rom_s_in_2);
+        pi_bytes.extend_from_slice(&proof.pi.rom_s_out_0);
+        pi_bytes.extend_from_slice(&proof.pi.rom_s_out_1);
+        pi_bytes.extend_from_slice(&proof.pi.rom_s_out_2);
 
         let pi_ro = poseidon::ro_to_fe("zkl/step/digest/pi", &[&pi_bytes[..]]);
         let h_pi = poseidon::poseidon_hash_two_lanes(&proof.header.suite_id, pi_ro, BE::from(0u64));

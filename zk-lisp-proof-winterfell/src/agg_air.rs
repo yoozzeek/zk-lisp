@@ -87,6 +87,25 @@ pub struct AggAirPublicInputs {
     /// the global profile constraints are in
     /// place.
     pub children_ms: Vec<u32>,
+
+    /// Global VM state at the beginning and end
+    /// of the aggregated prefix (including all
+    /// children in this aggregation step).
+    pub vm_state_initial: [u8; 32],
+    pub vm_state_final: [u8; 32],
+
+    /// Global RAM grand-product accumulators for
+    /// unsorted and sorted RAM tables at the
+    /// beginning and end of the aggregated prefix.
+    pub ram_gp_unsorted_initial: [u8; 32],
+    pub ram_gp_unsorted_final: [u8; 32],
+    pub ram_gp_sorted_initial: [u8; 32],
+    pub ram_gp_sorted_final: [u8; 32],
+
+    /// Global ROM t=3 accumulator state at the
+    /// beginning and end of the aggregated prefix.
+    pub rom_s_initial: [[u8; 32]; 3],
+    pub rom_s_final: [[u8; 32]; 3],
 }
 
 /// Global zk-lisp STARK profile shared by all
@@ -168,31 +187,58 @@ impl AggAirPublicInputs {
             profile_queries,
             suite_id: compact.suite_id,
             children_ms: vec![compact.meta.m],
+            vm_state_initial: compact.state_in_hash,
+            vm_state_final: compact.state_out_hash,
+            ram_gp_unsorted_initial: compact.ram_gp_unsorted_in,
+            ram_gp_unsorted_final: compact.ram_gp_unsorted_out,
+            ram_gp_sorted_initial: compact.ram_gp_sorted_in,
+            ram_gp_sorted_final: compact.ram_gp_sorted_out,
+            rom_s_initial: compact.rom_s_in,
+            rom_s_final: compact.rom_s_out,
         })
     }
 }
 
 impl ToElements<BE> for AggAirPublicInputs {
     fn to_elements(&self) -> Vec<BE> {
-        vec![
-            utils::fold_bytes32_to_fe(&self.children_root),
-            utils::fold_bytes32_to_fe(&self.batch_id),
-            BE::from(self.profile_meta.m),
-            BE::from(self.profile_meta.rho as u64),
-            BE::from(self.profile_meta.q as u64),
-            BE::from(self.profile_meta.o as u64),
-            BE::from(self.profile_meta.lambda as u64),
-            BE::from(self.profile_meta.pi_len),
-            BE::from(self.profile_meta.v_units),
-            BE::from(self.profile_fri.lde_blowup),
-            BE::from(self.profile_fri.folding_factor as u64),
-            BE::from(self.profile_fri.redundancy as u64),
-            BE::from(self.profile_fri.num_layers as u64),
-            BE::from(self.profile_queries.num_queries as u64),
-            BE::from(self.profile_queries.grinding_factor),
-            BE::from(self.children_count as u64),
-            BE::from(self.v_units_total),
-        ]
+        let mut out = Vec::with_capacity(32);
+
+        out.push(utils::fold_bytes32_to_fe(&self.children_root));
+        out.push(utils::fold_bytes32_to_fe(&self.batch_id));
+        out.push(BE::from(self.profile_meta.m));
+        out.push(BE::from(self.profile_meta.rho as u64));
+        out.push(BE::from(self.profile_meta.q as u64));
+        out.push(BE::from(self.profile_meta.o as u64));
+        out.push(BE::from(self.profile_meta.lambda as u64));
+        out.push(BE::from(self.profile_meta.pi_len));
+        out.push(BE::from(self.profile_meta.v_units));
+        out.push(BE::from(self.profile_fri.lde_blowup));
+        out.push(BE::from(self.profile_fri.folding_factor as u64));
+        out.push(BE::from(self.profile_fri.redundancy as u64));
+        out.push(BE::from(self.profile_fri.num_layers as u64));
+        out.push(BE::from(self.profile_queries.num_queries as u64));
+        out.push(BE::from(self.profile_queries.grinding_factor));
+        out.push(BE::from(self.children_count as u64));
+        out.push(BE::from(self.v_units_total));
+
+        // Fold global boundary bytes into field elements as
+        // part of the aggregation FS seed so that any change
+        // in these values perturbs the aggregation transcript.
+        out.push(utils::fold_bytes32_to_fe(&self.vm_state_initial));
+        out.push(utils::fold_bytes32_to_fe(&self.vm_state_final));
+        out.push(utils::fold_bytes32_to_fe(&self.ram_gp_unsorted_initial));
+        out.push(utils::fold_bytes32_to_fe(&self.ram_gp_unsorted_final));
+        out.push(utils::fold_bytes32_to_fe(&self.ram_gp_sorted_initial));
+        out.push(utils::fold_bytes32_to_fe(&self.ram_gp_sorted_final));
+
+        for lane in &self.rom_s_initial {
+            out.push(utils::fold_bytes32_to_fe(lane));
+        }
+        for lane in &self.rom_s_final {
+            out.push(utils::fold_bytes32_to_fe(lane));
+        }
+
+        out
     }
 }
 
@@ -219,7 +265,7 @@ impl Air for ZlAggAir {
         let trace_len = info.length();
         assert!(trace_len > 0, "AggTrace must contain at least one row");
 
-        // We currently expose eighteen constraints:
+        // We currently expose twenty-four constraints:
         // C0: ok == 0 on all rows;
         // C1: work accumulator chain gated to non-last rows.
         // C2: trace_root_err must be zero on all rows.
@@ -239,6 +285,8 @@ impl Air for ZlAggAir {
         //      across all layers for a single query path.
         // C17: global FRI paths folding and remainder consistency
         //      aggregated over all query paths.
+        // C18–C23: global VM / RAM / ROM boundary chain errors,
+        //          required to be identically zero across the trace.
         let degrees = vec![
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(2, vec![trace_len]),
@@ -258,6 +306,12 @@ impl Air for ZlAggAir {
             TransitionConstraintDegree::new(1), // C15
             TransitionConstraintDegree::new(1), // C16
             TransitionConstraintDegree::new(1), // C17
+            TransitionConstraintDegree::new(1), // C18
+            TransitionConstraintDegree::new(1), // C19
+            TransitionConstraintDegree::new(1), // C20
+            TransitionConstraintDegree::new(1), // C21
+            TransitionConstraintDegree::new(1), // C22
+            TransitionConstraintDegree::new(1), // C23
         ];
 
         // ok[0], v_units_acc[0], v_units_acc[last],
@@ -287,7 +341,7 @@ impl Air for ZlAggAir {
     ) where
         E: FieldElement<BaseField = Self::BaseField> + From<Self::BaseField>,
     {
-        debug_assert_eq!(result.len(), 18);
+        debug_assert_eq!(result.len(), 24);
         debug_assert_eq!(periodic_values.len(), 1);
 
         let cols = &self.cols;
@@ -332,6 +386,13 @@ impl Air for ZlAggAir {
         let fri_layer1_agg = current[cols.alpha_div_zm_sum];
         let fri_path_agg = current[cols.map_l0_sum];
         let fri_paths_agg = current[cols.final_llast_sum];
+
+        let vm_chain_err = current[cols.vm_chain_err];
+        let ram_u_chain_err = current[cols.ram_u_chain_err];
+        let ram_s_chain_err = current[cols.ram_s_chain_err];
+        let rom_chain_err_0 = current[cols.rom_chain_err_0];
+        let rom_chain_err_1 = current[cols.rom_chain_err_1];
+        let rom_chain_err_2 = current[cols.rom_chain_err_2];
 
         let is_last = periodic_values[0];
         let not_last = E::ONE - is_last;
@@ -428,6 +489,17 @@ impl Air for ZlAggAir {
         // zeros elsewhere; we require it to be identically zero
         // across the trace.
         result[17] = fri_paths_agg;
+
+        // C18–C23: global VM / RAM / ROM boundary chain
+        // errors are wired directly into dedicated columns
+        // by the trace builder and must be identically zero
+        // across the entire trace.
+        result[18] = vm_chain_err;
+        result[19] = ram_u_chain_err;
+        result[20] = ram_s_chain_err;
+        result[21] = rom_chain_err_0;
+        result[22] = rom_chain_err_1;
+        result[23] = rom_chain_err_2;
     }
 
     fn get_assertions(&self) -> Vec<Assertion<Self::BaseField>> {

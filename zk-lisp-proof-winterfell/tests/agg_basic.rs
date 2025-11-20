@@ -144,6 +144,17 @@ fn make_children() -> Vec<ZlChildCompact> {
     let fri_roots = Vec::new();
     let pow_nonce = 0u64;
 
+    let segment_index = 0u32;
+    let segments_total = 1u32;
+    let state_in_hash = [0u8; 32];
+    let state_out_hash = [0u8; 32];
+    let ram_gp_unsorted_in = [0u8; 32];
+    let ram_gp_unsorted_out = [0u8; 32];
+    let ram_gp_sorted_in = [0u8; 32];
+    let ram_gp_sorted_out = [0u8; 32];
+    let rom_s_in = [[0u8; 32]; 3];
+    let rom_s_out = [[0u8; 32]; 3];
+
     let c1 = ZlChildCompact {
         suite_id,
         meta: meta1,
@@ -151,6 +162,16 @@ fn make_children() -> Vec<ZlChildCompact> {
         rom_acc,
         step_digest: [1u8; 32],
         trace_root,
+        segment_index,
+        segments_total,
+        state_in_hash,
+        state_out_hash,
+        ram_gp_unsorted_in,
+        ram_gp_unsorted_out,
+        ram_gp_sorted_in,
+        ram_gp_sorted_out,
+        rom_s_in,
+        rom_s_out,
         trace_roots: trace_roots.clone(),
         constraint_root,
         fri_roots: fri_roots.clone(),
@@ -165,6 +186,16 @@ fn make_children() -> Vec<ZlChildCompact> {
         rom_acc,
         step_digest: [2u8; 32],
         trace_root,
+        segment_index,
+        segments_total,
+        state_in_hash,
+        state_out_hash,
+        ram_gp_unsorted_in,
+        ram_gp_unsorted_out,
+        ram_gp_sorted_in,
+        ram_gp_sorted_out,
+        rom_s_in,
+        rom_s_out,
         trace_roots,
         constraint_root,
         fri_roots,
@@ -245,6 +276,14 @@ fn agg_proof_roundtrip_ok() {
         profile_queries,
         suite_id: children[0].suite_id,
         children_ms: vec![m1, m2],
+        vm_state_initial: [0u8; 32],
+        vm_state_final: [0u8; 32],
+        ram_gp_unsorted_initial: [0u8; 32],
+        ram_gp_unsorted_final: [0u8; 32],
+        ram_gp_sorted_initial: [0u8; 32],
+        ram_gp_sorted_final: [0u8; 32],
+        rom_s_initial: [[0u8; 32]; 3],
+        rom_s_final: [[0u8; 32]; 3],
     };
 
     let agg_trace = build_agg_trace(&agg_pi, &children)
@@ -312,6 +351,14 @@ fn agg_build_rejects_wrong_v_units_total() {
         profile_queries,
         suite_id: children[0].suite_id,
         children_ms: vec![m1, m2],
+        vm_state_initial: [0u8; 32],
+        vm_state_final: [0u8; 32],
+        ram_gp_unsorted_initial: [0u8; 32],
+        ram_gp_unsorted_final: [0u8; 32],
+        ram_gp_sorted_initial: [0u8; 32],
+        ram_gp_sorted_final: [0u8; 32],
+        rom_s_initial: [[0u8; 32]; 3],
+        rom_s_final: [[0u8; 32]; 3],
     };
 
     let err = build_agg_trace(&agg_pi, &children)
@@ -365,6 +412,14 @@ fn agg_build_rejects_wrong_children_ms() {
         profile_queries,
         suite_id: children[0].suite_id,
         children_ms: vec![m1, m1],
+        vm_state_initial: [0u8; 32],
+        vm_state_final: [0u8; 32],
+        ram_gp_unsorted_initial: [0u8; 32],
+        ram_gp_unsorted_final: [0u8; 32],
+        ram_gp_sorted_initial: [0u8; 32],
+        ram_gp_sorted_final: [0u8; 32],
+        rom_s_initial: [[0u8; 32]; 3],
+        rom_s_final: [[0u8; 32]; 3],
     };
 
     let err = build_agg_trace(&agg_pi, &children)
@@ -418,6 +473,14 @@ fn agg_build_rejects_wrong_profile_meta() {
         profile_queries,
         suite_id: children[0].suite_id,
         children_ms: vec![m1, m2],
+        vm_state_initial: [0u8; 32],
+        vm_state_final: [0u8; 32],
+        ram_gp_unsorted_initial: [0u8; 32],
+        ram_gp_unsorted_final: [0u8; 32],
+        ram_gp_sorted_initial: [0u8; 32],
+        ram_gp_sorted_final: [0u8; 32],
+        rom_s_initial: [[0u8; 32]; 3],
+        rom_s_final: [[0u8; 32]; 3],
     };
 
     let err = build_agg_trace(&agg_pi, &children)
@@ -475,6 +538,14 @@ fn agg_build_rejects_mixed_suite_id() {
         profile_queries,
         suite_id: [7u8; 32],
         children_ms: vec![m1, m2],
+        vm_state_initial: [0u8; 32],
+        vm_state_final: [0u8; 32],
+        ram_gp_unsorted_initial: [0u8; 32],
+        ram_gp_unsorted_final: [0u8; 32],
+        ram_gp_sorted_initial: [0u8; 32],
+        ram_gp_sorted_final: [0u8; 32],
+        rom_s_initial: [[0u8; 32]; 3],
+        rom_s_final: [[0u8; 32]; 3],
     };
 
     let err = build_agg_trace(&agg_pi, &children)
@@ -530,6 +601,14 @@ fn agg_merkle_binding_accepts_honest_child() {
         profile_queries,
         suite_id: child.suite_id,
         children_ms: vec![child.meta.m],
+        vm_state_initial: child.state_in_hash,
+        vm_state_final: child.state_out_hash,
+        ram_gp_unsorted_initial: child.ram_gp_unsorted_in,
+        ram_gp_unsorted_final: child.ram_gp_unsorted_out,
+        ram_gp_sorted_initial: child.ram_gp_sorted_in,
+        ram_gp_sorted_final: child.ram_gp_sorted_out,
+        rom_s_initial: child.rom_s_in,
+        rom_s_final: child.rom_s_out,
     };
 
     let agg_trace =
@@ -614,6 +693,14 @@ fn agg_merkle_binding_rejects_tampered_trace_root() {
         profile_queries,
         suite_id: child.suite_id,
         children_ms: vec![child.meta.m],
+        vm_state_initial: child.state_in_hash,
+        vm_state_final: child.state_out_hash,
+        ram_gp_unsorted_initial: child.ram_gp_unsorted_in,
+        ram_gp_unsorted_final: child.ram_gp_unsorted_out,
+        ram_gp_sorted_initial: child.ram_gp_sorted_in,
+        ram_gp_sorted_final: child.ram_gp_sorted_out,
+        rom_s_initial: child.rom_s_in,
+        rom_s_final: child.rom_s_out,
     };
 
     let agg_trace = build_agg_trace(&agg_pi, &children)
@@ -677,6 +764,14 @@ fn agg_fri_binding_accepts_honest_child_transcript() {
         profile_queries,
         suite_id: child.suite_id,
         children_ms: vec![child.meta.m],
+        vm_state_initial: child.state_in_hash,
+        vm_state_final: child.state_out_hash,
+        ram_gp_unsorted_initial: child.ram_gp_unsorted_in,
+        ram_gp_unsorted_final: child.ram_gp_unsorted_out,
+        ram_gp_sorted_initial: child.ram_gp_sorted_in,
+        ram_gp_sorted_final: child.ram_gp_sorted_out,
+        rom_s_initial: child.rom_s_in,
+        rom_s_final: child.rom_s_out,
     };
 
     let agg_trace = build_agg_trace_from_transcripts(&agg_pi, &[transcript])
@@ -755,6 +850,14 @@ fn agg_fri_binding_rejects_tampered_fri_final() {
         profile_queries,
         suite_id: child.suite_id,
         children_ms: vec![child.meta.m],
+        vm_state_initial: child.state_in_hash,
+        vm_state_final: child.state_out_hash,
+        ram_gp_unsorted_initial: child.ram_gp_unsorted_in,
+        ram_gp_unsorted_final: child.ram_gp_unsorted_out,
+        ram_gp_sorted_initial: child.ram_gp_sorted_in,
+        ram_gp_sorted_final: child.ram_gp_sorted_out,
+        rom_s_initial: child.rom_s_in,
+        rom_s_final: child.rom_s_out,
     };
 
     let agg_trace = build_agg_trace_from_transcripts(&agg_pi, &[transcript])
@@ -839,6 +942,14 @@ fn agg_fri_binding_rejects_tampered_fri_layer_value() {
         profile_queries,
         suite_id: child.suite_id,
         children_ms: vec![child.meta.m],
+        vm_state_initial: child.state_in_hash,
+        vm_state_final: child.state_out_hash,
+        ram_gp_unsorted_initial: child.ram_gp_unsorted_in,
+        ram_gp_unsorted_final: child.ram_gp_unsorted_out,
+        ram_gp_sorted_initial: child.ram_gp_sorted_in,
+        ram_gp_sorted_final: child.ram_gp_sorted_out,
+        rom_s_initial: child.rom_s_in,
+        rom_s_final: child.rom_s_out,
     };
 
     let agg_trace = build_agg_trace_from_transcripts(&agg_pi, &[transcript])
@@ -913,6 +1024,14 @@ fn agg_builder_rejects_inconsistent_query_count() {
         profile_queries,
         suite_id: child.suite_id,
         children_ms: vec![child.meta.m],
+        vm_state_initial: child.state_in_hash,
+        vm_state_final: child.state_out_hash,
+        ram_gp_unsorted_initial: child.ram_gp_unsorted_in,
+        ram_gp_unsorted_final: child.ram_gp_unsorted_out,
+        ram_gp_sorted_initial: child.ram_gp_sorted_in,
+        ram_gp_sorted_final: child.ram_gp_sorted_out,
+        rom_s_initial: child.rom_s_in,
+        rom_s_final: child.rom_s_out,
     };
 
     let result = build_agg_trace_from_transcripts(&agg_pi, &[transcript]);
@@ -979,6 +1098,14 @@ fn agg_merkle_binding_rejects_tampered_trace_path() {
         profile_queries,
         suite_id: child.suite_id,
         children_ms: vec![child.meta.m],
+        vm_state_initial: child.state_in_hash,
+        vm_state_final: child.state_out_hash,
+        ram_gp_unsorted_initial: child.ram_gp_unsorted_in,
+        ram_gp_unsorted_final: child.ram_gp_unsorted_out,
+        ram_gp_sorted_initial: child.ram_gp_sorted_in,
+        ram_gp_sorted_final: child.ram_gp_sorted_out,
+        rom_s_initial: child.rom_s_in,
+        rom_s_final: child.rom_s_out,
     };
 
     let agg_trace = build_agg_trace_from_transcripts(&agg_pi, &[transcript])

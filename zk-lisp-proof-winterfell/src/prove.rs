@@ -31,14 +31,18 @@ use zk_lisp_proof::error;
 use zk_lisp_proof::frontend::PreflightMode;
 use zk_lisp_proof::pi as core_pi;
 use zk_lisp_proof::pi::PublicInputs;
+use zk_lisp_proof::segment::SegmentPlanner;
 
 use crate::agg_air::{AggAirPublicInputs, ZlAggAir};
 use crate::agg_child::ZlChildTranscript;
 use crate::agg_trace::build_agg_trace_from_transcripts;
 use crate::air::ZkLispAir;
+use crate::layout::{Columns, STEPS_PER_LEVEL_P2};
 use crate::poseidon_hasher::PoseidonHasher;
+use crate::schedule;
+use crate::segment_planner::WinterfellSegmentPlanner;
 use crate::zl_step::{StepMeta, ZlStepProof};
-use crate::{preflight::run as run_preflight, schedule, trace, utils};
+use crate::{preflight::run as run_preflight, trace, utils};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -50,6 +54,32 @@ pub enum Error {
     RecursionInvalid(&'static str),
     #[error(transparent)]
     PublicInputs(#[from] error::Error),
+}
+
+#[derive(Clone, Debug)]
+pub struct VerifyBoundaries {
+    pub pc_init: [u8; 32],
+    pub ram_gp_unsorted_in: [u8; 32],
+    pub ram_gp_unsorted_out: [u8; 32],
+    pub ram_gp_sorted_in: [u8; 32],
+    pub ram_gp_sorted_out: [u8; 32],
+    pub rom_s_in: [[u8; 32]; 3],
+    pub rom_s_out: [[u8; 32]; 3],
+}
+
+impl VerifyBoundaries {
+    pub fn from_step(step: &crate::zl_step::ZlStepProof) -> Self {
+        let pi = &step.proof.pi;
+        VerifyBoundaries {
+            pc_init: pi.pc_init,
+            ram_gp_unsorted_in: pi.ram_gp_unsorted_in,
+            ram_gp_unsorted_out: pi.ram_gp_unsorted_out,
+            ram_gp_sorted_in: pi.ram_gp_sorted_in,
+            ram_gp_sorted_out: pi.ram_gp_sorted_out,
+            rom_s_in: [pi.rom_s_in_0, pi.rom_s_in_1, pi.rom_s_in_2],
+            rom_s_out: [pi.rom_s_out_0, pi.rom_s_out_1, pi.rom_s_out_2],
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -112,8 +142,16 @@ impl ZkProver {
             "prove start",
         );
 
+        // Preflight timing
         if !matches!(self.preflight, PreflightMode::Off) {
+            let t_pf = std::time::Instant::now();
             run_preflight(self.preflight, &self.options, &self.pub_inputs, &trace)?;
+
+            tracing::info!(
+                target = "proof.prove",
+                elapsed_ms = %t_pf.elapsed().as_millis(),
+                "preflight done",
+            );
         }
 
         let prover = ZkWinterfellProver {
@@ -122,10 +160,18 @@ impl ZkProver {
             rom_acc: self.rom_acc,
         };
 
+        // Winterfell orchestration timing
         let t0 = std::time::Instant::now();
-        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prover.prove(trace)))
-            .map_err(|_| Error::Backend("winterfell panic during proving".into()))
-            .and_then(|r| r.map_err(|e| Error::BackendSource(Box::new(e))));
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tracing::info!(target = "proof.prove", "winterfell.prove enter");
+
+            let out = prover.prove(trace);
+            tracing::info!(target = "proof.prove", "winterfell.prove return");
+
+            out
+        }))
+        .map_err(|_| Error::Backend("winterfell panic during proving".into()))
+        .and_then(|r| r.map_err(|e| Error::BackendSource(Box::new(e))));
 
         match res {
             Ok(proof) => {
@@ -147,6 +193,121 @@ struct ZkWinterfellProver {
     options: ProofOptions,
     pub_inputs: PublicInputs,
     rom_acc: [BE; 3],
+}
+
+/// Byte-encoded boundary state for a single execution
+/// segment. These values are derived from the concrete
+/// execution trace and stored in zl1 public inputs so
+/// that the aggregation layer can reconstruct them as
+/// field elements.
+struct SegmentBoundaryBytes {
+    pc_init: [u8; 32],
+    ram_gp_unsorted_in: [u8; 32],
+    ram_gp_unsorted_out: [u8; 32],
+    ram_gp_sorted_in: [u8; 32],
+    ram_gp_sorted_out: [u8; 32],
+    rom_s_in_0: [u8; 32],
+    rom_s_in_1: [u8; 32],
+    rom_s_in_2: [u8; 32],
+    rom_s_out_0: [u8; 32],
+    rom_s_out_1: [u8; 32],
+    rom_s_out_2: [u8; 32],
+}
+
+fn compute_segment_boundary_bytes(
+    trace: &TraceTable<BE>,
+    segment: &zk_lisp_proof::segment::Segment,
+) -> error::Result<SegmentBoundaryBytes> {
+    let t = std::time::Instant::now();
+
+    if segment.r_start >= segment.r_end {
+        return Err(error::Error::InvalidInput(
+            "segment r_start must be < r_end when computing boundary state",
+        ));
+    }
+
+    let n_rows = trace.length();
+    if segment.r_end > n_rows {
+        return Err(error::Error::InvalidInput(
+            "segment end row out of bounds for trace in boundary computation",
+        ));
+    }
+
+    let cols = Columns::baseline();
+    let steps = STEPS_PER_LEVEL_P2;
+    let r_start = segment.r_start;
+    let r_end = segment.r_end;
+
+    // pc at the first map row of the segment
+    let row_map_first = (r_start / steps) * steps + schedule::pos_map();
+    let pc_init_fe = trace.get(cols.pc, row_map_first);
+
+    // RAM grand-product accumulators are carried row-wise; we
+    // take the values at the first and last rows of the segment.
+    let ram_gp_unsorted_in_fe = trace.get(cols.ram_gp_unsorted, r_start);
+    let ram_gp_unsorted_out_fe = trace.get(cols.ram_gp_unsorted, r_end - 1);
+    let ram_gp_sorted_in_fe = trace.get(cols.ram_gp_sorted, r_start);
+    let ram_gp_sorted_out_fe = trace.get(cols.ram_gp_sorted, r_end - 1);
+
+    // ROM t=3 accumulator state is defined in terms of VM levels.
+    // We select the map row of the first level touched by the
+    // segment as rom_s_in and the final row of the last level
+    // touched by the segment as rom_s_out. This matches the
+    // semantics of RomTraceBuilder and will generalize cleanly
+    // to level-aligned multi-segment plans.
+    let lvl_first = r_start / steps;
+    let lvl_last = (r_end - 1) / steps;
+
+    let row_map_first = lvl_first
+        .checked_mul(steps)
+        .and_then(|base| base.checked_add(schedule::pos_map()))
+        .ok_or(error::Error::InvalidInput(
+            "overflow while computing ROM map row for segment boundary state",
+        ))?;
+
+    let row_final_last = lvl_last
+        .checked_mul(steps)
+        .and_then(|base| base.checked_add(schedule::pos_final()))
+        .ok_or(error::Error::InvalidInput(
+            "overflow while computing ROM final row for segment boundary state",
+        ))?;
+
+    if row_map_first >= n_rows || row_final_last >= n_rows {
+        return Err(error::Error::InvalidInput(
+            "ROM boundary rows out of bounds for trace in boundary computation",
+        ));
+    }
+
+    let rom_s_in_0_fe = trace.get(cols.rom_s_index(0), row_map_first);
+    let rom_s_in_1_fe = trace.get(cols.rom_s_index(1), row_map_first);
+    let rom_s_in_2_fe = trace.get(cols.rom_s_index(2), row_map_first);
+
+    let rom_s_out_0_fe = trace.get(cols.rom_s_index(0), row_final_last);
+    let rom_s_out_1_fe = trace.get(cols.rom_s_index(1), row_final_last);
+    let rom_s_out_2_fe = trace.get(cols.rom_s_index(2), row_final_last);
+
+    let out = SegmentBoundaryBytes {
+        pc_init: utils::fe_to_bytes_fold(pc_init_fe),
+        ram_gp_unsorted_in: utils::fe_to_bytes_fold(ram_gp_unsorted_in_fe),
+        ram_gp_unsorted_out: utils::fe_to_bytes_fold(ram_gp_unsorted_out_fe),
+        ram_gp_sorted_in: utils::fe_to_bytes_fold(ram_gp_sorted_in_fe),
+        ram_gp_sorted_out: utils::fe_to_bytes_fold(ram_gp_sorted_out_fe),
+        rom_s_in_0: utils::fe_to_bytes_fold(rom_s_in_0_fe),
+        rom_s_in_1: utils::fe_to_bytes_fold(rom_s_in_1_fe),
+        rom_s_in_2: utils::fe_to_bytes_fold(rom_s_in_2_fe),
+        rom_s_out_0: utils::fe_to_bytes_fold(rom_s_out_0_fe),
+        rom_s_out_1: utils::fe_to_bytes_fold(rom_s_out_1_fe),
+        rom_s_out_2: utils::fe_to_bytes_fold(rom_s_out_2_fe),
+    };
+
+    tracing::info!(
+        target = "proof.segment",
+        seg_rows = %segment.len(),
+        elapsed_ms = %t.elapsed().as_millis(),
+        "segment boundary bytes computed",
+    );
+
+    Ok(out)
 }
 
 impl WProver for ZkWinterfellProver {
@@ -180,9 +341,71 @@ impl WProver for ZkWinterfellProver {
             }
         }
 
+        // Derive segment-local boundary state directly from the
+        // concrete execution trace seen by this prover instance.
+        let cols = Columns::baseline();
+        let steps = STEPS_PER_LEVEL_P2;
+        let n_rows = trace.length();
+
+        let pc_init = if n_rows > 0 {
+            trace.get(cols.pc, crate::schedule::pos_map())
+        } else {
+            BE::ZERO
+        };
+
+        let last = n_rows.saturating_sub(1);
+
+        let (ram_gp_unsorted_in, ram_gp_unsorted_out, ram_gp_sorted_in, ram_gp_sorted_out) =
+            if n_rows > 0 {
+                (
+                    trace.get(cols.ram_gp_unsorted, 0),
+                    trace.get(cols.ram_gp_unsorted, last),
+                    trace.get(cols.ram_gp_sorted, 0),
+                    trace.get(cols.ram_gp_sorted, last),
+                )
+            } else {
+                (BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO)
+            };
+
+        // ROM boundaries at the first map row and the final row of
+        // the last level present in this trace segment.
+        let (rom_s_in, rom_s_out) = if n_rows > 0 && steps > 0 {
+            let lvl_first = 0usize;
+            let lvl_last = last / steps;
+
+            let row_map_first = lvl_first * steps + crate::schedule::pos_map();
+            let row_final_last = lvl_last * steps + crate::schedule::pos_final();
+
+            if row_map_first < n_rows && row_final_last < n_rows {
+                let s_in = [
+                    trace.get(cols.rom_s_index(0), row_map_first),
+                    trace.get(cols.rom_s_index(1), row_map_first),
+                    trace.get(cols.rom_s_index(2), row_map_first),
+                ];
+                let s_out = [
+                    trace.get(cols.rom_s_index(0), row_final_last),
+                    trace.get(cols.rom_s_index(1), row_final_last),
+                    trace.get(cols.rom_s_index(2), row_final_last),
+                ];
+
+                (s_in, s_out)
+            } else {
+                ([BE::ZERO; 3], [BE::ZERO; 3])
+            }
+        } else {
+            ([BE::ZERO; 3], [BE::ZERO; 3])
+        };
+
         crate::AirPublicInputs {
             core: pi,
             rom_acc: self.rom_acc,
+            pc_init,
+            ram_gp_unsorted_in,
+            ram_gp_unsorted_out,
+            ram_gp_sorted_in,
+            ram_gp_sorted_out,
+            rom_s_in,
+            rom_s_out,
         }
     }
 
@@ -197,7 +420,17 @@ impl WProver for ZkWinterfellProver {
         domain: &StarkDomain<Self::BaseField>,
         partition_option: PartitionOptions,
     ) -> (Self::TraceLde<E>, TracePolyTable<E>) {
-        DefaultTraceLde::new(trace_info, main_trace, domain, partition_option)
+        let t = std::time::Instant::now();
+        let (lde, polys) = DefaultTraceLde::new(trace_info, main_trace, domain, partition_option);
+        tracing::info!(
+            target = "proof.prove",
+            rows = %main_trace.num_rows(),
+            cols = %main_trace.num_cols(),
+            blowup = %domain.trace_to_lde_blowup(),
+            elapsed_ms = %t.elapsed().as_millis(),
+            "new_trace_lde done",
+        );
+        (lde, polys)
     }
 
     fn new_evaluator<'a, E: FieldElement<BaseField = Self::BaseField>>(
@@ -206,7 +439,10 @@ impl WProver for ZkWinterfellProver {
         aux_rand_elements: Option<winterfell::AuxRandElements<E>>,
         composition_coefficients: winterfell::ConstraintCompositionCoefficients<E>,
     ) -> Self::ConstraintEvaluator<'a, E> {
-        DefaultConstraintEvaluator::new(air, aux_rand_elements, composition_coefficients)
+        let t = std::time::Instant::now();
+        let ev = DefaultConstraintEvaluator::new(air, aux_rand_elements, composition_coefficients);
+        tracing::info!(target = "proof.prove", elapsed_ms=%t.elapsed().as_millis(), "new_evaluator done");
+        ev
     }
 
     fn build_constraint_commitment<E: FieldElement<BaseField = Self::BaseField>>(
@@ -216,12 +452,15 @@ impl WProver for ZkWinterfellProver {
         domain: &StarkDomain<Self::BaseField>,
         partition_options: PartitionOptions,
     ) -> (Self::ConstraintCommitment<E>, CompositionPoly<E>) {
-        DefaultConstraintCommitment::new(
+        let t = std::time::Instant::now();
+        let out = DefaultConstraintCommitment::new(
             composition_poly_trace,
             num_constraint_composition_columns,
             domain,
             partition_options,
-        )
+        );
+        tracing::info!(target = "proof.prove", elapsed_ms=%t.elapsed().as_millis(), "build_constraint_commitment done");
+        out
     }
 }
 
@@ -506,6 +745,9 @@ pub fn verify_proof(
     opts: &ProofOptions,
     min_bits: u32,
 ) -> Result<(), Error> {
+    // Slow path retained for compatibility;
+    // prefer verify_proof_fast when caller
+    // can supply segment-local boundaries.
     pi.validate_flags()?;
 
     // Enforce a minimum conjectured security
@@ -528,6 +770,58 @@ pub fn verify_proof(
         "verify proof",
     );
 
+    // Rebuild a minimal execution trace to derive the same
+    // boundary public inputs used by the prover so that the
+    // verifier's FS seed matches bit-for-bit.
+    let trace = crate::trace::build_trace(program, &pi)?;
+    let cols = crate::layout::Columns::baseline();
+    let steps = crate::layout::STEPS_PER_LEVEL_P2;
+    let n_rows = trace.length();
+    let last = n_rows.saturating_sub(1);
+
+    let pc_init = if n_rows > 0 {
+        trace.get(cols.pc, crate::schedule::pos_map())
+    } else {
+        BE::ZERO
+    };
+
+    let (ram_gp_unsorted_in, ram_gp_unsorted_out, ram_gp_sorted_in, ram_gp_sorted_out) =
+        if n_rows > 0 {
+            (
+                trace.get(cols.ram_gp_unsorted, 0),
+                trace.get(cols.ram_gp_unsorted, last),
+                trace.get(cols.ram_gp_sorted, 0),
+                trace.get(cols.ram_gp_sorted, last),
+            )
+        } else {
+            (BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO)
+        };
+
+    let (rom_s_in, rom_s_out) = if n_rows > 0 && steps > 0 {
+        let lvl_first = 0usize;
+        let lvl_last = last / steps;
+        let row_map_first = lvl_first * steps + crate::schedule::pos_map();
+        let row_final_last = lvl_last * steps + crate::schedule::pos_final();
+
+        if row_map_first < n_rows && row_final_last < n_rows {
+            let s_in = [
+                trace.get(cols.rom_s_index(0), row_map_first),
+                trace.get(cols.rom_s_index(1), row_map_first),
+                trace.get(cols.rom_s_index(2), row_map_first),
+            ];
+            let s_out = [
+                trace.get(cols.rom_s_index(0), row_final_last),
+                trace.get(cols.rom_s_index(1), row_final_last),
+                trace.get(cols.rom_s_index(2), row_final_last),
+            ];
+            (s_in, s_out)
+        } else {
+            ([BE::ZERO; 3], [BE::ZERO; 3])
+        }
+    } else {
+        ([BE::ZERO; 3], [BE::ZERO; 3])
+    };
+
     let t0 = std::time::Instant::now();
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         winterfell::verify::<
@@ -537,7 +831,17 @@ pub fn verify_proof(
             MerkleTree<PoseidonHasher<BE>>,
         >(
             proof,
-            crate::AirPublicInputs { core: pi, rom_acc },
+            crate::AirPublicInputs {
+                core: pi,
+                rom_acc,
+                pc_init,
+                ram_gp_unsorted_in,
+                ram_gp_unsorted_out,
+                ram_gp_sorted_in,
+                ram_gp_sorted_out,
+                rom_s_in,
+                rom_s_out,
+            },
             &acceptable,
         )
     }));
@@ -572,7 +876,74 @@ pub fn verify_proof(
     }
 }
 
-/// Produce a step-level proof wrapper for a single
+/// Fast verification using side-car boundary state (no trace rebuild).
+/// Caller must ensure that `boundaries` correspond to the concrete
+/// execution segment proved in `proof` under `pi`.
+#[tracing::instrument(
+    level = "info",
+    skip(proof, program, pi, boundaries, opts),
+    fields(
+        q = %opts.num_queries(),
+        blowup = %opts.blowup_factor(),
+        grind = %opts.grinding_factor(),
+    )
+)]
+pub fn verify_proof_fast(
+    proof: Proof,
+    program: &Program,
+    pi: PublicInputs,
+    boundaries: &VerifyBoundaries,
+    opts: &ProofOptions,
+    min_bits: u32,
+) -> Result<(), Error> {
+    pi.validate_flags()?;
+
+    let acceptable = winterfell::AcceptableOptions::MinConjecturedSecurity(min_bits);
+
+    let rom_acc = if pi.program_commitment.iter().any(|b| *b != 0) {
+        crate::romacc::rom_acc_from_program(program)
+    } else {
+        [BE::ZERO; 3]
+    };
+
+    tracing::info!(
+        target = "proof.verify",
+        q = %opts.num_queries(),
+        blowup = %opts.blowup_factor(),
+        grind = %opts.grinding_factor(),
+        "verify proof",
+    );
+
+    let air_pi = crate::AirPublicInputs {
+        core: pi,
+        rom_acc,
+        pc_init: crate::utils::fe_from_bytes_fold(&boundaries.pc_init),
+        ram_gp_unsorted_in: crate::utils::fe_from_bytes_fold(&boundaries.ram_gp_unsorted_in),
+        ram_gp_unsorted_out: crate::utils::fe_from_bytes_fold(&boundaries.ram_gp_unsorted_out),
+        ram_gp_sorted_in: crate::utils::fe_from_bytes_fold(&boundaries.ram_gp_sorted_in),
+        ram_gp_sorted_out: crate::utils::fe_from_bytes_fold(&boundaries.ram_gp_sorted_out),
+        rom_s_in: [
+            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_in[0]),
+            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_in[1]),
+            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_in[2]),
+        ],
+        rom_s_out: [
+            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_out[0]),
+            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_out[1]),
+            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_out[2]),
+        ],
+    };
+
+    winterfell::verify::<
+        ZkLispAir,
+        PoseidonHasher<BE>,
+        DefaultRandomCoin<PoseidonHasher<BE>>,
+        MerkleTree<PoseidonHasher<BE>>,
+    >(proof, air_pi, &acceptable)
+    .map_err(|e| Error::BackendSource(Box::new(e)))
+}
+
+/// Produce a step-level proof wrapper
 /// zk-lisp execution segment. This helper mirrors
 /// the configuration used by `WinterfellBackend` and
 /// returns a `ZlStepProof` ready to be used by
@@ -614,23 +985,33 @@ pub fn prove_step(
         winterfell::BatchingMethod::Linear,
     );
 
-    let trace = trace::build_trace(program, pub_inputs)?;
+    // Plan execution segments using the backend-specific
+    // planner. For now we expect a single full-trace
+    // segment; multi-segment support is exposed via
+    // `prove_program_steps`.
+    let segments = WinterfellSegmentPlanner::plan_segments(program, pub_inputs, opts)?;
+    if segments.is_empty() {
+        return Err(Error::PublicInputs(error::Error::InvalidInput(
+            "WinterfellSegmentPlanner returned no segments",
+        )));
+    }
+
+    if segments.len() != 1 {
+        return Err(Error::PublicInputs(error::Error::InvalidInput(
+            "prove_step currently supports exactly one segment; use prove_program_steps for multi-segment flows",
+        )));
+    }
+
+    let seg = segments[0];
+    let (trace, state_in_hash, state_out_hash) =
+        trace::build_segment_trace_with_state(program, pub_inputs, &seg, None)?;
+    // Use local [0, trace_len) indices for boundary bytes to match the sliced trace.
     let trace_len = trace.length();
+    let seg_local = zk_lisp_proof::segment::Segment::new(0, trace_len)?;
+    let boundary_bytes = compute_segment_boundary_bytes(&trace, &seg_local)?;
 
     let (num_partitions, hash_rate) = trace::select_partitions_for_trace(trace.width(), trace_len);
     let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
-
-    // Derive VM state hashes at the beginning
-    // and end of the segment. For single-segment
-    // proofs we bind the initial state to the map
-    // row of level 0 and the final state to the
-    // row where the VM output is observed.
-    let row0_map = schedule::pos_map();
-    let state_in_hash = utils::vm_state_hash_row(&trace, row0_map);
-
-    let (_out_reg, out_row) = utils::vm_output_from_trace(&trace);
-    let out_row_usize = (out_row as usize).min(trace_len.saturating_sub(1));
-    let state_out_hash = utils::vm_state_hash_row(&trace, out_row_usize);
 
     // Offline ROM accumulator from program
     let rom_acc = if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
@@ -643,6 +1024,13 @@ pub fn prove_step(
     let air_pi = crate::AirPublicInputs {
         core: pub_inputs.clone(),
         rom_acc,
+        pc_init: BE::ZERO,
+        ram_gp_unsorted_in: BE::ZERO,
+        ram_gp_unsorted_out: BE::ZERO,
+        ram_gp_sorted_in: BE::ZERO,
+        ram_gp_sorted_out: BE::ZERO,
+        rom_s_in: [BE::ZERO; 3],
+        rom_s_out: [BE::ZERO; 3],
     };
     let pi_len = air_pi.to_elements().len() as u32;
     let meta = StepMeta::from_env(trace_len, &wf_opts, min_bits, pi_len);
@@ -655,8 +1043,19 @@ pub fn prove_step(
         suite_id,
         meta,
         pub_inputs,
+        boundary_bytes.pc_init,
         state_in_hash,
         state_out_hash,
+        boundary_bytes.ram_gp_unsorted_in,
+        boundary_bytes.ram_gp_unsorted_out,
+        boundary_bytes.ram_gp_sorted_in,
+        boundary_bytes.ram_gp_sorted_out,
+        boundary_bytes.rom_s_in_0,
+        boundary_bytes.rom_s_in_1,
+        boundary_bytes.rom_s_in_2,
+        boundary_bytes.rom_s_out_0,
+        boundary_bytes.rom_s_out_1,
+        boundary_bytes.rom_s_out_2,
         proof,
     )?;
 
@@ -665,4 +1064,140 @@ pub fn prove_step(
         pi_core: pub_inputs.clone(),
         rom_acc,
     })
+}
+
+/// Prove a sequence of execution segments for a single
+/// zk-lisp program, returning one `ZlStepProof` per
+/// segment. The current implementation is restricted to
+/// a single full-trace segment; multi-segment support
+/// will extend `WinterfellSegmentPlanner` and
+/// `build_segment_trace_with_state` without changing
+/// this API.
+#[tracing::instrument(
+    level = "info",
+    skip(program, pub_inputs, opts),
+    fields(
+        q = %opts.queries,
+        blowup = %opts.blowup,
+        grind = %opts.grind,
+    )
+)]
+pub fn prove_program_steps(
+    program: &Program,
+    pub_inputs: &PublicInputs,
+    opts: &zk_lisp_proof::ProverOptions,
+) -> Result<Vec<ZlStepProof>, Error> {
+    let min_bits = opts.min_security_bits;
+    let blowup = if min_bits >= 128 && opts.blowup < 16 {
+        16
+    } else {
+        opts.blowup
+    };
+    let grind = if min_bits >= 128 && opts.grind < 16 {
+        16
+    } else {
+        opts.grind
+    };
+
+    let base_opts = ProofOptions::new(
+        opts.queries as usize,
+        blowup as usize,
+        grind,
+        winterfell::FieldExtension::None,
+        2,
+        1,
+        winterfell::BatchingMethod::Linear,
+        winterfell::BatchingMethod::Linear,
+    );
+
+    let segments = WinterfellSegmentPlanner::plan_segments(program, pub_inputs, opts)?;
+    if segments.is_empty() {
+        return Err(Error::PublicInputs(error::Error::InvalidInput(
+            "WinterfellSegmentPlanner returned no segments",
+        )));
+    }
+
+    // Build the full trace once
+    // and reuse slices per segment.
+    let full_trace = crate::trace::build_trace(program, pub_inputs)?;
+
+    let mut steps = Vec::with_capacity(segments.len());
+    let segments_len = segments.len();
+    let mut prev_state: Option<crate::trace::PrevState> = None;
+
+    for (i, seg) in segments.into_iter().enumerate() {
+        let (trace, state_in_hash, state_out_hash) =
+            crate::trace::build_segment_trace_with_state_without_full(
+                &full_trace,
+                &seg,
+                prev_state.as_ref(),
+            )?;
+        let trace_len = trace.length();
+
+        // Boundary bytes are derived from the segment-local trace; use a
+        // local segment [0, trace_len) rather than the global indices
+        // returned by the planner.
+        let seg_local = zk_lisp_proof::segment::Segment::new(0, trace_len)?;
+        let boundary_bytes = compute_segment_boundary_bytes(&trace, &seg_local)?;
+
+        let (num_partitions, hash_rate) =
+            crate::trace::select_partitions_for_trace(trace.width(), trace_len);
+        let wf_opts = base_opts.clone().with_partitions(num_partitions, hash_rate);
+
+        let rom_acc = if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            crate::romacc::rom_acc_from_program(program)
+        } else {
+            [BE::ZERO; 3]
+        };
+
+        let air_pi = crate::AirPublicInputs {
+            core: pub_inputs.clone(),
+            rom_acc,
+            pc_init: BE::ZERO,
+            ram_gp_unsorted_in: BE::ZERO,
+            ram_gp_unsorted_out: BE::ZERO,
+            ram_gp_sorted_in: BE::ZERO,
+            ram_gp_sorted_out: BE::ZERO,
+            rom_s_in: [BE::ZERO; 3],
+            rom_s_out: [BE::ZERO; 3],
+        };
+        let pi_len = air_pi.to_elements().len() as u32;
+        let meta = StepMeta::from_env(trace_len, &wf_opts, min_bits, pi_len);
+        let suite_id = pub_inputs.program_commitment;
+
+        let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc);
+        let proof = prover.prove(trace)?;
+
+        let zl1_proof = crate::zl1::format::Proof::new_multi_segment(
+            suite_id,
+            meta,
+            pub_inputs,
+            i as u32,
+            segments_len as u32,
+            boundary_bytes.pc_init,
+            state_in_hash,
+            state_out_hash,
+            boundary_bytes.ram_gp_unsorted_in,
+            boundary_bytes.ram_gp_unsorted_out,
+            boundary_bytes.ram_gp_sorted_in,
+            boundary_bytes.ram_gp_sorted_out,
+            boundary_bytes.rom_s_in_0,
+            boundary_bytes.rom_s_in_1,
+            boundary_bytes.rom_s_in_2,
+            boundary_bytes.rom_s_out_0,
+            boundary_bytes.rom_s_out_1,
+            boundary_bytes.rom_s_out_2,
+            proof,
+        )?;
+
+        steps.push(ZlStepProof {
+            proof: zl1_proof,
+            pi_core: pub_inputs.clone(),
+            rom_acc,
+        });
+
+        prev_state = Some(crate::trace::PrevState { state_out_hash });
+    }
+
+    Ok(steps)
 }

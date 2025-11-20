@@ -62,6 +62,12 @@ fn build_recursion_public_single_step(
         program_commitment: pi.program_commitment,
         state_initial: step.state_in_hash(),
         state_final: step.state_out_hash(),
+        ram_gp_unsorted_initial: agg_pi.ram_gp_unsorted_initial,
+        ram_gp_unsorted_final: agg_pi.ram_gp_unsorted_final,
+        ram_gp_sorted_initial: agg_pi.ram_gp_sorted_initial,
+        ram_gp_sorted_final: agg_pi.ram_gp_sorted_final,
+        rom_s_initial: agg_pi.rom_s_initial,
+        rom_s_final: agg_pi.rom_s_final,
         prev_digest,
         children_root: agg_pi.children_root,
         children_count: agg_pi.children_count,
@@ -94,7 +100,15 @@ fn recursion_two_step_chain_prev_digest_tamper_rejected() {
 
     // Build a valid two-step recursion chain.
     let rc_pub1 = build_recursion_public_single_step(&pi, &step1, &agg_pi1, [0u8; 32]);
-    let rc_pub2 = build_recursion_public_single_step(&pi, &step2, &agg_pi2, rc_digest1);
+    let mut rc_pub2 = build_recursion_public_single_step(&pi, &step2, &agg_pi2, rc_digest1);
+
+    // Enforce RAM/ROM chaining invariants at the DSL layer:
+    // second step must start from the global boundary state
+    // produced by the first step.
+    rc_pub2.state_initial = rc_pub1.state_final;
+    rc_pub2.ram_gp_unsorted_initial = rc_pub1.ram_gp_unsorted_final;
+    rc_pub2.ram_gp_sorted_initial = rc_pub1.ram_gp_sorted_final;
+    rc_pub2.rom_s_initial = rc_pub1.rom_s_final;
 
     let chain_ok = std::iter::once((
         rc_proof1.clone(),
@@ -161,7 +175,14 @@ fn recursion_two_step_chain_aggregates_tamper_rejected() {
 
     // Build a valid chain first.
     let rc_pub1 = build_recursion_public_single_step(&pi, &step1, &agg_pi1, [0u8; 32]);
-    let rc_pub2 = build_recursion_public_single_step(&pi, &step2, &agg_pi2, rc_digest1);
+    let mut rc_pub2 = build_recursion_public_single_step(&pi, &step2, &agg_pi2, rc_digest1);
+
+    // Enforce RAM/ROM chaining invariants at the DSL layer
+    // for the second step.
+    rc_pub2.state_initial = rc_pub1.state_final;
+    rc_pub2.ram_gp_unsorted_initial = rc_pub1.ram_gp_unsorted_final;
+    rc_pub2.ram_gp_sorted_initial = rc_pub1.ram_gp_sorted_final;
+    rc_pub2.rom_s_initial = rc_pub1.rom_s_final;
 
     let chain_ok = std::iter::once((
         rc_proof1.clone(),

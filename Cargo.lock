@@ -1365,6 +1365,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tracing",
+ "tracing-subscriber",
  "winter-utils",
  "winterfell",
  "zk-lisp-compiler",

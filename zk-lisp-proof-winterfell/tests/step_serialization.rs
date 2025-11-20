@@ -13,7 +13,7 @@ use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::error;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::prove::prove_step;
+use zk_lisp_proof_winterfell::prove::{prove_program_steps, prove_step};
 use zk_lisp_proof_winterfell::zl_step::ZlStepProof;
 
 fn make_step_opts() -> ProverOptions {
@@ -48,7 +48,21 @@ fn step_proof_roundtrip_to_from_bytes_preserves_digest_and_meta() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
+    // Multi-step API must be consistent with single-step
+    // API for the current single-segment planner.
+    let steps =
+        prove_program_steps(&program, &pi, &opts).expect("prove_program_steps must succeed");
+    assert_eq!(steps.len(), 1);
+
+    let step_from_vec = &steps[0];
+    let program = build_step_program();
+    let pi = build_step_public_inputs(&program);
+    let opts = make_step_opts();
+
     let step = prove_step(&program, &pi, &opts).expect("step proof must succeed");
+
+    // Ensure prove_program_steps agrees with prove_step.
+    assert_eq!(step_from_vec.digest(), step.digest());
 
     let digest = step.digest();
     let state_in = step.state_in_hash();

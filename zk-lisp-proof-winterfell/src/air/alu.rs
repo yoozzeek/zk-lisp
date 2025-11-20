@@ -375,7 +375,9 @@ mod tests {
             rom_mds: mds3_box,
             rom_w_enc0: w_enc0_box,
             rom_w_enc1: w_enc1_box,
-            rom_acc: [BE::ZERO; 3],
+            rom_s_initial: [BE::ZERO; 3],
+            rom_s_final: [BE::ZERO; 3],
+            pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
         };

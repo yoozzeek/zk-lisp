@@ -17,3 +17,6 @@ serde_json = { workspace = true }
 comfy-table = { workspace = true }
 arrayvec = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }

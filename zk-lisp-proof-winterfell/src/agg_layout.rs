@@ -87,6 +87,22 @@ pub struct AggColumns {
     /// `children_count` in public inputs.
     pub child_count_acc: usize,
 
+    /// Error scalars enforcing VM / RAM / ROM
+    /// boundary chains across children. These
+    /// columns are populated by the trace
+    /// builder with differences between
+    /// advertised global boundary values in
+    /// `AggAirPublicInputs` and per-child
+    /// boundaries exposed via `ZlChildCompact`.
+    /// The aggregation AIR requires them to be
+    /// identically zero.
+    pub vm_chain_err: usize,
+    pub ram_u_chain_err: usize,
+    pub ram_s_chain_err: usize,
+    pub rom_chain_err_0: usize,
+    pub rom_chain_err_1: usize,
+    pub rom_chain_err_2: usize,
+
     width: usize,
 }
 
@@ -129,7 +145,14 @@ impl AggColumns {
         let v_units_child = v_units_acc + 1;
         let child_count_acc = v_units_child + 1;
 
-        let width = child_count_acc + 1;
+        let vm_chain_err = child_count_acc + 1;
+        let ram_u_chain_err = vm_chain_err + 1;
+        let ram_s_chain_err = ram_u_chain_err + 1;
+        let rom_chain_err_0 = ram_s_chain_err + 1;
+        let rom_chain_err_1 = rom_chain_err_0 + 1;
+        let rom_chain_err_2 = rom_chain_err_1 + 1;
+
+        let width = rom_chain_err_2 + 1;
 
         Self {
             ok,
@@ -157,6 +180,12 @@ impl AggColumns {
             v_units_acc,
             v_units_child,
             child_count_acc,
+            vm_chain_err,
+            ram_u_chain_err,
+            ram_s_chain_err,
+            rom_chain_err_0,
+            rom_chain_err_1,
+            rom_chain_err_2,
             width,
         }
     }

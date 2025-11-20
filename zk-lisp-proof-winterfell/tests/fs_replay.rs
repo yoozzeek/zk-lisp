@@ -120,9 +120,33 @@ fn fs_replay_matches_reference_coin() {
     // Rebuild AIR public inputs and
     // seed the public coin the same
     // way as in the verifier.
+    let pi_zl1 = &step.proof.pi;
     let air_pi = zk_lisp_proof_winterfell::AirPublicInputs {
         core: step.pi_core.clone(),
         rom_acc: step.rom_acc,
+        pc_init: zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.pc_init),
+        ram_gp_unsorted_in: zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(
+            &pi_zl1.ram_gp_unsorted_in,
+        ),
+        ram_gp_unsorted_out: zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(
+            &pi_zl1.ram_gp_unsorted_out,
+        ),
+        ram_gp_sorted_in: zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(
+            &pi_zl1.ram_gp_sorted_in,
+        ),
+        ram_gp_sorted_out: zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(
+            &pi_zl1.ram_gp_sorted_out,
+        ),
+        rom_s_in: [
+            zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.rom_s_in_0),
+            zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.rom_s_in_1),
+            zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.rom_s_in_2),
+        ],
+        rom_s_out: [
+            zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_0),
+            zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_1),
+            zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_2),
+        ],
     };
 
     let mut seed_elems = wf_proof.context.to_elements();

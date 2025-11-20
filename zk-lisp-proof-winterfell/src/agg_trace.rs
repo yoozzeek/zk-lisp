@@ -326,6 +326,57 @@ fn build_agg_trace_core(
         }
     }
 
+    // Segment sanity: all children must advertise valid segment indices
+    // and a contiguous chain in the batch when `segments_total > 1`.
+    let mut totals: Option<u32> = None;
+    let mut indices: Vec<u32> = Vec::with_capacity(n_children);
+
+    for child in children {
+        if child.segments_total == 0 {
+            return Err(error::Error::InvalidInput(
+                "AggTrace requires child.segments_total > 0",
+            ));
+        }
+        if child.segment_index >= child.segments_total {
+            return Err(error::Error::InvalidInput(
+                "AggTrace segment_index must satisfy 0 <= idx < segments_total",
+            ));
+        }
+
+        match totals {
+            None => totals = Some(child.segments_total),
+            Some(t) => {
+                if child.segments_total != t {
+                    return Err(error::Error::InvalidInput(
+                        "AggTrace requires a uniform segments_total across children",
+                    ));
+                }
+            }
+        }
+
+        indices.push(child.segment_index);
+    }
+
+    if let Some(t) = totals {
+        if t > 1 {
+            if t as usize != n_children {
+                return Err(error::Error::InvalidInput(
+                    "AggTrace requires a complete contiguous segment chain in batch",
+                ));
+            }
+
+            indices.sort_unstable();
+
+            for (i, idx) in indices.iter().enumerate() {
+                if *idx != i as u32 {
+                    return Err(error::Error::InvalidInput(
+                        "AggTrace segment indices must form [0..children_count) without gaps",
+                    ));
+                }
+            }
+        }
+    }
+
     // Enforce canonical children_root
     let children_root_expected = children_root_from_compact(&agg_pi.suite_id, children);
     if children_root_expected != agg_pi.children_root {
@@ -392,11 +443,121 @@ fn build_agg_trace_core(
     let fri_v1_sum = BE::ZERO;
     let fri_vnext_sum = BE::ZERO;
 
+    // Decode global boundary state from AggAirPublicInputs once
+    // so that VM / RAM / ROM chain checks can be expressed as
+    // simple differences per child.
+    let vm_initial_fe = utils::fold_bytes32_to_fe(&agg_pi.vm_state_initial);
+    let vm_final_fe = utils::fold_bytes32_to_fe(&agg_pi.vm_state_final);
+    let ram_u_initial_fe = utils::fold_bytes32_to_fe(&agg_pi.ram_gp_unsorted_initial);
+    let ram_u_final_fe = utils::fold_bytes32_to_fe(&agg_pi.ram_gp_unsorted_final);
+    let ram_s_initial_fe = utils::fold_bytes32_to_fe(&agg_pi.ram_gp_sorted_initial);
+    let ram_s_final_fe = utils::fold_bytes32_to_fe(&agg_pi.ram_gp_sorted_final);
+
+    let rom_initial_fe: [BE; 3] = [
+        utils::fold_bytes32_to_fe(&agg_pi.rom_s_initial[0]),
+        utils::fold_bytes32_to_fe(&agg_pi.rom_s_initial[1]),
+        utils::fold_bytes32_to_fe(&agg_pi.rom_s_initial[2]),
+    ];
+    let rom_final_fe: [BE; 3] = [
+        utils::fold_bytes32_to_fe(&agg_pi.rom_s_final[0]),
+        utils::fold_bytes32_to_fe(&agg_pi.rom_s_final[1]),
+        utils::fold_bytes32_to_fe(&agg_pi.rom_s_final[2]),
+    ];
+
+    let mut prev_vm_out: Option<BE> = None;
+    let mut prev_ram_u_out: Option<BE> = None;
+    let mut prev_ram_s_out: Option<BE> = None;
+    let mut prev_rom_out: Option<[BE; 3]> = None;
+
     let mut child_start_rows = Vec::with_capacity(n_children);
 
     for (i, child) in children.iter().enumerate() {
         let m = agg_pi.children_ms[i] as usize;
         let v_child_fe = BE::from(child.meta.v_units);
+
+        // Decode per-child boundary state from ZlChildCompact.
+        let vm_in_fe = utils::fold_bytes32_to_fe(&child.state_in_hash);
+        let vm_out_fe = utils::fold_bytes32_to_fe(&child.state_out_hash);
+
+        let ram_u_in_fe = utils::fold_bytes32_to_fe(&child.ram_gp_unsorted_in);
+        let ram_u_out_fe = utils::fold_bytes32_to_fe(&child.ram_gp_unsorted_out);
+        let ram_s_in_fe = utils::fold_bytes32_to_fe(&child.ram_gp_sorted_in);
+        let ram_s_out_fe = utils::fold_bytes32_to_fe(&child.ram_gp_sorted_out);
+
+        let rom_in_fe: [BE; 3] = [
+            utils::fold_bytes32_to_fe(&child.rom_s_in[0]),
+            utils::fold_bytes32_to_fe(&child.rom_s_in[1]),
+            utils::fold_bytes32_to_fe(&child.rom_s_in[2]),
+        ];
+        let rom_out_fe: [BE; 3] = [
+            utils::fold_bytes32_to_fe(&child.rom_s_out[0]),
+            utils::fold_bytes32_to_fe(&child.rom_s_out[1]),
+            utils::fold_bytes32_to_fe(&child.rom_s_out[2]),
+        ];
+
+        // Compute chain errors for this child relative to the
+        // global boundary state and previous children. These
+        // scalars are written into dedicated columns and the
+        // aggregation AIR requires them to be identically zero.
+        let is_first_child = i == 0;
+        let is_last_child = i + 1 == n_children;
+
+        let mut vm_err = if is_first_child {
+            vm_in_fe - vm_initial_fe
+        } else {
+            match prev_vm_out {
+                Some(prev) => vm_in_fe - prev,
+                None => vm_in_fe - vm_initial_fe,
+            }
+        };
+
+        let mut ram_u_err = if is_first_child {
+            ram_u_in_fe - ram_u_initial_fe
+        } else {
+            match prev_ram_u_out {
+                Some(prev) => ram_u_in_fe - prev,
+                None => ram_u_in_fe - ram_u_initial_fe,
+            }
+        };
+
+        let mut ram_s_err = if is_first_child {
+            ram_s_in_fe - ram_s_initial_fe
+        } else {
+            match prev_ram_s_out {
+                Some(prev) => ram_s_in_fe - prev,
+                None => ram_s_in_fe - ram_s_initial_fe,
+            }
+        };
+
+        let mut rom_err: [BE; 3] = if is_first_child {
+            [
+                rom_in_fe[0] - rom_initial_fe[0],
+                rom_in_fe[1] - rom_initial_fe[1],
+                rom_in_fe[2] - rom_initial_fe[2],
+            ]
+        } else {
+            match prev_rom_out {
+                Some(prev) => [
+                    rom_in_fe[0] - prev[0],
+                    rom_in_fe[1] - prev[1],
+                    rom_in_fe[2] - prev[2],
+                ],
+                None => [
+                    rom_in_fe[0] - rom_initial_fe[0],
+                    rom_in_fe[1] - rom_initial_fe[1],
+                    rom_in_fe[2] - rom_initial_fe[2],
+                ],
+            }
+        };
+
+        if is_last_child {
+            vm_err += vm_out_fe - vm_final_fe;
+            ram_u_err += ram_u_out_fe - ram_u_final_fe;
+            ram_s_err += ram_s_out_fe - ram_s_final_fe;
+            rom_err[0] += rom_out_fe[0] - rom_final_fe[0];
+            rom_err[1] += rom_out_fe[1] - rom_final_fe[1];
+            rom_err[2] += rom_out_fe[2] - rom_final_fe[2];
+        }
 
         // Aggregate Merkle root errors for trace and constraint
         // commitments for this child. When Fiat–Shamir challenges
@@ -474,6 +635,12 @@ fn build_agg_trace_core(
                 trace.set(cols.child_count_acc, cur_row, child_count_acc);
                 trace.set(cols.trace_root_err, cur_row, trace_root_err_fe);
                 trace.set(cols.constraint_root_err, cur_row, constraint_root_err_fe);
+                trace.set(cols.vm_chain_err, cur_row, vm_err);
+                trace.set(cols.ram_u_chain_err, cur_row, ram_u_err);
+                trace.set(cols.ram_s_chain_err, cur_row, ram_s_err);
+                trace.set(cols.rom_chain_err_0, cur_row, rom_err[0]);
+                trace.set(cols.rom_chain_err_1, cur_row, rom_err[1]);
+                trace.set(cols.rom_chain_err_2, cur_row, rom_err[2]);
 
                 trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
                 trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
@@ -495,6 +662,12 @@ fn build_agg_trace_core(
                 trace.set(cols.child_count_acc, cur_row, child_count_acc);
                 trace.set(cols.trace_root_err, cur_row, BE::ZERO);
                 trace.set(cols.constraint_root_err, cur_row, BE::ZERO);
+                trace.set(cols.vm_chain_err, cur_row, vm_err);
+                trace.set(cols.ram_u_chain_err, cur_row, ram_u_err);
+                trace.set(cols.ram_s_chain_err, cur_row, ram_s_err);
+                trace.set(cols.rom_chain_err_0, cur_row, rom_err[0]);
+                trace.set(cols.rom_chain_err_1, cur_row, rom_err[1]);
+                trace.set(cols.rom_chain_err_2, cur_row, rom_err[2]);
 
                 trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
                 trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
@@ -514,10 +687,24 @@ fn build_agg_trace_core(
         }
 
         row += m;
+
+        // Update previous-boundary trackers for the next child.
+        prev_vm_out = Some(vm_out_fe);
+        prev_ram_u_out = Some(ram_u_out_fe);
+        prev_ram_s_out = Some(ram_s_out_fe);
+        prev_rom_out = Some(rom_out_fe);
     }
 
-    // Padding rows (if any): keep accumulator constant and disable
-    // seg_first, v_units_child and trace_root_err / fri_root_err.
+    // Padding rows (if any): keep accumulator and chain error
+    // scalars constant and disable seg_first, v_units_child and
+    // trace_root_err / fri_root_err.
+    let pad_vm_err = BE::ZERO;
+    let pad_ram_u_err = BE::ZERO;
+    let pad_ram_s_err = BE::ZERO;
+    let pad_rom_err_0 = BE::ZERO;
+    let pad_rom_err_1 = BE::ZERO;
+    let pad_rom_err_2 = BE::ZERO;
+
     for cur_row in row..n_rows {
         trace.set(cols.seg_first, cur_row, BE::ZERO);
         trace.set(cols.v_units_child, cur_row, BE::ZERO);
@@ -525,6 +712,12 @@ fn build_agg_trace_core(
         trace.set(cols.child_count_acc, cur_row, child_count_acc);
         trace.set(cols.trace_root_err, cur_row, BE::ZERO);
         trace.set(cols.constraint_root_err, cur_row, BE::ZERO);
+        trace.set(cols.vm_chain_err, cur_row, pad_vm_err);
+        trace.set(cols.ram_u_chain_err, cur_row, pad_ram_u_err);
+        trace.set(cols.ram_s_chain_err, cur_row, pad_ram_s_err);
+        trace.set(cols.rom_chain_err_0, cur_row, pad_rom_err_0);
+        trace.set(cols.rom_chain_err_1, cur_row, pad_rom_err_1);
+        trace.set(cols.rom_chain_err_2, cur_row, pad_rom_err_2);
 
         trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
         trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
