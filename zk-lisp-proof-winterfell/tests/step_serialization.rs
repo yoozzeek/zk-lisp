@@ -22,6 +22,7 @@ fn make_step_opts() -> ProverOptions {
         blowup: 8,
         grind: 8,
         queries: 8,
+        max_segment_rows: None,
     }
 }
 

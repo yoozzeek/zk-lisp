@@ -8,14 +8,6 @@
 //   portions of it. See the NOTICE file for details.
 
 //! Winterfell-specific execution segment planner.
-//!
-//! This module defines `WinterfellSegmentPlanner`, a backend-specific
-//! implementation which partitions the base execution trace into
-//! level-aligned segments. For small programs we keep a single
-//! segment covering the full trace; for larger programs we split the
-//! trace into multiple segments whose lengths are bounded by an
-//! internal policy constant. Segment boundaries are always aligned to
-//! full VM "levels" (multiples of `STEPS_PER_LEVEL_P2` rows).
 
 use zk_lisp_proof::error;
 use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
@@ -25,43 +17,45 @@ use zk_lisp_proof::{ProverOptions, ZkBackend};
 use crate::WinterfellBackend;
 use crate::layout::STEPS_PER_LEVEL_P2;
 
-/// Maximum number of base-trace rows per execution segment. Programs
-/// whose full trace length does not exceed this value are kept as a
-const MAX_SEGMENT_ROWS: usize = 1 << 16;
+/// Maximum number of base-trace rows per execution segment.
+const MAX_SEGMENT_ROWS: usize = 1 << 10;
 
-/// Segment planner for the Winterfell backend. For small programs this
-/// returns a single segment covering the entire execution trace. For
+/// Segment planner for the Winterfell backend.
 pub struct WinterfellSegmentPlanner;
 
 impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
     fn plan_segments(
         program: &<WinterfellBackend as ZkBackend>::Program,
         _pub_inputs: &CorePublicInputs,
-        _opts: &ProverOptions,
+        opts: &ProverOptions,
     ) -> error::Result<Vec<Segment>> {
-        let levels = program.ops.len();
-        let total_levels = levels.next_power_of_two().max(1);
+        let base_levels = program.ops.len();
+        let total_levels = base_levels.next_power_of_two().max(1);
         let steps = STEPS_PER_LEVEL_P2;
-        let n_rows = total_levels
+
+        let n_rows_full = total_levels
             .checked_mul(steps)
             .ok_or(error::Error::InvalidInput(
                 "WinterfellSegmentPlanner trace length overflow",
             ))?;
 
-        let max_rows = std::env::var("ZKL_MAX_SEGMENT_ROWS")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(MAX_SEGMENT_ROWS);
+        let max_rows = opts.max_segment_rows.unwrap_or_else(|| {
+            std::env::var("ZKL_MAX_SEGMENT_ROWS")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(MAX_SEGMENT_ROWS)
+        });
 
-        if n_rows <= max_rows {
-            // Single well-formed segment covering the full base trace.
-            let seg = Segment::new(0, n_rows)?;
+        // Small traces fit into a single segment.
+        if n_rows_full <= max_rows {
+            let seg = Segment::new(0, n_rows_full)?;
 
             tracing::debug!(
                 target = "planner",
-                rows=%n_rows,
-                segments=1,
-                max_rows=%max_rows,
+                rows = %n_rows_full,
+                segments = 1,
+                max_rows = %max_rows,
+                blocks = %program.blocks.len(),
                 "plan_segments single segment",
             );
 
@@ -70,12 +64,118 @@ impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
 
         let max_levels_per_segment = (max_rows / steps).max(1);
 
-        let mut segments = Vec::new();
-        let mut lvl_start = 0usize;
-        let mut seg_count = 0usize;
+        // Build a level-partition [0, total_levels) expressed
+        // as a sequence of disjoint ranges.
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
 
-        while lvl_start < total_levels {
-            let lvl_end = core::cmp::min(total_levels, lvl_start + max_levels_per_segment);
+        if program.blocks.is_empty() {
+            if base_levels > 0 {
+                ranges.push((0, base_levels));
+            }
+        } else {
+            // Collect block ranges and sort by level_start
+            let mut block_ranges: Vec<(usize, usize)> = Vec::with_capacity(program.blocks.len());
+            for b in &program.blocks {
+                let start = b.level_start as usize;
+                let len = b.level_len as usize;
+
+                if len == 0 {
+                    continue;
+                }
+
+                let end = start.checked_add(len).ok_or(error::Error::InvalidInput(
+                    "WinterfellSegmentPlanner block level overflow",
+                ))?;
+
+                if end > base_levels {
+                    return Err(error::Error::InvalidInput(
+                        "WinterfellSegmentPlanner block out of bounds for program levels",
+                    ));
+                }
+
+                block_ranges.push((start, end));
+            }
+
+            if block_ranges.is_empty() {
+                if base_levels > 0 {
+                    ranges.push((0, base_levels));
+                }
+            } else {
+                block_ranges.sort_by_key(|(s, _)| *s);
+
+                let mut cursor = 0usize;
+                for (bs, be) in block_ranges {
+                    // Gap before this block, if any
+                    if cursor < bs {
+                        ranges.push((cursor, bs));
+                    }
+
+                    // Merge with previous range when overlapping
+                    // or adjacent; otherwise append a new range.
+                    if let Some(last) = ranges.last_mut() {
+                        if bs <= last.1 {
+                            last.1 = last.1.max(be);
+                        } else {
+                            ranges.push((bs, be));
+                        }
+                    } else {
+                        ranges.push((bs, be));
+                    }
+
+                    cursor = ranges.last().unwrap().1;
+                }
+
+                if cursor < base_levels {
+                    ranges.push((cursor, base_levels));
+                }
+            }
+        }
+
+        // Append padded tail as a final range when
+        // total_levels exceeds the number of code levels.
+        if base_levels < total_levels {
+            ranges.push((base_levels, total_levels));
+        }
+
+        // Walk the level ranges and emit level-aligned segments
+        // whose length does not exceed max_levels_per_segment.
+        let mut segments_levels: Vec<(usize, usize)> = Vec::new();
+        let mut cur_start: Option<usize> = None;
+        let mut cur_end: usize = 0;
+
+        for (range_start, range_end) in ranges {
+            let mut lvl = range_start;
+            while lvl < range_end {
+                if cur_start.is_none() {
+                    cur_start = Some(lvl);
+                    cur_end = lvl;
+                }
+
+                let taken_so_far = cur_end - cur_start.unwrap();
+                let remaining_seg = max_levels_per_segment - taken_so_far;
+                let remaining_range = range_end - lvl;
+                let take = remaining_seg.min(remaining_range);
+
+                cur_end += take;
+                lvl += take;
+
+                if (cur_end - cur_start.unwrap()) == max_levels_per_segment {
+                    segments_levels.push((cur_start.unwrap(), cur_end));
+                    cur_start = None;
+                    cur_end = 0;
+                }
+            }
+        }
+
+        if let Some(start) = cur_start {
+            if start < cur_end {
+                segments_levels.push((start, cur_end));
+            }
+        }
+
+        // Convert level segments into row segments
+        let mut segments = Vec::with_capacity(segments_levels.len());
+        for (lvl_start, lvl_end) in &segments_levels {
             let r_start = lvl_start
                 .checked_mul(steps)
                 .ok_or(error::Error::InvalidInput(
@@ -88,15 +188,23 @@ impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
                 ))?;
 
             segments.push(Segment::new(r_start, r_end)?);
-            seg_count += 1;
-            lvl_start = lvl_end;
+        }
+
+        // Segments must cover [0, n_rows_full).
+        if let Some(last) = segments.last() {
+            if last.r_end != n_rows_full {
+                return Err(error::Error::InvalidInput(
+                    "WinterfellSegmentPlanner produced segments not covering full trace length",
+                ));
+            }
         }
 
         tracing::debug!(
             target = "planner",
-            rows=%n_rows,
-            segments=%seg_count,
-            max_rows=%max_rows,
+            rows = %n_rows_full,
+            segments = %segments.len(),
+            max_rows = %max_rows,
+            blocks = %program.blocks.len(),
             "plan_segments multi segment",
         );
 

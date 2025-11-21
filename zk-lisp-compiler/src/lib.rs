@@ -56,6 +56,12 @@ pub enum Error {
 }
 
 #[derive(Clone, Debug)]
+pub struct BlockMeta {
+    pub level_start: u32,
+    pub level_len: u32,
+}
+
+#[derive(Clone, Debug)]
 pub struct Program {
     pub commitment: [u8; 32],
     pub ops: Vec<Op>,
@@ -64,6 +70,7 @@ pub struct Program {
     pub out_row: u32,
     pub compiler_metrics: CompilerMetrics,
     pub type_schemas: TypeSchemas,
+    pub blocks: Vec<BlockMeta>,
 }
 
 impl Program {
@@ -73,6 +80,7 @@ impl Program {
         reg_count: u8,
         compiler_metrics: CompilerMetrics,
         type_schemas: TypeSchemas,
+        blocks: Vec<BlockMeta>,
     ) -> Self {
         Self {
             ops,
@@ -82,6 +90,7 @@ impl Program {
             out_row: 0,
             compiler_metrics,
             type_schemas,
+            blocks,
         }
     }
 }
@@ -376,7 +385,7 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
 }
 
 pub fn is_sym_start(c: char) -> bool {
-    matches!(c, 'a'..='z' | 'A'..='Z' | '_' | '+' | '-' | '*' | '=' | '<' | '>' )
+    matches!(c, 'a'..='z' | 'A'..='Z' | '_' | '+' | '-' | '*' | '=' | '<' | '>' | ':' )
 }
 
 pub fn is_sym_continue(c: char) -> bool {
@@ -478,5 +487,76 @@ mod tests {
         let p = compile_str(src).unwrap();
         // Ensure some ops were generated (ALU + function structure)
         assert!(!p.ops.is_empty());
+    }
+
+    #[test]
+    fn program_blocks_default_single_block() {
+        let src = "(def (main) 0) (main)";
+        let p = compile_str(src).unwrap();
+
+        assert_eq!(p.blocks.len(), 1);
+
+        let b = &p.blocks[0];
+        assert_eq!(b.level_start, 0);
+        assert_eq!(b.level_len, p.ops.len() as u32);
+    }
+
+    #[test]
+    fn program_blocks_from_block_form() {
+        let src = "
+            (def (main)
+              (block (let ((a 1)) a))
+              (block (let ((b 2)) b)))
+            (main)
+        ";
+
+        let p = compile_str(src).unwrap();
+        assert!(!p.ops.is_empty());
+        assert!(!p.blocks.is_empty());
+
+        // Blocks must be non-empty
+        // and ordered by level_start.
+        let mut last_start = 0u32;
+        for (i, b) in p.blocks.iter().enumerate() {
+            assert!(b.level_len > 0, "block {i} must be non-empty");
+
+            if i == 0 {
+                last_start = b.level_start;
+            } else {
+                assert!(b.level_start >= last_start);
+                last_start = b.level_start;
+            }
+
+            let end = b.level_start + b.level_len;
+            assert!(end <= p.ops.len() as u32);
+        }
+    }
+
+    #[test]
+    fn loop_without_recur_compiles() {
+        let src = "
+            (def (main)
+              (loop :max 3 ((x 1)) x))
+            (main)
+        ";
+
+        let p = compile_str(src).unwrap();
+        assert!(!p.ops.is_empty());
+        assert!(!p.blocks.is_empty());
+    }
+
+    #[test]
+    fn loop_with_recur_compiles() {
+        let src = "
+            (def (main)
+              (loop :max 3 ((x 1))
+                x
+                (recur (+ x 1))))
+            (main)
+        ";
+
+        let p = compile_str(src).unwrap();
+        assert!(!p.ops.is_empty());
+        assert!(!p.blocks.is_empty());
     }
 }

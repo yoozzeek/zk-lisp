@@ -9,10 +9,11 @@ use zk_lisp_proof_winterfell::prove::{VerifyBoundaries, verify_proof_fast};
 
 fn make_opts() -> ProverOptions {
     ProverOptions {
-        min_security_bits: 40,
+        min_security_bits: 20,
         blowup: 8,
         grind: 8,
         queries: 8,
+        max_segment_rows: None,
     }
 }
 

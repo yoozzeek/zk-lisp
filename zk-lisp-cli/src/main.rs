@@ -253,6 +253,7 @@ fn proof_opts(queries: u8, blowup: u8, grind: u32, security_bits: Option<u32>) -
         blowup,
         grind,
         min_security_bits,
+        max_segment_rows: None,
     }
 }
 
@@ -756,7 +757,8 @@ fn cmd_verify(
         || rc_pi.program_commitment != pi_cli.program_commitment
     {
         let err = error::Error::InvalidInput(
-            "agg proof program (program_id/program_commitment) does not match compiled program".into(),
+            "agg proof program (program_id/program_commitment) does not match compiled program"
+                .into(),
         );
 
         return Err(CliError::Verify(prove::Error::PublicInputs(err)));

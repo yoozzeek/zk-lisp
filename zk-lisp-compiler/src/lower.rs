@@ -311,6 +311,9 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                         Ok(RVal::Imm(0))
                     }
                     "begin" => lower_begin(cx, tail),
+                    "block" => lower_block(cx, tail),
+                    "loop" => lower_loop(cx, tail),
+                    "recur" => Err(Error::InvalidForm("recur outside loop".into())),
                     _ => lower_call(cx, s, tail),
                 }
             }
@@ -2498,6 +2501,156 @@ fn lower_typed_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     Ok(())
 }
 
+fn lower_block(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    // (block expr1 expr2 ...) => like `begin`, but
+    // also records the VM level range covered by the
+    // lowered body as a logical block in the program.
+    if rest.is_empty() {
+        return Err(Error::InvalidForm("block".into()));
+    }
+
+    let lvl_start = cx.builder.current_level();
+    let res = lower_begin(cx, rest)?;
+    let lvl_end = cx.builder.current_level();
+
+    if lvl_end > lvl_start {
+        cx.builder.push_block(lvl_start, lvl_end)?;
+    }
+
+    Ok(res)
+}
+
+fn lower_loop(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    // (loop :max N ((v1 init1) ... (vk initk)) body...)
+    // Bounded, unconditional tail-recursive loop.
+    if rest.len() < 3 {
+        return Err(Error::InvalidForm("loop".into()));
+    }
+
+    // Expect :max keyword
+    let max_kw = match &rest[0] {
+        Ast::Atom(Atom::Sym(s)) => s,
+        _ => return Err(Error::InvalidForm("loop: expected :max".into())),
+    };
+
+    if max_kw != ":max" {
+        return Err(Error::InvalidForm("loop: expected :max keyword".into()));
+    }
+
+    // Static bound N
+    let max_n = match &rest[1] {
+        Ast::Atom(Atom::Int(n)) => *n as usize,
+        _ => {
+            return Err(Error::InvalidForm(
+                "loop: :max must be integer literal".into(),
+            ));
+        }
+    };
+
+    if max_n == 0 {
+        return Err(Error::InvalidForm("loop: :max must be >= 1".into()));
+    }
+
+    let binds_ast = match &rest[2] {
+        Ast::List(items) => items,
+        _ => return Err(Error::InvalidForm("loop: expected binding list".into())),
+    };
+
+    if binds_ast.is_empty() {
+        return Err(Error::InvalidForm("loop: empty binding list".into()));
+    }
+
+    let mut bind_names: Vec<String> = Vec::with_capacity(binds_ast.len());
+    let mut bind_inits: Vec<Ast> = Vec::with_capacity(binds_ast.len());
+
+    for b in binds_ast {
+        match b {
+            Ast::List(kv) if kv.len() == 2 => {
+                let name = match &kv[0] {
+                    Ast::Atom(Atom::Sym(s)) => s.clone(),
+                    _ => return Err(Error::InvalidForm("loop: binding name".into())),
+                };
+
+                bind_names.push(name);
+                bind_inits.push(kv[1].clone());
+            }
+            _ => return Err(Error::InvalidForm("loop: binding pair".into())),
+        }
+    }
+
+    if rest.len() < 4 {
+        return Err(Error::InvalidForm("loop: missing body".into()));
+    }
+
+    let body_forms: &[Ast] = &rest[3..];
+
+    // Check for tail recur
+    let (has_recur, recur_args) = match body_forms.last() {
+        Some(Ast::List(items)) if !items.is_empty() => {
+            match &items[0] {
+                Ast::Atom(Atom::Sym(h)) if h == "recur" => {
+                    let args = &items[1..];
+                    if args.len() != bind_names.len() {
+                        return Err(Error::InvalidForm(
+                            "recur: arity must match loop bindings".into(),
+                        ));
+                    }
+
+                    // Forbid recur anywhere else in the body
+                    for prefix_form in &body_forms[..body_forms.len() - 1] {
+                        if contains_symbol(prefix_form, "recur") {
+                            return Err(Error::InvalidForm(
+                                "recur: only allowed in tail position of loop body".into(),
+                            ));
+                        }
+                    }
+
+                    (true, Some(args.to_vec()))
+                }
+                _ => (false, None),
+            }
+        }
+        _ => (false, None),
+    };
+
+    // Build an expanded AST without loop/recur
+    let expanded = if has_recur {
+        let prefix: Vec<Ast> = body_forms[..body_forms.len() - 1].to_vec();
+        let iter0 = build_loop_iter(
+            0,
+            max_n,
+            &bind_names,
+            &bind_inits,
+            &prefix,
+            &recur_args.unwrap(),
+        );
+
+        // Wrap whole loop body into a block
+        Ast::List(vec![Ast::Atom(Atom::Sym("block".to_string())), iter0])
+    } else {
+        // No recur:
+        // single iteration in a block with a single let
+        let mut bind_pairs: Vec<Ast> = Vec::with_capacity(bind_names.len());
+        for (name, init) in bind_names.into_iter().zip(bind_inits.into_iter()) {
+            bind_pairs.push(Ast::List(vec![Ast::Atom(Atom::Sym(name)), init]));
+        }
+
+        let binds_ast = Ast::List(bind_pairs);
+        let body_ast = implicit_begin(body_forms);
+
+        Ast::List(vec![
+            Ast::Atom(Atom::Sym("block".to_string())),
+            Ast::List(vec![
+                Ast::Atom(Atom::Sym("let".to_string())),
+                binds_ast,
+                body_ast,
+            ]),
+        ])
+    };
+
+    lower_expr(cx, expanded)
+}
+
 fn parse_typed_let(owner: Option<&str>, rest: &[Ast]) -> Result<LetTypeSchema, Error> {
     // (typed-let name type)
     if rest.len() != 2 {
@@ -2860,4 +3013,45 @@ fn collect_typed_lets(owner: &str, ast: &Ast, builder: &mut ProgramBuilder) -> R
     }
 
     Ok(())
+}
+
+fn contains_symbol(ast: &Ast, name: &str) -> bool {
+    match ast {
+        Ast::Atom(Atom::Sym(s)) => s == name,
+        Ast::List(items) => items.iter().any(|a| contains_symbol(a, name)),
+        _ => false,
+    }
+}
+
+fn build_loop_iter(
+    iter: usize,
+    max_n: usize,
+    names: &[String],
+    inits: &[Ast],
+    prefix: &[Ast],
+    recur_args: &[Ast],
+) -> Ast {
+    // (let ((vi init_i) ...) body...)
+    let mut bind_pairs: Vec<Ast> = Vec::with_capacity(names.len());
+    for (name, init) in names.iter().cloned().zip(inits.iter().cloned()) {
+        bind_pairs.push(Ast::List(vec![Ast::Atom(Atom::Sym(name)), init]));
+    }
+
+    let binds_ast = Ast::List(bind_pairs);
+
+    let mut body_vec: Vec<Ast> = prefix.to_vec();
+
+    if iter + 1 < max_n {
+        // Next iteration: bindings = recur_args
+        let next_inits: Vec<Ast> = recur_args.to_vec();
+        let next = build_loop_iter(iter + 1, max_n, names, &next_inits, prefix, recur_args);
+        body_vec.push(next);
+    }
+
+    Ast::List(vec![
+        Ast::Atom(Atom::Sym("let".to_string())),
+        binds_ast,
+        // body_vec as implicit begin
+        implicit_begin(&body_vec),
+    ])
 }

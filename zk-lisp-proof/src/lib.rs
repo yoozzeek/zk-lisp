@@ -8,16 +8,29 @@
 //   portions of it. See the NOTICE file for details.
 
 //! Backend-agnostic proof interfaces for zk-lisp.
-//!
-//! This crate defines the core [`ZkBackend`] and [`ZkField`]
-//! traits plus minimal [`ProverOptions`], so concrete proving
-//! backends can plug in while frontends stay generic.
 
 pub mod error;
 pub mod frontend;
 pub mod pi;
 pub mod recursion;
 pub mod segment;
+
+/// Field abstraction for zk backends.
+pub trait ZkField: Sized + Clone + 'static {
+    fn zero() -> Self;
+    fn one() -> Self;
+    fn from_u64(x: u64) -> Self;
+    fn to_u128(&self) -> u128;
+}
+
+/// Generic backend type-bag.
+pub trait ZkBackend {
+    type Field: ZkField;
+    type Program;
+    type PublicInputs;
+    type Error;
+    type ProverOptions;
+}
 
 /// Backend-agnostic proving options.
 /// These are enough to construct concrete
@@ -28,10 +41,12 @@ pub struct ProverOptions {
     pub grind: u32,
 
     /// Minimum conjectured security in bits.
-    ///
-    /// Frontends should set this explicitly when they
-    /// want to override the build-mode default.
     pub min_security_bits: u32,
+
+    /// Optional override for the maximum number of base-trace
+    /// rows per execution segment. When `None`, the backend's
+    /// default policy is used.
+    pub max_segment_rows: Option<usize>,
 }
 
 impl Default for ProverOptions {
@@ -42,24 +57,7 @@ impl Default for ProverOptions {
             blowup: 16,
             grind: 0,
             min_security_bits,
+            max_segment_rows: None,
         }
     }
-}
-
-/// Field abstraction for zk backends.
-pub trait ZkField: Sized + Clone + 'static {
-    fn zero() -> Self;
-    fn one() -> Self;
-    fn from_u64(x: u64) -> Self;
-    fn to_u128(&self) -> u128;
-}
-
-/// Generic backend type-bag used
-// by frontend extension traits.
-pub trait ZkBackend {
-    type Field: ZkField;
-    type Program;
-    type PublicInputs;
-    type Error;
-    type ProverOptions;
 }

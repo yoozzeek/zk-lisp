@@ -18,7 +18,7 @@
 //! final instruction stream and track register usage.
 
 use crate::metrics::CompilerMetrics;
-use crate::{Error, FnTypeSchema, LetTypeSchema, Program, TypeSchemas};
+use crate::{BlockMeta, Error, FnTypeSchema, LetTypeSchema, Program, TypeSchemas};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,17 +162,9 @@ pub struct ProgramBuilder {
     ops: Vec<Op>,
     reg_max: u8,
     type_schemas: TypeSchemas,
-
-    // Collected function declarations
-    // from `def`/generated defs.
-    // Maps function name to its
-    // arity (number of parameters).
     fn_decls: BTreeMap<String, usize>,
-
-    // Names that were bound via `let`
-    // inside function bodies or
-    // top-level expressions.
     let_names: BTreeSet<String>,
+    blocks: Vec<BlockMeta>,
 }
 
 impl Default for ProgramBuilder {
@@ -189,6 +181,7 @@ impl ProgramBuilder {
             type_schemas: TypeSchemas::default(),
             fn_decls: BTreeMap::new(),
             let_names: BTreeSet::new(),
+            blocks: Vec::new(),
         }
     }
 
@@ -316,6 +309,30 @@ impl ProgramBuilder {
         self.ops.push(op);
     }
 
+    /// Record a logical block covering
+    /// levels [level_start, level_end).
+    pub fn push_block(&mut self, level_start: u32, level_end: u32) -> Result<(), Error> {
+        if level_start >= level_end {
+            return Err(Error::InvalidForm(
+                "block: level_start must be < level_end".into(),
+            ));
+        }
+
+        let cur = self.current_level();
+        if level_end > cur {
+            return Err(Error::InvalidForm(
+                "block: level_end must not exceed current program length".into(),
+            ));
+        }
+
+        self.blocks.push(BlockMeta {
+            level_start,
+            level_len: level_end - level_start,
+        });
+
+        Ok(())
+    }
+
     pub fn add_fn_schema(&mut self, schema: FnTypeSchema) {
         self.type_schemas.fns.insert(schema.name.clone(), schema);
     }
@@ -402,7 +419,7 @@ impl ProgramBuilder {
         self.let_names.insert(name);
     }
 
-    pub fn finalize(self, metrics: CompilerMetrics) -> Result<Program, Error> {
+    pub fn finalize(mut self, metrics: CompilerMetrics) -> Result<Program, Error> {
         // Enforce that all function type
         // schemas have a matching function
         // definition with the same arity.
@@ -434,6 +451,20 @@ impl ProgramBuilder {
             }
         }
 
+        // Ensure there is at least one logical block
+        if self.blocks.is_empty() {
+            let levels_u32 = u32::try_from(self.ops.len()).map_err(|_| {
+                Error::Limit("program too large to encode block metadata as u32 levels")
+            })?;
+
+            if levels_u32 > 0 {
+                self.blocks.push(BlockMeta {
+                    level_start: 0,
+                    level_len: levels_u32,
+                });
+            }
+        }
+
         let reg_count = self.reg_max;
         let bytes = encode_ops(&self.ops);
         let commitment = program_commitment(&bytes);
@@ -444,12 +475,18 @@ impl ProgramBuilder {
             reg_count,
             metrics,
             self.type_schemas,
+            self.blocks,
         ))
     }
 
     #[inline]
     fn touch_reg(&mut self, r: u8) {
         self.reg_max = self.reg_max.max(r.saturating_add(1));
+    }
+
+    #[inline]
+    pub fn current_level(&self) -> u32 {
+        self.ops.len() as u32
     }
 }
 

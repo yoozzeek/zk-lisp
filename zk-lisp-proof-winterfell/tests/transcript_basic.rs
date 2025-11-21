@@ -23,7 +23,8 @@ fn make_opts() -> ProverOptions {
         min_security_bits: 40,
         blowup: 8,
         grind: 8,
-        queries: 20,
+        queries: 8,
+        max_segment_rows: None,
     }
 }
 

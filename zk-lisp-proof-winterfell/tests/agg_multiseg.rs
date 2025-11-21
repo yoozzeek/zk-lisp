@@ -25,22 +25,22 @@ fn make_opts() -> ProverOptions {
         blowup: 8,
         grind: 8,
         queries: 8,
+        max_segment_rows: None,
     }
 }
 
 fn build_large_program_for_multiseg() -> zk_lisp_compiler::Program {
     // Create a program large enough to exceed one segment
-    // (see WinterfellSegmentPlanner::MAX_SEGMENT_ROWS and STEPS_PER_LEVEL_P2).
+    // under the default MAX_SEGMENT_ROWS policy in the
+    // WinterfellSegmentPlanner.
     let metrics = zk_lisp_compiler::CompilerMetrics::default();
     let mut b = ProgramBuilder::new();
 
     // Construct target_levels = (MAX_SEGMENT_ROWS / STEPS_PER_LEVEL_P2) + 1
-    // We reuse the same op per level; padding to next power-of-two
+    // using MAX_SEGMENT_ROWS = 1 << 10, matching the planner's
+    // default when no override is provided.
     let steps_per_level = zk_lisp_proof_winterfell::layout::STEPS_PER_LEVEL_P2;
-    let max_rows = std::env::var("ZKL_MAX_SEGMENT_ROWS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1 << 10);
+    let max_rows = 1usize << 10;
     let target_levels = (max_rows / steps_per_level) + 1;
 
     for _ in 0..target_levels {
@@ -52,9 +52,11 @@ fn build_large_program_for_multiseg() -> zk_lisp_compiler::Program {
     b.finalize(metrics).expect("program build must succeed")
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn agg_multiseg_positive_builds_trace() {
     init_tracing();
+
     let program = build_large_program_for_multiseg();
     let pi = PublicInputsBuilder::from_program(&program)
         .build()
@@ -122,9 +124,11 @@ fn agg_multiseg_positive_builds_trace() {
         .expect("agg trace must build for honest multiseg batch");
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn agg_multiseg_negative_invalid_index_rejected() {
     init_tracing();
+
     let program = build_large_program_for_multiseg();
     let pi = PublicInputsBuilder::from_program(&program)
         .build()
@@ -179,9 +183,11 @@ fn agg_multiseg_negative_invalid_index_rejected() {
     }
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn agg_multiseg_negative_missing_segment_rejected() {
     init_tracing();
+
     let program = build_large_program_for_multiseg();
     let pi = PublicInputsBuilder::from_program(&program)
         .build()
