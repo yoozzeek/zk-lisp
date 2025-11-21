@@ -13,13 +13,14 @@
 //! file, opcode/selector columns, RAM events and Poseidon
 //! activity flags used by downstream trace modules.
 
-use crate::layout::NR;
 use crate::poseidon::get_poseidon_suite;
-use crate::trace::{
+use crate::utils;
+use crate::vm::layout::NR;
+use crate::vm::trace::{
     TraceBuilderContext, TraceModule, poseidon::apply_level_absorb, ram::RamEvent, set_sel,
 };
-use crate::{schedule, utils};
 
+use crate::vm::schedule;
 use arrayvec::ArrayVec;
 use std::collections::BTreeMap;
 use winterfell::TraceTable;
@@ -30,7 +31,7 @@ use zk_lisp_compiler::builder::Op;
 use zk_lisp_proof::error::{self, Error};
 use zk_lisp_proof::pi::VmArg;
 
-pub(super) struct VmTraceBuilder<'a> {
+pub(crate) struct VmTraceBuilder<'a> {
     ram_events: &'a mut Vec<RamEvent>,
     mem: &'a mut BTreeMap<u128, BE>,
     secret_args: &'a [VmArg],
@@ -899,14 +900,15 @@ fn push_absorb(pending: &mut ArrayVec<u8, 10>, r: u8) -> error::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{Columns, STEPS_PER_LEVEL_P2};
-    use crate::trace::build_trace;
-    use crate::{schedule, utils};
+    use crate::utils;
+    use crate::vm::layout::{Columns, STEPS_PER_LEVEL_P2};
+    use crate::vm::trace::build_trace;
 
     use zk_lisp_compiler::builder::Op;
     use zk_lisp_compiler::{CompilerMetrics, builder, compile_entry};
     use zk_lisp_proof::pi::PublicInputs;
 
+    use crate::vm::schedule;
     use winterfell::Trace;
     // for length()
 

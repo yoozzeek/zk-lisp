@@ -8,19 +8,11 @@
 //   portions of it. See the NOTICE file for details.
 
 //! Generic execution segmentation helpers.
-//!
-//! This module defines a small backend-agnostic
-//! abstraction for planning execution segments in terms
-//! of base-trace row intervals. Concrete backends are
-//! expected to provide their own `SegmentPlanner`
-//! implementations which can take backend-specific
-//! layout details into account.
 
 use crate::ZkBackend;
 use crate::error;
 
-/// Backend-agnostic trait for planning execution
-/// segments. Implementors are expected to return a
+/// Backend-agnostic trait for planning execution segments.
 pub trait SegmentPlanner<B: ZkBackend> {
     /// Select a sequence of execution segments for the
     /// given program, public inputs and prover options.

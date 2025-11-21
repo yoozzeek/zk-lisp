@@ -7,13 +7,12 @@
 //   attribution in copies of this file or substantial
 //   portions of it. See the NOTICE file for details.
 
-//! Poseidon-based hasher for Winterfell
-//! commitments and random coin.
+//! Poseidon-based hasher for Winterfell commitments and random coin.
+
+use crate::utils;
 
 use core::fmt::Debug;
 use core::marker::PhantomData;
-
-use crate::utils;
 use winter_utils::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable};
 use winterfell::crypto::Digest as CryptoDigest;
 use winterfell::crypto::{ElementHasher, Hasher};

@@ -14,26 +14,25 @@
 //! backend-agnostic public inputs and Winterfell's AIR/trace
 //! into a concrete proof system.
 
-pub mod agg_air;
-pub mod agg_child;
-pub mod agg_layout;
-pub mod agg_trace;
-pub mod air;
+pub mod agg;
 pub mod commit;
-pub mod fs;
-pub mod layout;
 pub mod poseidon;
-pub mod poseidon_hasher;
 pub mod preflight;
+pub mod proof;
 pub mod prove;
 pub mod romacc;
-pub mod schedule;
 pub mod segment_planner;
-pub mod trace;
 pub mod utils;
-pub mod zl1;
-pub mod zl_step;
+pub mod vm;
 
+use vm::trace::build_trace;
+
+use agg::air::AggAirPublicInputs;
+use agg::child::{
+    ZlChildCompact, ZlChildTranscript, children_root_from_compact, verify_child_transcript,
+};
+use proof::step;
+use vm::{layout, trace};
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField, ToElements};
 use winterfell::{BatchingMethod, FieldExtension, Proof, ProofOptions, Trace};
@@ -45,12 +44,6 @@ use zk_lisp_proof::recursion::{
     RecursionStepProver,
 };
 use zk_lisp_proof::{ProverOptions, ZkBackend, ZkField};
-
-use crate::agg_air::AggAirPublicInputs;
-use crate::agg_child::{
-    ZlChildCompact, ZlChildTranscript, children_root_from_compact, verify_child_transcript,
-};
-use crate::trace::build_trace;
 
 #[derive(Clone, Debug)]
 pub struct WinterfellField(pub BE);
@@ -104,7 +97,6 @@ impl Default for AirPublicInputs {
 
 impl ToElements<BE> for AirPublicInputs {
     fn to_elements(&self) -> Vec<BE> {
-        // Encode feature mask + commitments first
         let mut out = Vec::with_capacity(16);
 
         out.push(BE::from(self.core.feature_mask));
@@ -203,11 +195,11 @@ impl PreflightBackend for WinterfellBackend {
 }
 
 impl RecursionBackend for WinterfellBackend {
-    type StepProof = zl_step::ZlStepProof;
+    type StepProof = step::StepProof;
     type RecursionProof = Proof;
     type RecursionPublic = AggAirPublicInputs;
 
-    fn recursion_prove(
+    fn prove(
         steps: &[Self::StepProof],
         rc_pi: &Self::RecursionPublic,
         opts: &Self::ProverOptions,
@@ -259,7 +251,7 @@ impl RecursionBackend for WinterfellBackend {
         Ok((proof, digest))
     }
 
-    fn recursion_verify(
+    fn verify(
         proof: Self::RecursionProof,
         rc_pi: &Self::RecursionPublic,
         opts: &Self::ProverOptions,
@@ -289,7 +281,7 @@ impl RecursionBackend for WinterfellBackend {
 }
 
 impl RecursionStepProver for WinterfellBackend {
-    fn step_prove_all(
+    fn prove_all_steps(
         program: &Self::Program,
         pub_inputs: &Self::PublicInputs,
         opts: &Self::ProverOptions,
@@ -299,7 +291,7 @@ impl RecursionStepProver for WinterfellBackend {
 }
 
 impl RecursionPublicBuilder for WinterfellBackend {
-    fn build_recursion_public(
+    fn build_public(
         _program: &Self::Program,
         pub_inputs: &Self::PublicInputs,
         steps: &[Self::StepProof],
@@ -337,7 +329,7 @@ impl RecursionPublicBuilder for WinterfellBackend {
         let suite_id = first.suite_id;
         let children_ms = children.iter().map(|c| c.meta.m).collect::<Vec<_>>();
 
-        let profile_meta = crate::agg_air::AggProfileMeta {
+        let profile_meta = agg::air::AggProfileMeta {
             m: first.meta.m,
             rho: first.meta.rho,
             q: first.meta.q,
@@ -346,13 +338,13 @@ impl RecursionPublicBuilder for WinterfellBackend {
             pi_len: first.meta.pi_len,
             v_units: first.meta.v_units,
         };
-        let profile_fri = crate::agg_air::AggFriProfile {
+        let profile_fri = agg::air::AggFriProfile {
             lde_blowup: first.meta.rho as u32,
             folding_factor: 2,
             redundancy: 1,
             num_layers: 1,
         };
-        let profile_queries = crate::agg_air::AggQueryProfile {
+        let profile_queries = agg::air::AggQueryProfile {
             num_queries: first.meta.q,
             grinding_factor: 0,
         };
@@ -364,10 +356,10 @@ impl RecursionPublicBuilder for WinterfellBackend {
         let program_commitment = pub_inputs.program_commitment;
         let pi_digest = pub_inputs.digest();
 
-        let a0 = crate::agg_air::AggAirPublicInputs::from_step_proof(&steps[0])?;
-        let al = crate::agg_air::AggAirPublicInputs::from_step_proof(steps.last().unwrap())?;
+        let a0 = AggAirPublicInputs::from_step_proof(&steps[0])?;
+        let al = AggAirPublicInputs::from_step_proof(steps.last().unwrap())?;
 
-        Ok(crate::agg_air::AggAirPublicInputs {
+        Ok(AggAirPublicInputs {
             program_id,
             program_commitment,
             pi_digest,
@@ -395,7 +387,7 @@ impl RecursionPublicBuilder for WinterfellBackend {
 impl RecursionArtifactCodec for WinterfellBackend {
     type CodecError = crate::prove::Error;
 
-    fn encode_recursion_artifact(
+    fn encode(
         proof: &Self::RecursionProof,
         rc_pi: &Self::RecursionPublic,
     ) -> Result<Vec<u8>, Self::CodecError> {
@@ -460,7 +452,7 @@ impl RecursionArtifactCodec for WinterfellBackend {
         Ok(out)
     }
 
-    fn decode_recursion_artifact(
+    fn decode(
         bytes: &[u8],
     ) -> Result<(Self::RecursionProof, Self::RecursionPublic), Self::CodecError> {
         let mut i = 0usize;
@@ -584,7 +576,7 @@ impl RecursionArtifactCodec for WinterfellBackend {
         i += 8;
 
         let v_units_meta = u64::from_le_bytes(u8b2);
-        let profile_meta = crate::agg_air::AggProfileMeta {
+        let profile_meta = agg::air::AggProfileMeta {
             m,
             rho,
             q,
@@ -597,7 +589,7 @@ impl RecursionArtifactCodec for WinterfellBackend {
         let folding_factor = read_u8(bytes, &mut i)?;
         let redundancy = read_u8(bytes, &mut i)?;
         let num_layers = read_u8(bytes, &mut i)?;
-        let profile_fri = crate::agg_air::AggFriProfile {
+        let profile_fri = agg::air::AggFriProfile {
             lde_blowup,
             folding_factor,
             redundancy,
@@ -605,7 +597,7 @@ impl RecursionArtifactCodec for WinterfellBackend {
         };
         let num_queries = read_u16(bytes, &mut i)?;
         let grinding_factor = read_u32(bytes, &mut i)?;
-        let profile_queries = crate::agg_air::AggQueryProfile {
+        let profile_queries = agg::air::AggQueryProfile {
             num_queries,
             grinding_factor,
         };
@@ -656,7 +648,7 @@ impl RecursionArtifactCodec for WinterfellBackend {
         let proof = Proof::from_bytes(&bytes[i..i + plen])
             .map_err(|e| prove::Error::BackendSource(Box::new(e)))?;
 
-        let rc_pi = crate::agg_air::AggAirPublicInputs {
+        let rc_pi = agg::air::AggAirPublicInputs {
             program_id,
             program_commitment,
             pi_digest,

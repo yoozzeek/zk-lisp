@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp project.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -7,20 +7,13 @@
 //   attribution in copies of this file or substantial
 //   portions of it. See the NOTICE file for details.
 
-//! Poseidon-based Fiat–Shamir
-//! helpers for zk-lisp child proofs.
-//!
-//! Historically this module implemented a custom Poseidon-based FS
-//! transcript over `suite_id`, step digest and commitment roots. For
-//! aggregation, we now also provide `replay_fs_from_step` which
-//! reconstructs the exact sequence of Fiat–Shamir challenges as seen
-//! by the Winterfell verifier using `DefaultRandomCoin`.
+//! Poseidon-based Fiat–Shamir helpers for zk-lisp child proofs.
 
 use crate::AirPublicInputs;
-use crate::agg_child::ZlFsChallenges;
-use crate::air::ZkLispAir;
-use crate::poseidon_hasher::PoseidonHasher;
-use crate::zl_step::ZlStepProof;
+use crate::agg::child::ZlFsChallenges;
+use crate::poseidon::hasher::PoseidonHasher;
+use crate::proof::step::StepProof;
+use crate::vm::air::ZkLispAir;
 
 use winterfell::Air;
 use winterfell::crypto::{DefaultRandomCoin, ElementHasher, RandomCoin};
@@ -41,7 +34,7 @@ use zk_lisp_proof::error;
 /// The resulting `ZlFsChallenges` can be used by the
 /// aggregation layer as a single source of randomness
 /// consistent with both the original prover and verifier.
-pub fn replay_fs_from_step(step: &ZlStepProof) -> error::Result<ZlFsChallenges> {
+pub fn replay_fs_from_step(step: &StepProof) -> error::Result<ZlFsChallenges> {
     let wf_proof = &step.proof.inner;
 
     // Rebuild AIR public inputs for this proof instance.

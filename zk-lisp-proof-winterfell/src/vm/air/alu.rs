@@ -17,11 +17,11 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
-use crate::air::AirModule;
-use crate::air::{AirSharedContext, mixers};
-use crate::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::air::AirModule;
+use crate::vm::air::{AirSharedContext, mixers};
+use crate::vm::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
-pub(super) struct VmAluAir;
+pub(crate) struct VmAluAir;
 
 impl AirModule for VmAluAir {
     fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
@@ -326,7 +326,7 @@ impl AirModule for VmAluAir {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Columns;
+    use crate::vm::layout::Columns;
     use winterfell::EvaluationFrame;
 
     #[test]

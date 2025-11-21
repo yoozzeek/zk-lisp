@@ -13,11 +13,11 @@ use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::frontend::recursion_prove;
 use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof::recursion::{
-    RecursionChainError, RecursionDigest, RecursionPublic, verify_recursion_chain,
+    RecursionChainError, RecursionDigest, RecursionPublic, verify_chain,
 };
 use zk_lisp_proof::{ProverOptions, pi::PublicInputs as CorePublicInputs};
 use zk_lisp_proof_winterfell::WinterfellBackend;
-use zk_lisp_proof_winterfell::agg_air::AggAirPublicInputs;
+use zk_lisp_proof_winterfell::agg::air::AggAirPublicInputs;
 
 fn make_opts() -> ProverOptions {
     ProverOptions {
@@ -46,14 +46,14 @@ fn build_public_inputs(program: &zk_lisp_compiler::Program) -> CorePublicInputs 
 }
 
 fn build_agg_pi_for_single_step(
-    step: &zk_lisp_proof_winterfell::zl_step::ZlStepProof,
+    step: &zk_lisp_proof_winterfell::proof::step::StepProof,
 ) -> AggAirPublicInputs {
     AggAirPublicInputs::from_step_proof(step).expect("agg PI build must succeed for step")
 }
 
 fn build_recursion_public_single_step(
     pi: &CorePublicInputs,
-    step: &zk_lisp_proof_winterfell::zl_step::ZlStepProof,
+    step: &zk_lisp_proof_winterfell::proof::step::StepProof,
     agg_pi: &AggAirPublicInputs,
     prev_digest: RecursionDigest,
 ) -> RecursionPublic {
@@ -124,7 +124,7 @@ fn recursion_two_step_chain_prev_digest_tamper_rejected() {
         rc_pub2.clone(),
     )));
 
-    verify_recursion_chain::<WinterfellBackend, _>(chain_ok, &opts)
+    verify_chain::<WinterfellBackend, _>(chain_ok, &opts)
         .expect("recursion chain verify must succeed for honest two-step chain");
 
     // Now tamper prev_digest in the second chain public: the
@@ -136,7 +136,7 @@ fn recursion_two_step_chain_prev_digest_tamper_rejected() {
         std::iter::once((rc_proof2, rc_digest2, agg_pi2, rc_pub2_bad)),
     );
 
-    let err = verify_recursion_chain::<WinterfellBackend, _>(chain_bad, &opts)
+    let err = verify_chain::<WinterfellBackend, _>(chain_bad, &opts)
         .expect_err("verify_recursion_chain must fail when prev_digest is tampered");
 
     match err {
@@ -198,7 +198,7 @@ fn recursion_two_step_chain_aggregates_tamper_rejected() {
         rc_pub2.clone(),
     )));
 
-    verify_recursion_chain::<WinterfellBackend, _>(chain_ok, &opts)
+    verify_chain::<WinterfellBackend, _>(chain_ok, &opts)
         .expect("recursion chain verify must succeed for honest two-step chain");
 
     // 1) prev_digest tamper: already covered in a dedicated test,
@@ -219,7 +219,7 @@ fn recursion_two_step_chain_aggregates_tamper_rejected() {
         rc_pub2_prev_bad,
     )));
 
-    let _err = verify_recursion_chain::<WinterfellBackend, _>(chain_prev_bad, &opts)
+    let _err = verify_chain::<WinterfellBackend, _>(chain_prev_bad, &opts)
         .expect_err("verify_recursion_chain must fail when prev_digest is tampered");
 
     // 2) children_root tamper: aggregation proof is bound to
@@ -240,7 +240,7 @@ fn recursion_two_step_chain_aggregates_tamper_rejected() {
         rc_pub2.clone(),
     )));
 
-    let _err = verify_recursion_chain::<WinterfellBackend, _>(chain_root_bad, &opts)
+    let _err = verify_chain::<WinterfellBackend, _>(chain_root_bad, &opts)
         .expect_err("verify_recursion_chain must fail when children_root is tampered");
 
     // 3) v_units_total tamper: ZlAggAir enforces that the
@@ -252,6 +252,6 @@ fn recursion_two_step_chain_aggregates_tamper_rejected() {
         std::iter::once((rc_proof2, rc_digest2, agg_pi2_v_units_bad, rc_pub2)),
     );
 
-    let _err = verify_recursion_chain::<WinterfellBackend, _>(chain_v_units_bad, &opts)
+    let _err = verify_chain::<WinterfellBackend, _>(chain_v_units_bad, &opts)
         .expect_err("verify_recursion_chain must fail when v_units_total is tampered");
 }

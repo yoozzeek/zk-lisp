@@ -17,10 +17,10 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
-use crate::air::{AirModule, AirSharedContext};
-use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::air::{AirModule, AirSharedContext};
+use crate::vm::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
-pub(super) struct RamAir;
+pub(crate) struct RamAir;
 
 impl AirModule for RamAir {
     fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {

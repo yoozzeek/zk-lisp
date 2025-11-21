@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp project.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -8,11 +8,6 @@
 //   portions of it. See the NOTICE file for details.
 
 //! Column layout for the STARK-in-STARK aggregation trace.
-//!
-//! `AggColumns` defines indices for all columns used by the
-//! ZlAggAir aggregator. The initial implementation focuses
-//! on per-child work aggregation and reserves slots for
-//! future Merkle/FRI and composition accumulators.
 
 #[derive(Clone, Copy, Debug)]
 pub struct AggColumns {

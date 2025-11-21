@@ -14,11 +14,11 @@ use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
 use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_compiler::{CompilerMetrics, compile_entry};
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::layout::Columns;
 use zk_lisp_proof_winterfell::prove::{Error as ProveError, ZkProver, verify_proof};
-use zk_lisp_proof_winterfell::schedule::pos_map;
-use zk_lisp_proof_winterfell::trace::build_trace;
 use zk_lisp_proof_winterfell::utils::vm_output_from_trace;
+use zk_lisp_proof_winterfell::vm::layout::Columns;
+use zk_lisp_proof_winterfell::vm::schedule::pos_map;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 fn prove_opts() -> ProofOptions {
     ProofOptions::new(

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp project.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -8,17 +8,11 @@
 //   portions of it. See the NOTICE file for details.
 
 //! Aggregation AIR for STARK-in-STARK recursion.
-//!
-//! The initial `ZlAggAir` implementation focuses on a minimal,
-//! well-typed skeleton: it defines a column layout and enforces a
-//! global accumulator over per-child work units (`v_units`). Further
-//! iterations will extend this AIR with full composition, Merkle and
-//! FRI checks over compact child proofs.
 
-use crate::agg_child::{ZlChildCompact, ZlChildTranscript, children_root_from_compact};
-use crate::agg_layout::AggColumns;
+use crate::agg::child::{ZlChildCompact, ZlChildTranscript, children_root_from_compact};
+use crate::agg::layout::AggColumns;
+use crate::proof::step::StepProof;
 use crate::utils;
-use crate::zl_step::ZlStepProof;
 
 use winterfell::math::fft;
 use winterfell::math::fields::f128::BaseElement as BE;
@@ -129,7 +123,7 @@ pub struct AggQueryProfile {
 impl AggAirPublicInputs {
     /// Build aggregation public inputs for a single zk-lisp
     /// step proof by deriving a compact child view and child
-    pub fn from_step_proof(step: &ZlStepProof) -> error::Result<Self> {
+    pub fn from_step_proof(step: &StepProof) -> error::Result<Self> {
         let compact = ZlChildCompact::from_step(step)?;
         let transcript = ZlChildTranscript::from_step(step)?;
 

@@ -17,12 +17,12 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
-use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::utils;
+use crate::vm::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
 use super::{AirModule, AirSharedContext};
 
-pub(super) struct MerkleAir;
+pub(crate) struct MerkleAir;
 
 impl AirModule for MerkleAir {
     fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {

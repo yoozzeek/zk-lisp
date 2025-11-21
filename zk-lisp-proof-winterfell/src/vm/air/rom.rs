@@ -17,11 +17,11 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{Assertion, EvaluationFrame, TransitionConstraintDegree};
 
-use crate::air::{AirModule, AirSharedContext};
-use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::utils;
+use crate::vm::air::{AirModule, AirSharedContext};
+use crate::vm::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
-pub(super) struct RomAir;
+pub(crate) struct RomAir;
 
 impl AirModule for RomAir {
     fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
@@ -127,7 +127,7 @@ impl AirModule for RomAir {
         // Bind ROM state at the first map row and at the
         // final row of the trace segment to the segment-
         // local boundary values supplied via AirPublicInputs.
-        let row_map0 = crate::schedule::pos_map();
+        let row_map0 = crate::vm::schedule::pos_map();
 
         for i in 0..3 {
             out.push(Assertion::single(
@@ -150,7 +150,7 @@ impl AirModule for RomAir {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Columns;
+    use crate::vm::layout::Columns;
 
     #[test]
     fn round_constraints_zero_on_valid_row() {

@@ -13,7 +13,7 @@ use zk_lisp_proof::frontend::{recursion_prove, recursion_verify};
 use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof::{ProverOptions, pi::PublicInputs as CorePublicInputs};
 use zk_lisp_proof_winterfell::WinterfellBackend;
-use zk_lisp_proof_winterfell::agg_air::AggAirPublicInputs;
+use zk_lisp_proof_winterfell::agg::air::AggAirPublicInputs;
 
 fn make_opts() -> ProverOptions {
     ProverOptions {
@@ -42,7 +42,7 @@ fn build_public_inputs(program: &zk_lisp_compiler::Program) -> CorePublicInputs 
 }
 
 fn build_agg_pi_for_single_step(
-    step: &zk_lisp_proof_winterfell::zl_step::ZlStepProof,
+    step: &zk_lisp_proof_winterfell::proof::step::StepProof,
 ) -> AggAirPublicInputs {
     AggAirPublicInputs::from_step_proof(step).expect("agg PI build must succeed for step")
 }

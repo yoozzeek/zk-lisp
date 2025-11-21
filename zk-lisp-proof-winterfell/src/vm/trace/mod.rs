@@ -18,13 +18,13 @@ mod ram;
 mod rom;
 mod vm;
 
-use crate::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::poseidon::get_poseidon_suite;
-use crate::schedule;
-use crate::trace::ram::{RamEvent, RamTraceBuilder};
-use crate::trace::rom::RomTraceBuilder;
-use crate::trace::vm::VmTraceBuilder;
 use crate::utils;
+use crate::vm::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::schedule;
+use crate::vm::trace::ram::{RamEvent, RamTraceBuilder};
+use crate::vm::trace::rom::RomTraceBuilder;
+use crate::vm::trace::vm::VmTraceBuilder;
 
 use std::collections::BTreeMap;
 use winterfell::math::FieldElement;
@@ -327,7 +327,7 @@ fn slice_trace_segment(full: &TraceTable<BE>, segment: &Segment) -> TraceTable<B
     out
 }
 
-pub(super) fn build_empty_trace(total_levels: usize) -> TraceTable<BE> {
+pub(crate) fn build_empty_trace(total_levels: usize) -> TraceTable<BE> {
     let cols = Columns::baseline();
     let width = cols.width(0);
     let n_rows = total_levels * STEPS_PER_LEVEL_P2;
@@ -388,7 +388,7 @@ pub fn select_partitions_for_trace(trace_width: usize, trace_length: usize) -> (
 }
 
 #[inline]
-pub(super) fn set_sel(trace: &mut TraceTable<BE>, row: usize, sel_start: usize, idx: u8) {
+pub(crate) fn set_sel(trace: &mut TraceTable<BE>, row: usize, sel_start: usize, idx: u8) {
     for i in 0..NR {
         trace.set(sel_start + i, row, BE::ZERO);
     }

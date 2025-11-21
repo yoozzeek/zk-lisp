@@ -17,8 +17,9 @@ use winterfell::TraceTable;
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 
-use crate::layout::{self, Columns, POSEIDON_ROUNDS};
-use crate::{poseidon, schedule};
+use crate::poseidon;
+use crate::vm::layout::{self, Columns, POSEIDON_ROUNDS};
+use crate::vm::schedule;
 
 /// Apply one Poseidon level at `level`
 /// absorbing up to 10 inputs.
@@ -96,8 +97,8 @@ pub fn apply_level_absorb(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::STEPS_PER_LEVEL_P2;
-    use crate::trace::{build_empty_trace, build_trace};
+    use crate::vm::layout::STEPS_PER_LEVEL_P2;
+    use crate::vm::trace::{build_empty_trace, build_trace};
 
     use zk_lisp_compiler::builder::Op;
     use zk_lisp_compiler::{CompilerMetrics, builder};

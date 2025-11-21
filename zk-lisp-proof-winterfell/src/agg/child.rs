@@ -8,18 +8,12 @@
 //   portions of it. See the NOTICE file for details.
 
 //! Compact child representation for aggregation.
-//!
-//! `ZlChildCompact` is a lightweight summary of a zk-lisp
-//! step proof suitable for use by a STARK-in-STARK
-//! aggregation layer. It captures the suite id, per-proof
-//! metadata, the step digest, and a compact commitment to
-//! the underlying Winterfell trace via `trace_root`.
 
-use crate::fs as fs_helpers;
+use crate::agg::fs as fs_helpers;
 use crate::poseidon;
-use crate::poseidon_hasher::{PoseidonDigest, PoseidonHasher};
+use crate::poseidon::hasher::{PoseidonDigest, PoseidonHasher};
+use crate::proof::step::{StepMeta, StepProof};
 use crate::utils;
-use crate::zl_step::{StepMeta, ZlStepProof};
 
 use blake3::Hasher as Blake3Hasher;
 use winter_utils::{Deserializable, Serializable, SliceReader};
@@ -29,13 +23,6 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_proof::error;
 
 /// Compact child structure derived from a `ZlStepProof`.
-///
-/// This initial version focuses on fields needed for
-/// aggregation over work units and canonical child
-/// identification via `step_digest`. It is extended
-/// with explicit commitment roots so that Merkle and
-/// FRI checks can be performed inside aggregation logic
-/// without re-reading the original Winterfell proof.
 #[derive(Clone, Debug)]
 pub struct ZlChildCompact {
     /// Poseidon suite identifier used by the child
@@ -172,7 +159,7 @@ pub struct ZlMerkleProofs {
 impl ZlChildCompact {
     /// Derive a compact child representation from
     /// a full step proof wrapper.
-    pub fn from_step(step: &ZlStepProof) -> error::Result<Self> {
+    pub fn from_step(step: &StepProof) -> error::Result<Self> {
         let suite_id = step.proof.header.suite_id;
         let meta = step.proof.meta;
         let pi_core = step.pi_core.clone();
@@ -610,7 +597,7 @@ pub struct ZlFriFinal {
 impl ZlChildTranscript {
     /// Construct a child transcript
     /// wrapper from a full step proof.
-    pub fn from_step(step: &ZlStepProof) -> error::Result<Self> {
+    pub fn from_step(step: &StepProof) -> error::Result<Self> {
         let compact = ZlChildCompact::from_step(step)?;
 
         let wf_proof = &step.proof.inner;

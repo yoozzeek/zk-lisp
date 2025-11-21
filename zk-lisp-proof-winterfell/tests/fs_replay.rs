@@ -24,9 +24,9 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::air::ZkLispAir;
-use zk_lisp_proof_winterfell::fs::replay_fs_from_step;
-use zk_lisp_proof_winterfell::poseidon_hasher::PoseidonHasher;
+use zk_lisp_proof_winterfell::agg::fs::replay_fs_from_step;
+use zk_lisp_proof_winterfell::poseidon::hasher::PoseidonHasher;
+use zk_lisp_proof_winterfell::vm::air::ZkLispAir;
 
 fn make_opts() -> ProverOptions {
     ProverOptions {
@@ -89,7 +89,7 @@ fn fs_replay_smoke_invariants() {
 
     // There must be exactly one FRI alpha per FRI commitment (including
     // the remainder commitment), matching the commitments parser.
-    use zk_lisp_proof_winterfell::poseidon_hasher::PoseidonHasher;
+    use zk_lisp_proof_winterfell::poseidon::hasher::PoseidonHasher;
     let trace_info = wf_proof.trace_info();
     let num_trace_segments = trace_info.num_segments();
     let fri_opts = options.to_fri_options();

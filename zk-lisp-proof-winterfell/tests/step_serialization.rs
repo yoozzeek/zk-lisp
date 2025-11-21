@@ -13,8 +13,8 @@ use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::error;
 use zk_lisp_proof::pi::PublicInputsBuilder;
+use zk_lisp_proof_winterfell::proof::step::StepProof;
 use zk_lisp_proof_winterfell::prove::{prove_program_steps, prove_step};
-use zk_lisp_proof_winterfell::zl_step::ZlStepProof;
 
 fn make_step_opts() -> ProverOptions {
     ProverOptions {
@@ -76,7 +76,7 @@ fn step_proof_roundtrip_to_from_bytes_preserves_digest_and_meta() {
         .to_bytes()
         .expect("step proof serialization must succeed");
 
-    let step2 = ZlStepProof::from_bytes(&bytes).expect("step proof deserialization must succeed");
+    let step2 = StepProof::from_bytes(&bytes).expect("step proof deserialization must succeed");
 
     // Step digest and state
     // hashes must be preserved.
@@ -118,7 +118,7 @@ fn step_proof_decode_rejects_invalid_magic() {
     // Corrupt magic tag.
     bytes[0] ^= 0xFF;
 
-    let err = ZlStepProof::from_bytes(&bytes).expect_err("invalid magic must be rejected");
+    let err = StepProof::from_bytes(&bytes).expect_err("invalid magic must be rejected");
     match err {
         error::Error::InvalidInput(msg) => {
             assert!(msg.contains("magic"));
@@ -141,8 +141,7 @@ fn step_proof_decode_rejects_truncated_prefix() {
     // header / lambda bits are incomplete.
     let truncated = &bytes[..8];
 
-    let err =
-        ZlStepProof::from_bytes(truncated).expect_err("truncated step proof must be rejected");
+    let err = StepProof::from_bytes(truncated).expect_err("truncated step proof must be rejected");
     match err {
         error::Error::InvalidInput(_msg) => {}
     }
@@ -163,8 +162,7 @@ fn step_proof_decode_rejects_truncated_inner_proof() {
     // bytes do not match the advertised length.
     let truncated = &bytes[..bytes.len() - 1];
 
-    let err =
-        ZlStepProof::from_bytes(truncated).expect_err("truncated inner proof must be rejected");
+    let err = StepProof::from_bytes(truncated).expect_err("truncated inner proof must be rejected");
     match err {
         error::Error::InvalidInput(_msg) => {}
     }

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp project.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -15,13 +15,13 @@
 //! enforcing a global work accumulator consistent with
 //! `AggAirPublicInputs::v_units_total`.
 
-use crate::agg_air::{AggAirPublicInputs, AggFriProfile};
-use crate::agg_child::{
+use crate::agg::air::{AggAirPublicInputs, AggFriProfile};
+use crate::agg::child::{
     ZlChildCompact, ZlChildTranscript, ZlFsChallenges, children_root_from_compact,
     fold_positions_usize, merkle_root_from_leaf,
 };
-use crate::agg_layout::AggColumns;
-use crate::poseidon_hasher::PoseidonHasher;
+use crate::agg::layout::AggColumns;
+use crate::poseidon::hasher::PoseidonHasher;
 use crate::utils;
 
 use winterfell::TraceTable;

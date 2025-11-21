@@ -12,7 +12,7 @@ use winterfell::ProofOptions;
 use zk_lisp_compiler::compile_str;
 use zk_lisp_proof::pi::{self as core_pi, PublicInputsBuilder};
 use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
-use zk_lisp_proof_winterfell::trace::build_trace;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(

@@ -13,17 +13,18 @@
 //! starting from an initial accumulator and per-level
 //! encodings derived from opcode/selector rows.
 
-use crate::layout::POSEIDON_ROUNDS;
 use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
-use crate::trace::{TraceBuilderContext, TraceModule};
-use crate::{schedule, utils};
+use crate::utils;
+use crate::vm::layout::POSEIDON_ROUNDS;
+use crate::vm::trace::{TraceBuilderContext, TraceModule};
 
+use crate::vm::schedule;
 use winterfell::TraceTable;
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_proof::error;
 
-pub(super) struct RomTraceBuilder;
+pub(crate) struct RomTraceBuilder;
 
 impl RomTraceBuilder {
     pub fn new() -> Self {

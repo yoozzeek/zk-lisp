@@ -14,10 +14,10 @@ use winterfell::{Air, BatchingMethod, FieldExtension, ProofOptions, TraceInfo};
 
 use zk_lisp_proof::pi::{FM_VM, PublicInputs, VmArg};
 use zk_lisp_proof_winterfell::AirPublicInputs;
-use zk_lisp_proof_winterfell::air::ZkLispAir;
-use zk_lisp_proof_winterfell::layout::{Columns, NR, STEPS_PER_LEVEL_P2};
-use zk_lisp_proof_winterfell::schedule;
 use zk_lisp_proof_winterfell::utils::encode_main_args_to_slots;
+use zk_lisp_proof_winterfell::vm::air::ZkLispAir;
+use zk_lisp_proof_winterfell::vm::layout::{Columns, NR, STEPS_PER_LEVEL_P2};
+use zk_lisp_proof_winterfell::vm::schedule;
 
 #[test]
 fn air_public_inputs_encode_main_args_at_tail() {

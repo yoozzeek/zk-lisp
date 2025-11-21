@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp project.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -13,7 +13,7 @@
 //! (map, round, final, pad) and building periodic selector
 //! columns used by AIR constraints.
 
-use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
 #[inline]
 pub fn pos_map() -> usize {
@@ -81,7 +81,7 @@ pub fn build_periodic_selectors(n: usize) -> Vec<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::schedule;
+    use crate::vm::schedule;
 
     #[test]
     fn schedule_shapes() {

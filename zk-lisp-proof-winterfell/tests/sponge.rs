@@ -15,11 +15,11 @@ use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_compiler::{CompilerMetrics, compile_entry, compile_str};
 use zk_lisp_proof::frontend::PreflightMode;
 use zk_lisp_proof::pi::{self, PublicInputs, PublicInputsBuilder};
-use zk_lisp_proof_winterfell::layout::{NR, STEPS_PER_LEVEL_P2};
 use zk_lisp_proof_winterfell::poseidon::get_poseidon_suite;
 use zk_lisp_proof_winterfell::preflight::run as run_preflight;
 use zk_lisp_proof_winterfell::prove::{self, ZkProver};
-use zk_lisp_proof_winterfell::trace::build_trace;
+use zk_lisp_proof_winterfell::vm::layout::{NR, STEPS_PER_LEVEL_P2};
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -151,7 +151,8 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
     // Row = level_of_SSqueeze * steps + pos_final + 1
     let steps = STEPS_PER_LEVEL_P2;
     let lvl_ssq = 8 /*consts*/ + 2 /*extra consts*/ + 3 /*absorbs*/; // index where SSqueeze was pushed
-    let out_row = (lvl_ssq * steps + zk_lisp_proof_winterfell::schedule::pos_final() + 1) as u32;
+    let out_row =
+        (lvl_ssq * steps + zk_lisp_proof_winterfell::vm::schedule::pos_final() + 1) as u32;
 
     let mut pi = PublicInputsBuilder::from_program(&program)
         .build()
@@ -293,7 +294,8 @@ fn negative_vm_expected_mismatch() {
     let correct = sponge12_ref(&expected_inputs, &program.commitment);
     let steps = STEPS_PER_LEVEL_P2;
     let lvl_ssq = 3; // const, const, absorb, SSqueeze
-    let out_row = (lvl_ssq * steps + zk_lisp_proof_winterfell::schedule::pos_final() + 1) as u32;
+    let out_row =
+        (lvl_ssq * steps + zk_lisp_proof_winterfell::vm::schedule::pos_final() + 1) as u32;
 
     // Build correct PI to get a valid proof
     let mut pi_ok = PublicInputsBuilder::from_program(&program)

@@ -82,7 +82,7 @@ pub fn recursion_prove<B: RecursionBackend>(
     rc_pi: &B::RecursionPublic,
     opts: &B::ProverOptions,
 ) -> Result<(B::RecursionProof, RecursionDigest), B::Error> {
-    B::recursion_prove(steps, rc_pi, opts)
+    B::prove(steps, rc_pi, opts)
 }
 
 /// Verify a recursion aggregation step against backend-specific
@@ -92,5 +92,5 @@ pub fn recursion_verify<B: RecursionBackend>(
     rc_pi: &B::RecursionPublic,
     opts: &B::ProverOptions,
 ) -> Result<(), B::Error> {
-    B::recursion_verify(proof, rc_pi, opts)
+    B::verify(proof, rc_pi, opts)
 }

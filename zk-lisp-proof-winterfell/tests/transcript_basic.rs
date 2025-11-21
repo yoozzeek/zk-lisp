@@ -16,7 +16,7 @@
 use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::agg_child::{ZlChildTranscript, verify_child_transcript};
+use zk_lisp_proof_winterfell::agg::child::{ZlChildTranscript, verify_child_transcript};
 
 fn make_opts() -> ProverOptions {
     ProverOptions {

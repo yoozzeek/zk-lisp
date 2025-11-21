@@ -13,10 +13,10 @@ use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
 use zk_lisp_compiler::compile_entry;
 use zk_lisp_proof::frontend::PreflightMode;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::layout::Columns;
 use zk_lisp_proof_winterfell::preflight::run as run_preflight;
-use zk_lisp_proof_winterfell::trace::build_trace;
 use zk_lisp_proof_winterfell::utils::vm_output_from_trace;
+use zk_lisp_proof_winterfell::vm::layout::Columns;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 fn proof_opts() -> ProofOptions {
     ProofOptions::new(

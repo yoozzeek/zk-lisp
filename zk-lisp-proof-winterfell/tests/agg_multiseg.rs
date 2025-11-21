@@ -4,9 +4,9 @@
 use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::agg_air::AggAirPublicInputs;
-use zk_lisp_proof_winterfell::agg_child::{ZlChildCompact, children_root_from_compact};
-use zk_lisp_proof_winterfell::agg_trace::build_agg_trace;
+use zk_lisp_proof_winterfell::agg::air::AggAirPublicInputs;
+use zk_lisp_proof_winterfell::agg::child::{ZlChildCompact, children_root_from_compact};
+use zk_lisp_proof_winterfell::agg::trace::build_agg_trace;
 
 fn init_tracing() {
     static INIT: std::sync::Once = std::sync::Once::new();
@@ -39,7 +39,7 @@ fn build_large_program_for_multiseg() -> zk_lisp_compiler::Program {
     // Construct target_levels = (MAX_SEGMENT_ROWS / STEPS_PER_LEVEL_P2) + 1
     // using MAX_SEGMENT_ROWS = 1 << 10, matching the planner's
     // default when no override is provided.
-    let steps_per_level = zk_lisp_proof_winterfell::layout::STEPS_PER_LEVEL_P2;
+    let steps_per_level = zk_lisp_proof_winterfell::vm::layout::STEPS_PER_LEVEL_P2;
     let max_rows = 1usize << 10;
     let target_levels = (max_rows / steps_per_level) + 1;
 
@@ -93,7 +93,7 @@ fn agg_multiseg_positive_builds_trace() {
         v_units_total: v_sum,
         children_count: children.len() as u32,
         batch_id: [0u8; 32],
-        profile_meta: zk_lisp_proof_winterfell::agg_air::AggProfileMeta {
+        profile_meta: zk_lisp_proof_winterfell::agg::air::AggProfileMeta {
             m: first.meta.m,
             rho: first.meta.rho,
             q: first.meta.q,
@@ -102,8 +102,8 @@ fn agg_multiseg_positive_builds_trace() {
             pi_len: first.meta.pi_len,
             v_units: first.meta.v_units, // unused in checks beyond to_elements
         },
-        profile_fri: zk_lisp_proof_winterfell::agg_air::AggFriProfile::default(),
-        profile_queries: zk_lisp_proof_winterfell::agg_air::AggQueryProfile {
+        profile_fri: zk_lisp_proof_winterfell::agg::air::AggFriProfile::default(),
+        profile_queries: zk_lisp_proof_winterfell::agg::air::AggQueryProfile {
             num_queries: first.meta.q,
             grinding_factor: 0,
         },

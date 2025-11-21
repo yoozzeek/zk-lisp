@@ -17,13 +17,13 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{Assertion, EvaluationFrame, TransitionConstraintDegree};
 
-use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
-use crate::schedule;
 use crate::utils;
+use crate::vm::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::schedule;
 
 use super::{AirModule, AirSharedContext};
 
-pub(super) struct ScheduleAir;
+pub(crate) struct ScheduleAir;
 
 impl AirModule for ScheduleAir {
     fn push_degrees(_ctx: &AirSharedContext, _out: &mut Vec<TransitionConstraintDegree>) {}
@@ -143,7 +143,8 @@ impl AirModule for ScheduleAir {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{air, layout};
+    use crate::vm::air;
+    use crate::vm::layout;
     use winterfell::math::StarkField;
     use winterfell::{Air, ProofOptions, TraceInfo};
 

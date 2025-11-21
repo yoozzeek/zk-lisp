@@ -13,8 +13,8 @@
 //! trace utilities such as [`vm_output_from_trace`] used by
 //! both AIR and trace construction code.
 
-use crate::layout::{self, NR};
-use crate::schedule;
+use crate::vm::layout::{self, NR};
+use crate::vm::schedule;
 
 use blake3::Hasher;
 use std::sync::OnceLock;

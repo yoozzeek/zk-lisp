@@ -22,10 +22,10 @@ mod ram;
 mod rom;
 mod schedule;
 
-use crate::air::{merkle::MerkleAir, poseidon::PoseidonAir, schedule::ScheduleAir};
-use crate::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
-use crate::schedule as schedule_core;
+use crate::vm::air::{merkle::MerkleAir, poseidon::PoseidonAir, schedule::ScheduleAir};
+use crate::vm::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::schedule as schedule_core;
 use crate::{poseidon as poseidon_core, utils};
 
 use alu::VmAluAir;

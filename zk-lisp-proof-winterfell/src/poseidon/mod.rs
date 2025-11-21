@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp project.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -8,17 +8,16 @@
 //   portions of it. See the NOTICE file for details.
 
 //! Deterministic derivation of Poseidon2 parameters.
-//!
-//! Derives domain tags, MDS matrices and round constants for
-//! the t=12 sponge and t=3 ROM hash, including a checked
-//! mode used to validate suites during configuration.
+
+pub mod hasher;
 
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 
-use crate::{layout::POSEIDON_ROUNDS, utils};
+use crate::utils;
+use crate::vm::layout::POSEIDON_ROUNDS;
 
 const DOM_POSEIDON_RC: &str = "zkl/poseidon2/rc";
 const DOM_POSEIDON_DOM0: &str = "zkl/poseidon2/dom/c0";

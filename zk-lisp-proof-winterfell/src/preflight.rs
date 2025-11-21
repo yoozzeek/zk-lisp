@@ -14,10 +14,11 @@
 //! console tables or JSON depending on [`PreflightMode`].
 
 use crate::AirPublicInputs;
-use crate::air::ZkLispAir;
+use crate::poseidon;
 use crate::prove::Error;
-use crate::{layout, poseidon};
+use crate::vm::air::ZkLispAir;
 
+use crate::vm::layout;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table, presets::ASCII_BORDERS_ONLY};
 use serde::Serialize;
 use winterfell::math::fields::f128::BaseElement as BE;

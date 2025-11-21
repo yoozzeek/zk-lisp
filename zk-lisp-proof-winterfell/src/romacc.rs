@@ -8,9 +8,9 @@
 //! virtual ROM map-rows derived directly from the compiled
 //! program.
 
-use crate::layout::Columns;
 use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
 use crate::utils::{self, ROM_W_SEED_0, ROM_W_SEED_1};
+use crate::vm::layout::Columns;
 
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;

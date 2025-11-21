@@ -7,15 +7,15 @@
 //   attribution in copies of this file or substantial
 //   portions of it. See the NOTICE file for details.
 
-use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::ProofOptions;
+use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_compiler::compile_entry;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::layout::Columns;
-use zk_lisp_proof_winterfell::prove::{self, verify_proof, ZkProver};
+use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
 use zk_lisp_proof_winterfell::romacc::rom_acc_from_program;
-use zk_lisp_proof_winterfell::trace::build_trace;
 use zk_lisp_proof_winterfell::utils::vm_output_from_trace;
+use zk_lisp_proof_winterfell::vm::layout::Columns;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 #[test]
 fn loop_bounded_recur_prove_verify() {

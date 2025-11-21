@@ -652,14 +652,12 @@ fn cmd_prove(
     }
 
     let (rc_proof, _rc_digest, rc_pi) =
-        recursion::recursion_prove_full::<WinterfellBackend>(&program, &pi, &opts)
+        recursion::prove_chain::<WinterfellBackend>(&program, &pi, &opts)
             .map_err(CliError::Prover)?;
 
     let artifact_bytes =
-        <WinterfellBackend as recursion::RecursionArtifactCodec>::encode_recursion_artifact(
-            &rc_proof, &rc_pi,
-        )
-        .map_err(CliError::Prover)?;
+        <WinterfellBackend as recursion::RecursionArtifactCodec>::encode(&rc_proof, &rc_pi)
+            .map_err(CliError::Prover)?;
 
     let out_path = if let Some(path) = args.out {
         path
@@ -744,10 +742,8 @@ fn cmd_verify(
     let pi_cli = build_pi_for_program(&program, &public_vmargs, &[])?;
 
     let (rc_proof, rc_pi) =
-        <WinterfellBackend as recursion::RecursionArtifactCodec>::decode_recursion_artifact(
-            &artifact_bytes,
-        )
-        .map_err(CliError::Prover)?;
+        <WinterfellBackend as recursion::RecursionArtifactCodec>::decode(&artifact_bytes)
+            .map_err(CliError::Prover)?;
 
     if rc_pi.children_count == 0 {
         return Err(CliError::InvalidInput("agg proof has zero children".into()));
@@ -1092,51 +1088,59 @@ fn cmd_repl() -> Result<(), CliError> {
                     );
 
                     let opts = proof_opts(64, 8, 0, None);
-                    match recursion::recursion_prove_full::<WinterfellBackend>(&program, &pi, &opts) {
+                    match recursion::prove_chain::<WinterfellBackend>(&program, &pi, &opts) {
                         Err(e) => println!("error: prove: {e}"),
-                        Ok((rc_proof, _rc_digest, rc_pi)) => match <WinterfellBackend as recursion::RecursionArtifactCodec>::encode_recursion_artifact(&rc_proof, &rc_pi) {
-                            Err(e) => println!("error: serialize agg proof: {e}"),
-                            Ok(bytes) => {
-                                let file_name = proof_basename_from_expr(expr).replace("proof_", "agg_");
-                                let path = std::path::PathBuf::from(&file_name);
+                        Ok((rc_proof, _rc_digest, rc_pi)) => {
+                            match <WinterfellBackend as recursion::RecursionArtifactCodec>::encode(
+                                &rc_proof, &rc_pi,
+                            ) {
+                                Err(e) => println!("error: serialize agg proof: {e}"),
+                                Ok(bytes) => {
+                                    let file_name =
+                                        proof_basename_from_expr(expr).replace("proof_", "agg_");
+                                    let path = std::path::PathBuf::from(&file_name);
 
-                                match fs::write(&path, &bytes) {
-                                    Err(e) => {
-                                        println!("error: write proof file: {e}");
-                                    }
-                                    Ok(()) => {
-                                        let proof_b64 = base64::engine::general_purpose::STANDARD
-                                            .encode(&bytes);
-                                        let len_b64 = proof_b64.len();
+                                    match fs::write(&path, &bytes) {
+                                        Err(e) => {
+                                            println!("error: write proof file: {e}");
+                                        }
+                                        Ok(()) => {
+                                            let proof_b64 =
+                                                base64::engine::general_purpose::STANDARD
+                                                    .encode(&bytes);
+                                            let len_b64 = proof_b64.len();
 
-                                        let preview_core = if len_b64 <= 128 {
-                                            proof_b64
-                                        } else {
-                                            let head = &proof_b64[..64];
-                                            let tail = &proof_b64[len_b64 - 64..];
+                                            let preview_core = if len_b64 <= 128 {
+                                                proof_b64
+                                            } else {
+                                                let head = &proof_b64[..64];
+                                                let tail = &proof_b64[len_b64 - 64..];
 
-                                            format!("{head}...{tail}")
-                                        };
+                                                format!("{head}...{tail}")
+                                            };
 
-                                        println!("agg proof saved to {}", path.display());
-                                        println!(
-                                            "preview: {} (len={} bytes, b64_len={})",
-                                            preview_core,
-                                            bytes.len(),
-                                            len_b64
-                                        );
-                                        println!("hint: verify in REPL with `:verify {file_name}`");
-                                        println!(
-                                            "hint: verify via CLI with `zk-lisp verify {file_name} <program.zlisp> --arg ...`"
-                                        );
+                                            println!("agg proof saved to {}", path.display());
+                                            println!(
+                                                "preview: {} (len={} bytes, b64_len={})",
+                                                preview_core,
+                                                bytes.len(),
+                                                len_b64
+                                            );
+                                            println!(
+                                                "hint: verify in REPL with `:verify {file_name}`"
+                                            );
+                                            println!(
+                                                "hint: verify via CLI with `zk-lisp verify {file_name} <program.zlisp> --arg ...`"
+                                            );
 
-                                        // Remember last expression
-                                        // for subsequent :verify
-                                        session.last_expr = Some(expr.to_string());
+                                            // Remember last expression
+                                            // for subsequent :verify
+                                            session.last_expr = Some(expr.to_string());
+                                        }
                                     }
                                 }
                             }
-                        },
+                        }
                     }
                 }
             }
@@ -1182,13 +1186,14 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
-            let (rc_proof, rc_pi) = match <WinterfellBackend as recursion::RecursionArtifactCodec>::decode_recursion_artifact(&bytes) {
-                Ok(pair) => pair,
-                Err(e) => {
-                    println!("error: parse agg proof: {e}");
-                    continue;
-                }
-            };
+            let (rc_proof, rc_pi) =
+                match <WinterfellBackend as recursion::RecursionArtifactCodec>::decode(&bytes) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        println!("error: parse agg proof: {e}");
+                        continue;
+                    }
+                };
 
             let expr = match &session.last_expr {
                 Some(e) => e.clone(),

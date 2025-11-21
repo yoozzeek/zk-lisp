@@ -27,8 +27,7 @@ pub const FM_SPONGE: u64 = 1 << 5;
 pub const FM_MERKLE: u64 = 1 << 6;
 pub const FM_RAM: u64 = 1 << 7;
 
-/// Typed VM argument value.
-///
+/// Typed VM argument value
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VmArg {
     U64(u64),
@@ -53,21 +52,18 @@ pub struct PublicInputs {
     pub program_id: [u8; 32],
 
     /// Blake3 commitment of the program
-    /// as used by the base VM AIR. For
+    /// as used by the base VM AIR.
     pub program_commitment: [u8; 32],
 
     pub merkle_root: [u8; 32],
 
-    /// Public VM arguments (typed).
-    ///
+    /// Public VM arguments
     pub public_args: Vec<VmArg>,
 
-    /// Runtime public arguments for `main`.
-    ///
+    /// Runtime public arguments for `main`
     pub main_args: Vec<VmArg>,
 
-    /// Secret VM arguments (typed).
-    ///
+    /// Secret VM arguments
     pub secret_args: Vec<VmArg>,
 
     pub vm_out_reg: u8,
@@ -164,7 +160,6 @@ impl PublicInputsBuilder {
     }
 
     /// Attach typed public VM arguments.
-    ///
     pub fn with_public_args(mut self, args: &[VmArg]) -> Self {
         self.pi.public_args = args.to_vec();
         self
@@ -178,7 +173,6 @@ impl PublicInputsBuilder {
     }
 
     /// Attach typed secret VM arguments.
-    ///
     pub fn with_secret_args(mut self, args: &[VmArg]) -> Self {
         self.pi.secret_args = args.to_vec();
         self.pi.feature_mask |= FM_VM;

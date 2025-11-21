@@ -15,7 +15,7 @@ use zk_lisp_proof::segment::{Segment, SegmentPlanner};
 use zk_lisp_proof::{ProverOptions, ZkBackend};
 
 use crate::WinterfellBackend;
-use crate::layout::STEPS_PER_LEVEL_P2;
+use crate::vm::layout::STEPS_PER_LEVEL_P2;
 
 /// Maximum number of base-trace rows per execution segment.
 const MAX_SEGMENT_ROWS: usize = 1 << 10;

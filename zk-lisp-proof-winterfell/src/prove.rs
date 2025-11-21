@@ -32,15 +32,16 @@ use zk_lisp_proof::pi as core_pi;
 use zk_lisp_proof::pi::PublicInputs;
 use zk_lisp_proof::segment::SegmentPlanner;
 
-use crate::agg_air::{AggAirPublicInputs, ZlAggAir};
-use crate::agg_child::ZlChildTranscript;
-use crate::agg_trace::build_agg_trace_from_transcripts;
-use crate::air::ZkLispAir;
-use crate::layout::{Columns, STEPS_PER_LEVEL_P2};
-use crate::poseidon_hasher::PoseidonHasher;
+use crate::agg::air::{AggAirPublicInputs, ZlAggAir};
+use crate::agg::child::ZlChildTranscript;
+use crate::agg::trace::build_agg_trace_from_transcripts;
+use crate::poseidon::hasher::PoseidonHasher;
+use crate::proof::step::{StepMeta, StepProof};
 use crate::segment_planner::WinterfellSegmentPlanner;
-use crate::zl_step::{StepMeta, ZlStepProof};
-use crate::{preflight::run as run_preflight, schedule, trace, utils};
+use crate::vm::air::ZkLispAir;
+use crate::vm::layout::{Columns, STEPS_PER_LEVEL_P2};
+use crate::vm::{schedule, trace};
+use crate::{preflight::run as run_preflight, utils};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -66,7 +67,7 @@ pub struct VerifyBoundaries {
 }
 
 impl VerifyBoundaries {
-    pub fn from_step(step: &ZlStepProof) -> Self {
+    pub fn from_step(step: &StepProof) -> Self {
         let pi = &step.proof.pi;
         VerifyBoundaries {
             pc_init: pi.pc_init,
@@ -200,98 +201,6 @@ struct SegmentBoundaryBytes {
     rom_s_out_0: [u8; 32],
     rom_s_out_1: [u8; 32],
     rom_s_out_2: [u8; 32],
-}
-
-fn compute_segment_boundary_bytes(
-    trace: &TraceTable<BE>,
-    segment: &zk_lisp_proof::segment::Segment,
-) -> error::Result<SegmentBoundaryBytes> {
-    let t = std::time::Instant::now();
-
-    if segment.r_start >= segment.r_end {
-        return Err(error::Error::InvalidInput(
-            "segment r_start must be < r_end when computing boundary state",
-        ));
-    }
-
-    let n_rows = trace.length();
-    if segment.r_end > n_rows {
-        return Err(error::Error::InvalidInput(
-            "segment end row out of bounds for trace in boundary computation",
-        ));
-    }
-
-    let cols = Columns::baseline();
-    let steps = STEPS_PER_LEVEL_P2;
-    let r_start = segment.r_start;
-    let r_end = segment.r_end;
-
-    // pc at the first map row of the segment
-    let row_map_first = (r_start / steps) * steps + schedule::pos_map();
-    let pc_init_fe = trace.get(cols.pc, row_map_first);
-
-    // RAM grand-product accumulators are carried row-wise; we
-    // take the values at the first and last rows of the segment.
-    let ram_gp_unsorted_in_fe = trace.get(cols.ram_gp_unsorted, r_start);
-    let ram_gp_unsorted_out_fe = trace.get(cols.ram_gp_unsorted, r_end - 1);
-    let ram_gp_sorted_in_fe = trace.get(cols.ram_gp_sorted, r_start);
-    let ram_gp_sorted_out_fe = trace.get(cols.ram_gp_sorted, r_end - 1);
-
-    // ROM t=3 accumulator state is defined in terms of VM levels.
-    // We select the map row of the first level touched by the
-    let lvl_first = r_start / steps;
-    let lvl_last = (r_end - 1) / steps;
-
-    let row_map_first = lvl_first
-        .checked_mul(steps)
-        .and_then(|base| base.checked_add(schedule::pos_map()))
-        .ok_or(error::Error::InvalidInput(
-            "overflow while computing ROM map row for segment boundary state",
-        ))?;
-
-    let row_final_last = lvl_last
-        .checked_mul(steps)
-        .and_then(|base| base.checked_add(schedule::pos_final()))
-        .ok_or(error::Error::InvalidInput(
-            "overflow while computing ROM final row for segment boundary state",
-        ))?;
-
-    if row_map_first >= n_rows || row_final_last >= n_rows {
-        return Err(error::Error::InvalidInput(
-            "ROM boundary rows out of bounds for trace in boundary computation",
-        ));
-    }
-
-    let rom_s_in_0_fe = trace.get(cols.rom_s_index(0), row_map_first);
-    let rom_s_in_1_fe = trace.get(cols.rom_s_index(1), row_map_first);
-    let rom_s_in_2_fe = trace.get(cols.rom_s_index(2), row_map_first);
-
-    let rom_s_out_0_fe = trace.get(cols.rom_s_index(0), row_final_last);
-    let rom_s_out_1_fe = trace.get(cols.rom_s_index(1), row_final_last);
-    let rom_s_out_2_fe = trace.get(cols.rom_s_index(2), row_final_last);
-
-    let out = SegmentBoundaryBytes {
-        pc_init: utils::fe_to_bytes_fold(pc_init_fe),
-        ram_gp_unsorted_in: utils::fe_to_bytes_fold(ram_gp_unsorted_in_fe),
-        ram_gp_unsorted_out: utils::fe_to_bytes_fold(ram_gp_unsorted_out_fe),
-        ram_gp_sorted_in: utils::fe_to_bytes_fold(ram_gp_sorted_in_fe),
-        ram_gp_sorted_out: utils::fe_to_bytes_fold(ram_gp_sorted_out_fe),
-        rom_s_in_0: utils::fe_to_bytes_fold(rom_s_in_0_fe),
-        rom_s_in_1: utils::fe_to_bytes_fold(rom_s_in_1_fe),
-        rom_s_in_2: utils::fe_to_bytes_fold(rom_s_in_2_fe),
-        rom_s_out_0: utils::fe_to_bytes_fold(rom_s_out_0_fe),
-        rom_s_out_1: utils::fe_to_bytes_fold(rom_s_out_1_fe),
-        rom_s_out_2: utils::fe_to_bytes_fold(rom_s_out_2_fe),
-    };
-
-    tracing::debug!(
-        target = "proof.segment",
-        seg_rows = %segment.len(),
-        elapsed_ms = %t.elapsed().as_millis(),
-        "segment boundary bytes computed",
-    );
-
-    Ok(out)
 }
 
 impl WProver for ZkWinterfellProver {
@@ -459,9 +368,6 @@ impl WProver for ZkWinterfellProver {
         out
     }
 }
-
-// -----------------------------------------
-// AGGREGATION AIR PROVER (ZlAggAir)
 
 /// Winterfell prover wrapper for the aggregation AIR
 /// `ZlAggAir`. This mirrors `ZlIvWinterfellProver` but
@@ -778,9 +684,9 @@ pub fn verify_proof(
 
     // Rebuild a minimal execution trace to derive the same
     // boundary public inputs used by the prover so that the
-    let trace = crate::trace::build_trace(program, &pi)?;
-    let cols = crate::layout::Columns::baseline();
-    let steps = crate::layout::STEPS_PER_LEVEL_P2;
+    let trace = trace::build_trace(program, &pi)?;
+    let cols = Columns::baseline();
+    let steps = STEPS_PER_LEVEL_P2;
     let n_rows = trace.length();
     let last = n_rows.saturating_sub(1);
 
@@ -921,20 +827,20 @@ pub fn verify_proof_fast(
     let air_pi = crate::AirPublicInputs {
         core: pi,
         rom_acc,
-        pc_init: crate::utils::fe_from_bytes_fold(&boundaries.pc_init),
-        ram_gp_unsorted_in: crate::utils::fe_from_bytes_fold(&boundaries.ram_gp_unsorted_in),
-        ram_gp_unsorted_out: crate::utils::fe_from_bytes_fold(&boundaries.ram_gp_unsorted_out),
-        ram_gp_sorted_in: crate::utils::fe_from_bytes_fold(&boundaries.ram_gp_sorted_in),
-        ram_gp_sorted_out: crate::utils::fe_from_bytes_fold(&boundaries.ram_gp_sorted_out),
+        pc_init: utils::fe_from_bytes_fold(&boundaries.pc_init),
+        ram_gp_unsorted_in: utils::fe_from_bytes_fold(&boundaries.ram_gp_unsorted_in),
+        ram_gp_unsorted_out: utils::fe_from_bytes_fold(&boundaries.ram_gp_unsorted_out),
+        ram_gp_sorted_in: utils::fe_from_bytes_fold(&boundaries.ram_gp_sorted_in),
+        ram_gp_sorted_out: utils::fe_from_bytes_fold(&boundaries.ram_gp_sorted_out),
         rom_s_in: [
-            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_in[0]),
-            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_in[1]),
-            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_in[2]),
+            utils::fe_from_bytes_fold(&boundaries.rom_s_in[0]),
+            utils::fe_from_bytes_fold(&boundaries.rom_s_in[1]),
+            utils::fe_from_bytes_fold(&boundaries.rom_s_in[2]),
         ],
         rom_s_out: [
-            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_out[0]),
-            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_out[1]),
-            crate::utils::fe_from_bytes_fold(&boundaries.rom_s_out[2]),
+            utils::fe_from_bytes_fold(&boundaries.rom_s_out[0]),
+            utils::fe_from_bytes_fold(&boundaries.rom_s_out[1]),
+            utils::fe_from_bytes_fold(&boundaries.rom_s_out[2]),
         ],
     };
 
@@ -962,7 +868,7 @@ pub fn prove_step(
     program: &Program,
     pub_inputs: &PublicInputs,
     opts: &zk_lisp_proof::ProverOptions,
-) -> Result<ZlStepProof, Error> {
+) -> Result<StepProof, Error> {
     let min_bits = opts.min_security_bits;
     let blowup = opts.blowup;
     let grind = opts.grind;
@@ -1030,7 +936,7 @@ pub fn prove_step(
     let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc);
     let proof = prover.prove(trace)?;
 
-    let zl1_proof = crate::zl1::format::Proof::new_single_segment(
+    let zl1_proof = crate::proof::format::Proof::new_single_segment(
         suite_id,
         meta,
         pub_inputs,
@@ -1050,7 +956,7 @@ pub fn prove_step(
         proof,
     )?;
 
-    Ok(ZlStepProof {
+    Ok(StepProof {
         proof: zl1_proof,
         pi_core: pub_inputs.clone(),
         rom_acc,
@@ -1072,7 +978,7 @@ pub fn prove_program_steps(
     program: &Program,
     pub_inputs: &PublicInputs,
     opts: &zk_lisp_proof::ProverOptions,
-) -> Result<Vec<ZlStepProof>, Error> {
+) -> Result<Vec<StepProof>, Error> {
     let min_bits = opts.min_security_bits;
     let blowup = opts.blowup;
     let grind = opts.grind;
@@ -1097,15 +1003,15 @@ pub fn prove_program_steps(
 
     // Build the full trace once
     // and reuse slices per segment.
-    let full_trace = crate::trace::build_trace(program, pub_inputs)?;
+    let full_trace = trace::build_trace(program, pub_inputs)?;
 
     let mut steps = Vec::with_capacity(segments.len());
     let segments_len = segments.len();
-    let mut prev_state: Option<crate::trace::PrevState> = None;
+    let mut prev_state: Option<trace::PrevState> = None;
 
     for (i, seg) in segments.into_iter().enumerate() {
         let (trace, state_in_hash, state_out_hash) =
-            crate::trace::build_segment_trace_with_state_without_full(
+            trace::build_segment_trace_with_state_without_full(
                 &full_trace,
                 &seg,
                 prev_state.as_ref(),
@@ -1118,7 +1024,7 @@ pub fn prove_program_steps(
         let boundary_bytes = compute_segment_boundary_bytes(&trace, &seg_local)?;
 
         let (num_partitions, hash_rate) =
-            crate::trace::select_partitions_for_trace(trace.width(), trace_len);
+            trace::select_partitions_for_trace(trace.width(), trace_len);
         let wf_opts = base_opts.clone().with_partitions(num_partitions, hash_rate);
 
         let rom_acc = if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
@@ -1145,7 +1051,7 @@ pub fn prove_program_steps(
         let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc);
         let proof = prover.prove(trace)?;
 
-        let zl1_proof = crate::zl1::format::Proof::new_multi_segment(
+        let zl1_proof = crate::proof::format::Proof::new_multi_segment(
             suite_id,
             meta,
             pub_inputs,
@@ -1167,13 +1073,13 @@ pub fn prove_program_steps(
             proof,
         )?;
 
-        steps.push(ZlStepProof {
+        steps.push(StepProof {
             proof: zl1_proof,
             pi_core: pub_inputs.clone(),
             rom_acc,
         });
 
-        prev_state = Some(crate::trace::PrevState { state_out_hash });
+        prev_state = Some(trace::PrevState { state_out_hash });
     }
 
     Ok(steps)
@@ -1191,11 +1097,102 @@ fn estimate_conjectured_security_bits(opts: &ProofOptions) -> u32 {
         query_security += opts.grinding_factor();
     }
 
-    let collision_resistance =
-        <crate::poseidon_hasher::PoseidonHasher<BE> as WfHasher>::COLLISION_RESISTANCE;
+    let collision_resistance = <PoseidonHasher<BE> as WfHasher>::COLLISION_RESISTANCE;
 
     core::cmp::min(
         core::cmp::min(field_security, query_security) - 1,
         collision_resistance,
     )
+}
+
+fn compute_segment_boundary_bytes(
+    trace: &TraceTable<BE>,
+    segment: &zk_lisp_proof::segment::Segment,
+) -> error::Result<SegmentBoundaryBytes> {
+    let t = std::time::Instant::now();
+
+    if segment.r_start >= segment.r_end {
+        return Err(error::Error::InvalidInput(
+            "segment r_start must be < r_end when computing boundary state",
+        ));
+    }
+
+    let n_rows = trace.length();
+    if segment.r_end > n_rows {
+        return Err(error::Error::InvalidInput(
+            "segment end row out of bounds for trace in boundary computation",
+        ));
+    }
+
+    let cols = Columns::baseline();
+    let steps = STEPS_PER_LEVEL_P2;
+    let r_start = segment.r_start;
+    let r_end = segment.r_end;
+
+    // pc at the first map row of the segment
+    let row_map_first = (r_start / steps) * steps + schedule::pos_map();
+    let pc_init_fe = trace.get(cols.pc, row_map_first);
+
+    // RAM grand-product accumulators are carried row-wise; we
+    // take the values at the first and last rows of the segment.
+    let ram_gp_unsorted_in_fe = trace.get(cols.ram_gp_unsorted, r_start);
+    let ram_gp_unsorted_out_fe = trace.get(cols.ram_gp_unsorted, r_end - 1);
+    let ram_gp_sorted_in_fe = trace.get(cols.ram_gp_sorted, r_start);
+    let ram_gp_sorted_out_fe = trace.get(cols.ram_gp_sorted, r_end - 1);
+
+    // ROM t=3 accumulator state is defined in terms of VM levels.
+    // We select the map row of the first level touched by the
+    let lvl_first = r_start / steps;
+    let lvl_last = (r_end - 1) / steps;
+
+    let row_map_first = lvl_first
+        .checked_mul(steps)
+        .and_then(|base| base.checked_add(schedule::pos_map()))
+        .ok_or(error::Error::InvalidInput(
+            "overflow while computing ROM map row for segment boundary state",
+        ))?;
+
+    let row_final_last = lvl_last
+        .checked_mul(steps)
+        .and_then(|base| base.checked_add(schedule::pos_final()))
+        .ok_or(error::Error::InvalidInput(
+            "overflow while computing ROM final row for segment boundary state",
+        ))?;
+
+    if row_map_first >= n_rows || row_final_last >= n_rows {
+        return Err(error::Error::InvalidInput(
+            "ROM boundary rows out of bounds for trace in boundary computation",
+        ));
+    }
+
+    let rom_s_in_0_fe = trace.get(cols.rom_s_index(0), row_map_first);
+    let rom_s_in_1_fe = trace.get(cols.rom_s_index(1), row_map_first);
+    let rom_s_in_2_fe = trace.get(cols.rom_s_index(2), row_map_first);
+
+    let rom_s_out_0_fe = trace.get(cols.rom_s_index(0), row_final_last);
+    let rom_s_out_1_fe = trace.get(cols.rom_s_index(1), row_final_last);
+    let rom_s_out_2_fe = trace.get(cols.rom_s_index(2), row_final_last);
+
+    let out = SegmentBoundaryBytes {
+        pc_init: utils::fe_to_bytes_fold(pc_init_fe),
+        ram_gp_unsorted_in: utils::fe_to_bytes_fold(ram_gp_unsorted_in_fe),
+        ram_gp_unsorted_out: utils::fe_to_bytes_fold(ram_gp_unsorted_out_fe),
+        ram_gp_sorted_in: utils::fe_to_bytes_fold(ram_gp_sorted_in_fe),
+        ram_gp_sorted_out: utils::fe_to_bytes_fold(ram_gp_sorted_out_fe),
+        rom_s_in_0: utils::fe_to_bytes_fold(rom_s_in_0_fe),
+        rom_s_in_1: utils::fe_to_bytes_fold(rom_s_in_1_fe),
+        rom_s_in_2: utils::fe_to_bytes_fold(rom_s_in_2_fe),
+        rom_s_out_0: utils::fe_to_bytes_fold(rom_s_out_0_fe),
+        rom_s_out_1: utils::fe_to_bytes_fold(rom_s_out_1_fe),
+        rom_s_out_2: utils::fe_to_bytes_fold(rom_s_out_2_fe),
+    };
+
+    tracing::debug!(
+        target = "proof.segment",
+        seg_rows = %segment.len(),
+        elapsed_ms = %t.elapsed().as_millis(),
+        "segment boundary bytes computed",
+    );
+
+    Ok(out)
 }

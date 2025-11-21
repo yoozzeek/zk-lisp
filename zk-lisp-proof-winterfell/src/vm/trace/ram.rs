@@ -14,9 +14,9 @@
 //! consistent with the RAM AIR constraints.
 
 use crate::commit::program_field_commitment;
-use crate::layout::{NR, STEPS_PER_LEVEL_P2};
-use crate::schedule;
-use crate::trace::{TraceBuilderContext, TraceModule};
+use crate::vm::layout::{NR, STEPS_PER_LEVEL_P2};
+use crate::vm::schedule;
+use crate::vm::trace::{TraceBuilderContext, TraceModule};
 
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField};
@@ -24,9 +24,9 @@ use winterfell::{Trace, TraceTable};
 use zk_lisp_proof::error;
 
 /// RamEvent(addr, clk, val, is_write)
-pub(super) type RamEvent = (BE, BE, BE, BE);
+pub(crate) type RamEvent = (BE, BE, BE, BE);
 
-pub(super) struct RamTraceBuilder<'a> {
+pub(crate) struct RamTraceBuilder<'a> {
     commitment: &'a [u8; 32],
     ram_events: &'a mut [RamEvent],
 }

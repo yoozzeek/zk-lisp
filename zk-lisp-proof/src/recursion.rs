@@ -8,29 +8,21 @@
 //   portions of it. See the NOTICE file for details.
 
 //! Backend-agnostic recursion interfaces for zk-lisp.
-//!
-//! This module defines a minimal trait for STARK-in-STARK
-//! style recursion over step proofs. Concrete backends
-//! implement [`RecursionBackend`] to expose their own
-//! aggregation proof format, while frontends can remain
-//! generic over the recursion layer.
 
 use crate::ZkBackend;
 
 pub trait RecursionBackend: ZkBackend {
     type StepProof;
-
     type RecursionProof;
-
     type RecursionPublic;
 
-    fn recursion_prove(
+    fn prove(
         steps: &[Self::StepProof],
         rc_pi: &Self::RecursionPublic,
         opts: &Self::ProverOptions,
     ) -> Result<(Self::RecursionProof, RecursionDigest), Self::Error>;
 
-    fn recursion_verify(
+    fn verify(
         proof: Self::RecursionProof,
         rc_pi: &Self::RecursionPublic,
         opts: &Self::ProverOptions,
@@ -38,7 +30,7 @@ pub trait RecursionBackend: ZkBackend {
 }
 
 pub trait RecursionStepProver: RecursionBackend {
-    fn step_prove_all(
+    fn prove_all_steps(
         program: &Self::Program,
         pub_inputs: &Self::PublicInputs,
         opts: &Self::ProverOptions,
@@ -46,7 +38,7 @@ pub trait RecursionStepProver: RecursionBackend {
 }
 
 pub trait RecursionPublicBuilder: RecursionBackend {
-    fn build_recursion_public(
+    fn build_public(
         program: &Self::Program,
         pub_inputs: &Self::PublicInputs,
         steps: &[Self::StepProof],
@@ -57,12 +49,12 @@ pub trait RecursionPublicBuilder: RecursionBackend {
 pub trait RecursionArtifactCodec: RecursionBackend {
     type CodecError;
 
-    fn encode_recursion_artifact(
+    fn encode(
         proof: &Self::RecursionProof,
         rc_pi: &Self::RecursionPublic,
     ) -> Result<Vec<u8>, Self::CodecError>;
 
-    fn decode_recursion_artifact(
+    fn decode(
         bytes: &[u8],
     ) -> Result<(Self::RecursionProof, Self::RecursionPublic), Self::CodecError>;
 }
@@ -95,7 +87,7 @@ pub struct RecursionPublic {
     pub v_units_total: u64,
 }
 
-pub fn verify_recursion_chain<B, I>(
+pub fn verify_chain<B, I>(
     chain: I,
     opts: &B::ProverOptions,
 ) -> Result<(), RecursionChainError<B::Error>>
@@ -118,7 +110,7 @@ where
     let mut saw_step = false;
 
     for (rc_proof, rc_digest, backend_pi, rc_pi) in chain.into_iter() {
-        B::recursion_verify(rc_proof, &backend_pi, opts).map_err(RecursionChainError::Backend)?;
+        B::verify(rc_proof, &backend_pi, opts).map_err(RecursionChainError::Backend)?;
 
         saw_step = true;
 
@@ -208,14 +200,14 @@ where
     Ok(())
 }
 
-pub fn recursion_prove_full<B: RecursionBackend + RecursionStepProver + RecursionPublicBuilder>(
+pub fn prove_chain<B: RecursionBackend + RecursionStepProver + RecursionPublicBuilder>(
     program: &B::Program,
     pub_inputs: &B::PublicInputs,
     opts: &B::ProverOptions,
 ) -> Result<(B::RecursionProof, RecursionDigest, B::RecursionPublic), B::Error> {
-    let steps = B::step_prove_all(program, pub_inputs, opts)?;
-    let rc_pi = B::build_recursion_public(program, pub_inputs, &steps, opts)?;
-    let (proof, digest) = B::recursion_prove(&steps, &rc_pi, opts)?;
+    let steps = B::prove_all_steps(program, pub_inputs, opts)?;
+    let rc_pi = B::build_public(program, pub_inputs, &steps, opts)?;
+    let (proof, digest) = B::prove(&steps, &rc_pi, opts)?;
 
     Ok((proof, digest, rc_pi))
 }

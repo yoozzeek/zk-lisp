@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// This file is part of zk-lisp project.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of zk-lisp.
 // Copyright (C) 2025  Andrei Kochergin <zeek@tuta.com>
 //
 // Additional terms under GNU AGPL v3 section 7:
@@ -8,15 +8,8 @@
 //   portions of it. See the NOTICE file for details.
 
 //! Step-level metadata and digest for zk-lisp STARK proofs.
-//!
-//! This module defines a minimal echo of per-proof
-//! parameters (`StepMeta`) and a Poseidon-based
-//! digest function (`step_digest`) used by the
-//! STARK-in-STARK recursion layer, along with a
-//! concrete step proof wrapper (`ZlStepProof`).
 
-use crate::AirPublicInputs;
-use crate::zl1;
+use crate::{AirPublicInputs, proof};
 
 use winterfell::Proof as WProof;
 use winterfell::ProofOptions;
@@ -55,8 +48,8 @@ pub struct StepMeta {
 /// Concrete step-proof wrapper used as the
 /// backend-specific `StepProof` type for
 #[derive(Clone, Debug)]
-pub struct ZlStepProof {
-    pub proof: zl1::format::Proof,
+pub struct StepProof {
+    pub proof: proof::format::Proof,
     /// Backend-agnostic public inputs used when building
     /// this step trace.
     pub pi_core: zk_lisp_proof::pi::PublicInputs,
@@ -64,11 +57,11 @@ pub struct ZlStepProof {
     pub rom_acc: [BE; 3],
 }
 
-impl ZlStepProof {
+impl StepProof {
     /// Compute the step digest for this proof using
     /// the zl1 format and digest construction.
     pub fn digest(&self) -> [u8; 32] {
-        zl1::digest::step_digest(&self.proof)
+        proof::digest::step_digest(&self.proof)
     }
 
     /// Return the VM state hash at the beginning
@@ -152,7 +145,7 @@ impl ZlStepProof {
     }
 
     /// Decode a `ZlStepProof` from bytes produced by
-    /// [`ZlStepProof::to_bytes`]. This reconstructs an
+    /// [`StepProof::to_bytes`]. This reconstructs an
     pub fn from_bytes(bytes: &[u8]) -> error::Result<Self> {
         const MAGIC: &[u8; 7] = b"ZKLSTP1";
 
@@ -403,7 +396,7 @@ impl ZlStepProof {
         let meta = StepMeta::from_env(trace_len, &wf_opts, lambda_bits, pi_len);
 
         let zl1_proof = if segments_total <= 1 {
-            zl1::format::Proof::new_single_segment(
+            proof::format::Proof::new_single_segment(
                 suite_id,
                 meta,
                 &core_pi,
@@ -423,7 +416,7 @@ impl ZlStepProof {
                 inner_proof,
             )?
         } else {
-            zl1::format::Proof::new_multi_segment(
+            proof::format::Proof::new_multi_segment(
                 suite_id,
                 meta,
                 &core_pi,
@@ -446,7 +439,7 @@ impl ZlStepProof {
             )?
         };
 
-        Ok(ZlStepProof {
+        Ok(StepProof {
             proof: zl1_proof,
             pi_core: core_pi,
             rom_acc: [BE::ZERO; 3],

@@ -18,9 +18,9 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use super::{AirModule, AirSharedContext};
-use crate::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 
-pub(super) struct PoseidonAir;
+pub(crate) struct PoseidonAir;
 
 impl AirModule for PoseidonAir {
     fn push_degrees(ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
@@ -161,7 +161,7 @@ impl AirModule for PoseidonAir {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Columns;
+    use crate::vm::layout::Columns;
 
     #[test]
     fn round_constraints_zero_on_valid_row() {

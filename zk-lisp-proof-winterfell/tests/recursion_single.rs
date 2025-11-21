@@ -14,11 +14,11 @@ use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::frontend::recursion_prove;
 use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof::recursion::{
-    RecursionChainError, RecursionDigest, RecursionPublic, verify_recursion_chain,
+    RecursionChainError, RecursionDigest, RecursionPublic, verify_chain,
 };
 use zk_lisp_proof::{ProverOptions, pi::PublicInputs as CorePublicInputs};
 use zk_lisp_proof_winterfell::WinterfellBackend;
-use zk_lisp_proof_winterfell::agg_air::AggAirPublicInputs;
+use zk_lisp_proof_winterfell::agg::air::AggAirPublicInputs;
 
 fn make_opts() -> ProverOptions {
     ProverOptions {
@@ -47,14 +47,14 @@ fn build_public_inputs(program: &zk_lisp_compiler::Program) -> CorePublicInputs 
 }
 
 fn build_agg_pi_for_single_step(
-    step: &zk_lisp_proof_winterfell::zl_step::ZlStepProof,
+    step: &zk_lisp_proof_winterfell::proof::step::StepProof,
 ) -> AggAirPublicInputs {
     AggAirPublicInputs::from_step_proof(step).expect("agg PI build must succeed for step")
 }
 
 fn build_recursion_public_single_step(
     pi: &CorePublicInputs,
-    step: &zk_lisp_proof_winterfell::zl_step::ZlStepProof,
+    step: &zk_lisp_proof_winterfell::proof::step::StepProof,
     agg_pi: &AggAirPublicInputs,
     prev_digest: RecursionDigest,
 ) -> RecursionPublic {
@@ -134,7 +134,7 @@ fn recursion_single_step_roundtrip() {
 
     let rc_pub = build_recursion_public_single_step(&pi, &step, &agg_pi, [0u8; 32]);
 
-    verify_recursion_chain::<WinterfellBackend, _>(
+    verify_chain::<WinterfellBackend, _>(
         std::iter::once((rc_proof, rc_digest, agg_pi, rc_pub)),
         &opts,
     )
@@ -158,7 +158,7 @@ fn recursion_chain_prev_digest_non_zero_first_step_rejected() {
 
     let rc_pub = build_recursion_public_single_step(&pi, &step, &agg_pi, [1u8; 32]);
 
-    let err = verify_recursion_chain::<WinterfellBackend, _>(
+    let err = verify_chain::<WinterfellBackend, _>(
         std::iter::once((rc_proof, rc_digest, agg_pi, rc_pub)),
         &opts,
     )
@@ -204,7 +204,7 @@ fn recursion_chain_state_initial_mismatch_rejected() {
     let chain = std::iter::once((rc_proof1, rc_digest1, agg_pi1, rc_pub1))
         .chain(std::iter::once((rc_proof2, rc_digest2, agg_pi2, rc_pub2)));
 
-    let err = verify_recursion_chain::<WinterfellBackend, _>(chain, &opts).expect_err(
+    let err = verify_chain::<WinterfellBackend, _>(chain, &opts).expect_err(
         "verify_recursion_chain must fail when state_initial does not match previous state_final",
     );
 

@@ -15,8 +15,8 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::agg_child::{ZlChildCompact, ZlMerklePath, merkle_root_from_leaf};
-use zk_lisp_proof_winterfell::poseidon_hasher::PoseidonHasher;
+use zk_lisp_proof_winterfell::agg::child::{ZlChildCompact, ZlMerklePath, merkle_root_from_leaf};
+use zk_lisp_proof_winterfell::poseidon::hasher::PoseidonHasher;
 
 fn make_opts() -> ProverOptions {
     ProverOptions {

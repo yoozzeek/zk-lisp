@@ -14,12 +14,12 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_compiler::compile_entry;
 use zk_lisp_proof::error::Error as CoreError;
 use zk_lisp_proof::pi::{PublicInputsBuilder, VmArg};
-use zk_lisp_proof_winterfell::layout::{Columns, NR};
 use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
 use zk_lisp_proof_winterfell::romacc;
-use zk_lisp_proof_winterfell::schedule;
-use zk_lisp_proof_winterfell::trace::build_trace;
 use zk_lisp_proof_winterfell::utils::encode_main_args_to_slots;
+use zk_lisp_proof_winterfell::vm::layout::{Columns, NR};
+use zk_lisp_proof_winterfell::vm::schedule;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
