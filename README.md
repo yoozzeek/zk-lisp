@@ -29,9 +29,9 @@ Winterfell proves the trace satisfies AIR.
 
 ```lisp
 (def (main x y)
-    (let ((s (secret-arg 0)))
-      (assert (= y (+ x s)))
-      1))
+  (let ((s (secret-arg 0)))
+    (assert (= y (+ x s)))
+    1))
 ```
 
 ## Features
