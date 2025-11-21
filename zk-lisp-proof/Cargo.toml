@@ -7,3 +7,4 @@ edition.workspace = true
 [dependencies]
 zk-lisp-compiler = { path = "../zk-lisp-compiler" }
 thiserror = { workspace = true }
+blake3 = { workspace = true }

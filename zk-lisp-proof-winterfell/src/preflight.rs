@@ -14,10 +14,11 @@
 //! console tables or JSON depending on [`PreflightMode`].
 
 use crate::AirPublicInputs;
-use crate::air::ZkLispAir;
+use crate::poseidon;
 use crate::prove::Error;
-use crate::{layout, poseidon};
+use crate::vm::air::ZkLispAir;
 
+use crate::vm::layout;
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table, presets::ASCII_BORDERS_ONLY};
 use serde::Serialize;
 use winterfell::math::fields::f128::BaseElement as BE;
@@ -96,6 +97,13 @@ pub fn run(
     let air_pi = AirPublicInputs {
         core: pub_inputs.clone(),
         rom_acc,
+        pc_init: BE::ZERO,
+        ram_gp_unsorted_in: BE::ZERO,
+        ram_gp_unsorted_out: BE::ZERO,
+        ram_gp_sorted_in: BE::ZERO,
+        ram_gp_sorted_out: BE::ZERO,
+        rom_s_in: [BE::ZERO; 3],
+        rom_s_out: [BE::ZERO; 3],
     };
 
     let air = ZkLispAir::new(ti, air_pi, options.clone());
@@ -423,8 +431,8 @@ pub fn run(
                     "ok": true,
                     "rows": trace.length(),
                     "constraints": res_len,
-                    "peak_live": compilers_stats.reuse_dst,
-                    "reuse_dst": compilers_stats.su_reorders,
+                    "peak_live": compilers_stats.peak_live,
+                    "reuse_dst": compilers_stats.reuse_dst,
                     "su_reorders": compilers_stats.su_reorders,
                     "balanced_chains": compilers_stats.balanced_chains,
                     "mov_elided": compilers_stats.mov_elided

@@ -13,7 +13,7 @@ use winterfell::ProofOptions;
 use zk_lisp_compiler::compile_entry;
 use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
-use zk_lisp_proof_winterfell::trace::build_trace;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -104,7 +104,8 @@ fn enum_predicate_negative_fails_verify() {
             match err {
                 prove::Error::Backend(_)
                 | prove::Error::BackendSource(_)
-                | prove::Error::PublicInputs(_) => {}
+                | prove::Error::PublicInputs(_)
+                | prove::Error::RecursionInvalid(_) => {}
             }
         }
         // Prove returned an error — acceptable failure mode

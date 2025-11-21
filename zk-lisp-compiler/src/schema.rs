@@ -26,7 +26,6 @@ pub enum ScalarType {
     U64,
     U128,
     Bytes32,
-    Str64,
 }
 
 /// Role of a function argument.

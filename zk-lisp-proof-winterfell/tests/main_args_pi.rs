@@ -14,10 +14,10 @@ use winterfell::{Air, BatchingMethod, FieldExtension, ProofOptions, TraceInfo};
 
 use zk_lisp_proof::pi::{FM_VM, PublicInputs, VmArg};
 use zk_lisp_proof_winterfell::AirPublicInputs;
-use zk_lisp_proof_winterfell::air::ZkLispAir;
-use zk_lisp_proof_winterfell::layout::{Columns, NR, STEPS_PER_LEVEL_P2};
-use zk_lisp_proof_winterfell::schedule;
 use zk_lisp_proof_winterfell::utils::encode_main_args_to_slots;
+use zk_lisp_proof_winterfell::vm::air::ZkLispAir;
+use zk_lisp_proof_winterfell::vm::layout::{Columns, NR, STEPS_PER_LEVEL_P2};
+use zk_lisp_proof_winterfell::vm::schedule;
 
 #[test]
 fn air_public_inputs_encode_main_args_at_tail() {
@@ -29,13 +29,14 @@ fn air_public_inputs_encode_main_args_at_tail() {
     let api = AirPublicInputs {
         core: core.clone(),
         rom_acc: [BE::ZERO; 3],
+        ..Default::default()
     };
 
     let els = api.to_elements();
 
-    // 5 base elements + slots for main_args
+    // 5 base elements (feature+commit fields) + slots for main_args + 11 boundary elements
     let slots = encode_main_args_to_slots(&core.main_args);
-    assert_eq!(els.len(), 5 + slots.len());
+    assert_eq!(els.len(), 5 + slots.len() + 11);
 
     assert_eq!(els[5], BE::from(5u64));
     assert_eq!(els[6], BE::from(7u64));
@@ -51,6 +52,7 @@ fn zk_lisp_air_adds_main_args_boundary_assertions() {
     let air_pi = AirPublicInputs {
         core: core.clone(),
         rom_acc: [BE::ZERO; 3],
+        ..Default::default()
     };
 
     let cols = Columns::baseline();

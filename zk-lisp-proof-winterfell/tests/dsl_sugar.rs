@@ -11,15 +11,14 @@ use winterfell::math::fields::f128::BaseElement as BE;
 
 use zk_lisp_compiler::compile_entry;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::layout::Columns;
-use zk_lisp_proof_winterfell::trace::build_trace;
 use zk_lisp_proof_winterfell::utils::vm_output_from_trace;
+use zk_lisp_proof_winterfell::vm::layout::Columns;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 #[test]
 fn begin_variadic_and_def_let_multiform() {
     // def: multi-form body, implicit begin
     // let: multi-form body, implicit begin
-    // begin: variadic sequence
     let src = r#"
 (def (main)
   (let ((x 5) (y 6))

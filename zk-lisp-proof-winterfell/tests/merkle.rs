@@ -13,11 +13,11 @@ use winterfell::{BatchingMethod, FieldExtension, ProofOptions, Trace, TraceTable
 
 use zk_lisp_compiler::compile_entry;
 use zk_lisp_proof::pi::{self, PublicInputsBuilder};
-use zk_lisp_proof_winterfell::layout::{Columns, STEPS_PER_LEVEL_P2};
 use zk_lisp_proof_winterfell::poseidon::poseidon_hash_two_lanes;
 use zk_lisp_proof_winterfell::prove::{self, ZkProver};
-use zk_lisp_proof_winterfell::schedule::{pos_final, pos_map};
-use zk_lisp_proof_winterfell::trace::build_trace;
+use zk_lisp_proof_winterfell::vm::layout::{Columns, STEPS_PER_LEVEL_P2};
+use zk_lisp_proof_winterfell::vm::schedule::{pos_final, pos_map};
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 #[derive(Clone, Debug)]
 pub struct MerkleRow {
@@ -163,7 +163,6 @@ fn merkle_two_steps_positive_prove_verify() {
 
     // second level:
     // dir/sib set;
-    // last flag at final
     let m1 = ov.at_map(levels[1]);
     assert_eq!(m1.dir, BE::from(d1));
     assert_eq!(m1.sib, BE::from(s1));

@@ -236,7 +236,7 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
         }
         Ast::Atom(Atom::Str(_)) => {
             // String literal must be used
-            // under a macro (str64 "...")
+            // under a dedicated macro.
             Err(Error::InvalidForm("string literal outside macro".into()))
         }
         Ast::Atom(Atom::Sym(s)) => {
@@ -278,7 +278,6 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "if" => lower_if(cx, tail),
                     "let" => lower_let(cx, tail),
                     "neg" => lower_neg(cx, tail),
-                    "str64" => lower_str64(cx, tail),
                     "hash2" => lower_hash2(cx, tail),
                     "merkle-verify" => lower_merkle_verify(cx, tail),
                     "load-ca" => lower_load_ca(cx, tail),
@@ -312,6 +311,9 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                         Ok(RVal::Imm(0))
                     }
                     "begin" => lower_begin(cx, tail),
+                    "block" => lower_block(cx, tail),
+                    "loop" => lower_loop(cx, tail),
+                    "recur" => Err(Error::InvalidForm("recur outside loop".into())),
                     _ => lower_call(cx, s, tail),
                 }
             }
@@ -1018,143 +1020,6 @@ fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     cx.define_fun(&assert_name, vec!["x".to_string()], assert_body);
 
     Ok(())
-}
-
-fn lower_str64(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    // (str64 "...") → digest
-    if rest.len() != 1 {
-        return Err(Error::InvalidForm("str64".into()));
-    }
-
-    let s = match &rest[0] {
-        Ast::Atom(Atom::Str(st)) => st.clone(),
-        _ => return Err(Error::InvalidForm("str64: expects string literal".into())),
-    };
-
-    let bytes_src = s.as_bytes();
-    if bytes_src.len() > 64 {
-        return Err(Error::InvalidForm("str64: length > 64".into()));
-    }
-
-    // Pad to 64
-    let mut buf = [0u8; 64];
-    buf[..bytes_src.len()].copy_from_slice(bytes_src);
-
-    // Build chunk commitments from u64 pairs via Hash2 only
-    // c0 = H(lo0, hi0), c1 = H(lo1, hi1), ...
-    let c_hash = |cx: &mut LowerCtx, lo: u64, hi: u64| -> Result<u8, Error> {
-        let r_lo = cx.alloc()?;
-        cx.builder.push(Op::Const { dst: r_lo, imm: lo });
-
-        let r_hi = cx.alloc()?;
-        cx.builder.push(Op::Const { dst: r_hi, imm: hi });
-
-        cx.builder.push(Op::SAbsorbN {
-            regs: vec![r_lo, r_hi],
-        });
-
-        let r_c = cx.alloc()?;
-
-        cx.builder.push(Op::SSqueeze { dst: r_c });
-
-        cx.free_reg(r_lo);
-        cx.free_reg(r_hi);
-
-        Ok(r_c)
-    };
-
-    let (lo0, hi0) = u64_pair_from_le_16(&buf[0..16]);
-    let r_c0 = c_hash(cx, lo0, hi0)?;
-    let (lo1, hi1) = u64_pair_from_le_16(&buf[16..32]);
-    let r_c1 = c_hash(cx, lo1, hi1)?;
-    let r_p01 = {
-        let dst = cx.alloc()?;
-        cx.builder.push(Op::SAbsorbN {
-            regs: vec![r_c0, r_c1],
-        });
-        cx.builder.push(Op::SSqueeze { dst });
-
-        cx.free_reg(r_c0);
-        cx.free_reg(r_c1);
-
-        dst
-    };
-
-    let (lo2, hi2) = u64_pair_from_le_16(&buf[32..48]);
-    let r_c2 = c_hash(cx, lo2, hi2)?;
-    let (lo3, hi3) = u64_pair_from_le_16(&buf[48..64]);
-    let r_c3 = c_hash(cx, lo3, hi3)?;
-    let r_p23 = {
-        let dst = cx.alloc()?;
-        cx.builder.push(Op::SAbsorbN {
-            regs: vec![r_c2, r_c3],
-        });
-        cx.builder.push(Op::SSqueeze { dst });
-
-        cx.free_reg(r_c2);
-        cx.free_reg(r_c3);
-
-        dst
-    };
-
-    let r_payload = {
-        let dst = cx.alloc()?;
-        cx.builder.push(Op::SAbsorbN {
-            regs: vec![r_p01, r_p23],
-        });
-        cx.builder.push(Op::SSqueeze { dst });
-
-        cx.free_reg(r_p01);
-        cx.free_reg(r_p23);
-
-        dst
-    };
-
-    // t0 = H(TAG, L), TAG is 64-bit constant derived from blake3("zkl/str64")
-    let tag8 = {
-        let d = blake3::hash(b"zkl/str64");
-        let mut t = [0u8; 8];
-        t.copy_from_slice(&d.as_bytes()[0..8]);
-
-        u64::from_le_bytes(t)
-    };
-
-    let r_tag = cx.alloc()?;
-    cx.builder.push(Op::Const {
-        dst: r_tag,
-        imm: tag8,
-    });
-
-    let r_len = cx.alloc()?;
-    cx.builder.push(Op::Const {
-        dst: r_len,
-        imm: bytes_src.len() as u64,
-    });
-
-    let r_t0 = {
-        let dst = cx.alloc()?;
-        cx.builder.push(Op::SAbsorbN {
-            regs: vec![r_tag, r_len],
-        });
-        cx.builder.push(Op::SSqueeze { dst });
-
-        cx.free_reg(r_tag);
-        cx.free_reg(r_len);
-
-        dst
-    };
-
-    // digest = H(t0, payload)
-    let r_digest = cx.alloc()?;
-    cx.builder.push(Op::SAbsorbN {
-        regs: vec![r_t0, r_payload],
-    });
-    cx.builder.push(Op::SSqueeze { dst: r_digest });
-
-    cx.free_reg(r_t0);
-    cx.free_reg(r_payload);
-
-    Ok(RVal::Owned(r_digest))
 }
 
 fn lower_hex_to_bytes32(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
@@ -2636,6 +2501,156 @@ fn lower_typed_let(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
     Ok(())
 }
 
+fn lower_block(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    // (block expr1 expr2 ...) => like `begin`, but
+    // also records the VM level range covered by the
+    // lowered body as a logical block in the program.
+    if rest.is_empty() {
+        return Err(Error::InvalidForm("block".into()));
+    }
+
+    let lvl_start = cx.builder.current_level();
+    let res = lower_begin(cx, rest)?;
+    let lvl_end = cx.builder.current_level();
+
+    if lvl_end > lvl_start {
+        cx.builder.push_block(lvl_start, lvl_end)?;
+    }
+
+    Ok(res)
+}
+
+fn lower_loop(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    // (loop :max N ((v1 init1) ... (vk initk)) body...)
+    // Bounded, unconditional tail-recursive loop.
+    if rest.len() < 3 {
+        return Err(Error::InvalidForm("loop".into()));
+    }
+
+    // Expect :max keyword
+    let max_kw = match &rest[0] {
+        Ast::Atom(Atom::Sym(s)) => s,
+        _ => return Err(Error::InvalidForm("loop: expected :max".into())),
+    };
+
+    if max_kw != ":max" {
+        return Err(Error::InvalidForm("loop: expected :max keyword".into()));
+    }
+
+    // Static bound N
+    let max_n = match &rest[1] {
+        Ast::Atom(Atom::Int(n)) => *n as usize,
+        _ => {
+            return Err(Error::InvalidForm(
+                "loop: :max must be integer literal".into(),
+            ));
+        }
+    };
+
+    if max_n == 0 {
+        return Err(Error::InvalidForm("loop: :max must be >= 1".into()));
+    }
+
+    let binds_ast = match &rest[2] {
+        Ast::List(items) => items,
+        _ => return Err(Error::InvalidForm("loop: expected binding list".into())),
+    };
+
+    if binds_ast.is_empty() {
+        return Err(Error::InvalidForm("loop: empty binding list".into()));
+    }
+
+    let mut bind_names: Vec<String> = Vec::with_capacity(binds_ast.len());
+    let mut bind_inits: Vec<Ast> = Vec::with_capacity(binds_ast.len());
+
+    for b in binds_ast {
+        match b {
+            Ast::List(kv) if kv.len() == 2 => {
+                let name = match &kv[0] {
+                    Ast::Atom(Atom::Sym(s)) => s.clone(),
+                    _ => return Err(Error::InvalidForm("loop: binding name".into())),
+                };
+
+                bind_names.push(name);
+                bind_inits.push(kv[1].clone());
+            }
+            _ => return Err(Error::InvalidForm("loop: binding pair".into())),
+        }
+    }
+
+    if rest.len() < 4 {
+        return Err(Error::InvalidForm("loop: missing body".into()));
+    }
+
+    let body_forms: &[Ast] = &rest[3..];
+
+    // Check for tail recur
+    let (has_recur, recur_args) = match body_forms.last() {
+        Some(Ast::List(items)) if !items.is_empty() => {
+            match &items[0] {
+                Ast::Atom(Atom::Sym(h)) if h == "recur" => {
+                    let args = &items[1..];
+                    if args.len() != bind_names.len() {
+                        return Err(Error::InvalidForm(
+                            "recur: arity must match loop bindings".into(),
+                        ));
+                    }
+
+                    // Forbid recur anywhere else in the body
+                    for prefix_form in &body_forms[..body_forms.len() - 1] {
+                        if contains_symbol(prefix_form, "recur") {
+                            return Err(Error::InvalidForm(
+                                "recur: only allowed in tail position of loop body".into(),
+                            ));
+                        }
+                    }
+
+                    (true, Some(args.to_vec()))
+                }
+                _ => (false, None),
+            }
+        }
+        _ => (false, None),
+    };
+
+    // Build an expanded AST without loop/recur
+    let expanded = if has_recur {
+        let prefix: Vec<Ast> = body_forms[..body_forms.len() - 1].to_vec();
+        let iter0 = build_loop_iter(
+            0,
+            max_n,
+            &bind_names,
+            &bind_inits,
+            &prefix,
+            &recur_args.unwrap(),
+        );
+
+        // Wrap whole loop body into a block
+        Ast::List(vec![Ast::Atom(Atom::Sym("block".to_string())), iter0])
+    } else {
+        // No recur:
+        // single iteration in a block with a single let
+        let mut bind_pairs: Vec<Ast> = Vec::with_capacity(bind_names.len());
+        for (name, init) in bind_names.into_iter().zip(bind_inits.into_iter()) {
+            bind_pairs.push(Ast::List(vec![Ast::Atom(Atom::Sym(name)), init]));
+        }
+
+        let binds_ast = Ast::List(bind_pairs);
+        let body_ast = implicit_begin(body_forms);
+
+        Ast::List(vec![
+            Ast::Atom(Atom::Sym("block".to_string())),
+            Ast::List(vec![
+                Ast::Atom(Atom::Sym("let".to_string())),
+                binds_ast,
+                body_ast,
+            ]),
+        ])
+    };
+
+    lower_expr(cx, expanded)
+}
+
 fn parse_typed_let(owner: Option<&str>, rest: &[Ast]) -> Result<LetTypeSchema, Error> {
     // (typed-let name type)
     if rest.len() != 2 {
@@ -2900,7 +2915,6 @@ fn parse_scalar_type(sym: &str) -> Result<ScalarType, Error> {
         "u64" => Ok(ScalarType::U64),
         "u128" => Ok(ScalarType::U128),
         "bytes32" => Ok(ScalarType::Bytes32),
-        "str64" => Ok(ScalarType::Str64),
         _ => Err(Error::InvalidForm(format!(
             "typed-fn: unknown type '{sym}'",
         ))),
@@ -2999,4 +3013,45 @@ fn collect_typed_lets(owner: &str, ast: &Ast, builder: &mut ProgramBuilder) -> R
     }
 
     Ok(())
+}
+
+fn contains_symbol(ast: &Ast, name: &str) -> bool {
+    match ast {
+        Ast::Atom(Atom::Sym(s)) => s == name,
+        Ast::List(items) => items.iter().any(|a| contains_symbol(a, name)),
+        _ => false,
+    }
+}
+
+fn build_loop_iter(
+    iter: usize,
+    max_n: usize,
+    names: &[String],
+    inits: &[Ast],
+    prefix: &[Ast],
+    recur_args: &[Ast],
+) -> Ast {
+    // (let ((vi init_i) ...) body...)
+    let mut bind_pairs: Vec<Ast> = Vec::with_capacity(names.len());
+    for (name, init) in names.iter().cloned().zip(inits.iter().cloned()) {
+        bind_pairs.push(Ast::List(vec![Ast::Atom(Atom::Sym(name)), init]));
+    }
+
+    let binds_ast = Ast::List(bind_pairs);
+
+    let mut body_vec: Vec<Ast> = prefix.to_vec();
+
+    if iter + 1 < max_n {
+        // Next iteration: bindings = recur_args
+        let next_inits: Vec<Ast> = recur_args.to_vec();
+        let next = build_loop_iter(iter + 1, max_n, names, &next_inits, prefix, recur_args);
+        body_vec.push(next);
+    }
+
+    Ast::List(vec![
+        Ast::Atom(Atom::Sym("let".to_string())),
+        binds_ast,
+        // body_vec as implicit begin
+        implicit_begin(&body_vec),
+    ])
 }

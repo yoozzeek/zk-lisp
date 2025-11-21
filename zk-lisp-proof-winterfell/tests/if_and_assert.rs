@@ -10,15 +10,14 @@
 use winterfell::ProofOptions;
 
 use zk_lisp_compiler::{compile_entry, compile_str};
-use zk_lisp_proof::pi::{self, PublicInputs};
+use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
-use zk_lisp_proof_winterfell::trace::build_trace;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 #[test]
 fn assert_positive() {
     // Use compile_entry to ensure
     // a minimal VM shape even if
-    // the assert folds to a constant.
     let src = r"
 (def (eq1 x y) (= x y))
 (def (main)
@@ -26,9 +25,9 @@ fn assert_positive() {
     (assert (eq1 a b))))";
     let program = compile_entry(src, &[]).expect("compile");
 
-    let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_VM;
-    pi.program_commitment = program.commitment;
+    let pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
 
     let trace = build_trace(&program, &pi).expect("trace");
     let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
@@ -62,9 +61,9 @@ fn if_positive() {
     let src = "(def (main) (if 1 5 9))";
     let program = compile_entry(src, &[]).expect("compile");
 
-    let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_VM;
-    pi.program_commitment = program.commitment;
+    let pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
 
     let trace = build_trace(&program, &pi).expect("trace");
     let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
@@ -95,9 +94,6 @@ fn if_positive() {
 
 // Compiler-side negative test
 // for constant false asserts will
-// be covered in zk-lisp-compiler
-// tests; we keep only backend
-// behaviour here.
 #[test]
 fn assert_negative_may_fail_at_prove_or_verify() {
     let src = "(let ((a 5) (b 6)) (assert (= a b)))";
@@ -108,9 +104,9 @@ fn assert_negative_may_fail_at_prove_or_verify() {
             assert!(msg.contains("assert: constant false"));
         }
         Ok(program) => {
-            let mut pi = PublicInputs::default();
-            pi.feature_mask = pi::FM_VM;
-            pi.program_commitment = program.commitment;
+            let pi = PublicInputsBuilder::from_program(&program)
+                .build()
+                .expect("pi");
 
             let trace = build_trace(&program, &pi).expect("trace");
             let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);

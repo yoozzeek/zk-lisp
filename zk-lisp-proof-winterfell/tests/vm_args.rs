@@ -14,12 +14,12 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_compiler::compile_entry;
 use zk_lisp_proof::error::Error as CoreError;
 use zk_lisp_proof::pi::{PublicInputsBuilder, VmArg};
-use zk_lisp_proof_winterfell::layout::{Columns, NR};
 use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
 use zk_lisp_proof_winterfell::romacc;
-use zk_lisp_proof_winterfell::schedule;
-use zk_lisp_proof_winterfell::trace::build_trace;
 use zk_lisp_proof_winterfell::utils::encode_main_args_to_slots;
+use zk_lisp_proof_winterfell::vm::layout::{Columns, NR};
+use zk_lisp_proof_winterfell::vm::schedule;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -97,7 +97,8 @@ fn secret_arg_negative_fails_verify() {
             match err {
                 prove::Error::Backend(_)
                 | prove::Error::BackendSource(_)
-                | prove::Error::PublicInputs(_) => {}
+                | prove::Error::PublicInputs(_)
+                | prove::Error::RecursionInvalid(_) => {}
             }
         }
         // Prove returned an error; acceptable failure mode
@@ -118,7 +119,6 @@ fn secret_arg_non_u64_rejected() {
 
     // Provide non-u64 secret arg;
     // VM trace builder should reject
-    // this with a clear InvalidInput error.
     let pi = PublicInputsBuilder::from_program(&program)
         .with_public_args(&[])
         .with_secret_args(&[VmArg::Bytes32([1u8; 32])])
@@ -138,7 +138,6 @@ fn secret_arg_non_u64_rejected() {
 fn main_args_seed_tail_registers_at_level0_map() {
     // Simple program that does not
     // depend on args; we only inspect
-    // the initial register snapshot.
     let src = "(def (main) 0)";
     let program = compile_entry(src, &[]).expect("compile");
 
@@ -169,7 +168,6 @@ fn main_args_seed_tail_registers_at_level0_map() {
 fn main_args_do_not_overwrite_secret_args_prefix() {
     // Use both secret_args and main_args and
     // ensure prefix registers come from secrets
-    // and tail registers from main_args.
     let src = "(def (main) 0)";
     let program = compile_entry(src, &[]).expect("compile");
 

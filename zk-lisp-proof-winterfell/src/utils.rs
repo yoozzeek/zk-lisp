@@ -13,11 +13,13 @@
 //! trace utilities such as [`vm_output_from_trace`] used by
 //! both AIR and trace construction code.
 
-use crate::layout::{self, NR};
-use crate::schedule;
+use crate::vm::layout::{self, NR};
+use crate::vm::schedule;
 
+use blake3::Hasher;
 use std::sync::OnceLock;
 use winterfell::math::FieldElement;
+use winterfell::math::StarkField;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{Trace, TraceTable};
 use zk_lisp_proof::pi::VmArg;
@@ -44,11 +46,6 @@ pub fn pow2_64() -> BE {
 
 /// Encode a 128-bit unsigned integer into the base
 /// field by interpreting it as a binary polynomial
-/// over F and reducing modulo the field modulus.
-///
-/// This works for all `u128` values without needing
-/// to know the modulus explicitly; the mapping is
-/// `n -> sum_i bit_i * 2^i (mod p)`.
 #[inline]
 pub fn be_from_u128(n: u128) -> BE {
     let mut x = n;
@@ -70,7 +67,6 @@ pub fn be_from_u128(n: u128) -> BE {
 
 /// Encode 16 bytes (little-endian) into a single
 /// base-field element by first interpreting them
-/// as a `u128` and then calling [`be_from_u128`].
 #[inline]
 pub fn be_from_le_bytes16(b16: &[u8; 16]) -> BE {
     let n = u128::from_le_bytes(*b16);
@@ -79,13 +75,6 @@ pub fn be_from_le_bytes16(b16: &[u8; 16]) -> BE {
 
 /// Expand a typed VM argument into one or more
 /// base-field elements used for public-input
-/// encoding or VM register seeding.
-///
-/// Layout:
-/// - `VmArg::U64`   -> 1 element (value as u64)
-/// - `VmArg::U128`  -> 1 element (binary embedding)
-/// - `VmArg::Bytes32` -> 2 elements (lo,hi 16-byte
-///   chunks, each embedded via [`be_from_le_bytes16`]).
 #[inline]
 pub fn encode_vmarg_to_elements(arg: &VmArg, out: &mut Vec<BE>) {
     match arg {
@@ -109,7 +98,6 @@ pub fn encode_vmarg_to_elements(arg: &VmArg, out: &mut Vec<BE>) {
 
 /// Flatten a slice of VmArgs into a sequence of
 /// base-field elements in argument order using
-/// [`encode_vmarg_to_elements`].
 #[inline]
 pub fn encode_main_args_to_slots(args: &[VmArg]) -> Vec<BE> {
     let mut out = Vec::new();
@@ -122,7 +110,6 @@ pub fn encode_main_args_to_slots(args: &[VmArg]) -> Vec<BE> {
 
 // ROM helpers:
 // - weights_for_seed(seed): [g^(seed+1), ..., g^(seed+59)] for g=3
-// - linear encoders from a row slice or a trace row
 #[inline]
 pub fn rom_weights_for_seed(seed: u32) -> [BE; 59] {
     let g = BE::from(3u64);
@@ -312,6 +299,34 @@ pub fn vm_output_from_trace(trace: &TraceTable<BE>) -> (u8, u32) {
     (0u8, (row_fin0 + 1) as u32)
 }
 
+/// Compute a 32-byte hash of the VM state at the given
+/// trace row. The state snapshot currently includes only
+pub fn vm_state_hash_row(trace: &TraceTable<BE>, row: usize) -> [u8; 32] {
+    let cols = layout::Columns::baseline();
+    let n = trace.length();
+    if n == 0 {
+        return [0u8; 32];
+    }
+
+    let row = row.min(n.saturating_sub(1));
+
+    let mut h = Hasher::new();
+    h.update(b"zkl/vm/state-v1");
+
+    // Register file r0..r{NR-1}
+    for i in 0..NR {
+        let r = trace.get(cols.r_index(i), row);
+        h.update(&r.as_int().to_le_bytes());
+    }
+
+    let digest = h.finalize();
+
+    let mut out = [0u8; 32];
+    out.copy_from_slice(digest.as_bytes());
+
+    out
+}
+
 pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {
     // fold first 16 bytes (LE) into
     // a field element: lo + hi * 2^64.
@@ -321,4 +336,39 @@ pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {
     hi.copy_from_slice(&bytes32[8..16]);
 
     BE::from(u64::from_le_bytes(lo)) + BE::from(u64::from_le_bytes(hi)) * pow2_64()
+}
+
+/// Fold a 32-byte value into a single base-field element.
+///
+pub fn fold_bytes32_to_fe(bytes32: &[u8; 32]) -> BE {
+    let mut lo16 = [0u8; 16];
+    let mut hi16 = [0u8; 16];
+    lo16.copy_from_slice(&bytes32[0..16]);
+    hi16.copy_from_slice(&bytes32[16..32]);
+
+    let a = be_from_le_bytes16(&lo16);
+    let b = be_from_le_bytes16(&hi16);
+
+    // Use 2^64 as a mixing factor between halves;
+    // this is a simple linear combination in the
+    a + b * pow2_64()
+}
+
+/// Fold a base-field element into 32 bytes.
+///
+pub fn fe_to_bytes_fold(x: BE) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    let le16 = x.as_int().to_le_bytes();
+    out[0..16].copy_from_slice(&le16);
+
+    out
+}
+
+/// Inverse of `fe_to_bytes_fold`: interpret low 16 bytes (LE)
+/// as a base-field element and ignore the upper half.
+#[inline]
+pub fn fe_from_bytes_fold(bytes32: &[u8; 32]) -> BE {
+    let mut lo16 = [0u8; 16];
+    lo16.copy_from_slice(&bytes32[0..16]);
+    be_from_le_bytes16(&lo16)
 }

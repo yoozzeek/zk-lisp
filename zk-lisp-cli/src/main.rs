@@ -27,8 +27,10 @@ use thiserror::Error;
 use zk_lisp_compiler as compiler;
 use zk_lisp_proof::frontend::{self, PreflightMode};
 use zk_lisp_proof::pi::{PublicInputs, PublicInputsBuilder, VmArg};
+use zk_lisp_proof::recursion::{self};
 use zk_lisp_proof::{ProverOptions, ZkField, error};
-use zk_lisp_proof_winterfell::{WinterfellBackend, prove};
+use zk_lisp_proof_winterfell::WinterfellBackend;
+use zk_lisp_proof_winterfell::prove;
 
 // Max file size for REPL
 // operations (load/verify [PATH])
@@ -120,22 +122,27 @@ struct ProveArgs {
     /// Each item is `<kind>:<value>` (u64|u128|bytes32).
     #[arg(long = "secret", value_delimiter = ',')]
     secrets: Vec<String>,
-    /// Number of FRI queries
+    /// Number of FRI queries.
     #[arg(long, default_value_t = 64)]
     queries: u8,
     /// Blowup factor
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 16)]
     blowup: u8,
     /// Grinding factor
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 16)]
     grind: u32,
     /// Optional deterministic seed
     #[arg(long)]
     seed: Option<u64>,
-    /// Write proof to file (binary);
-    /// still prints hex to stdout unless --quiet
+    /// Write base STARK proof to file (binary);
+    /// still prints preview to stdout unless --quiet
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Optional step-level proof output path (binary ZlStepProof encoding).
+    /// When set, `prove` will also generate a step proof suitable
+    /// for recursion and save it in this file.
+    #[arg(long)]
+    step_out: Option<PathBuf>,
     /// Quiet mode (suppress non-essential output)
     #[arg(long, default_value_t = false)]
     quiet: bool,
@@ -154,15 +161,14 @@ struct VerifyArgs {
     /// currently only `u64` is supported for main here.
     #[arg(long = "arg", value_delimiter = ',')]
     args: Vec<String>,
-
     /// Number of FRI queries
     #[arg(long, default_value_t = 64)]
     queries: u8,
     /// Blowup factor
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 16)]
     blowup: u8,
     /// Grinding factor
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 16)]
     grind: u32,
     /// Optional seed
     #[arg(long)]
@@ -247,6 +253,7 @@ fn proof_opts(queries: u8, blowup: u8, grind: u32, security_bits: Option<u32>) -
         blowup,
         grind,
         min_security_bits,
+        max_segment_rows: None,
     }
 }
 
@@ -316,11 +323,6 @@ fn build_pi_for_program(
                             )));
                         }
                     },
-                    compiler::ScalarType::Str64 => {
-                        return Err(CliError::InvalidInput(format!(
-                            "main arg #{pos}: type 'str64' is not supported as runtime public input",
-                        )));
-                    }
                 }
             }
         }
@@ -350,8 +352,8 @@ fn build_pi_for_program(
 /// - for `ArgRole::Const`, only `u64` is supported at CLI level
 ///   (both in schema type and actual value);
 /// - for `ArgRole::Let`, the following types are supported
-///   as runtime public inputs and CLI values: `u64`, `u128`,
-///   `bytes32`; `str64` is rejected for now.
+///   as runtime public inputs and CLI values:
+///   `u64`, `u128`, `bytes32`.
 fn validate_main_args_against_schema(
     program: &compiler::Program,
     public_args: &[VmArg],
@@ -381,7 +383,6 @@ fn validate_main_args_against_schema(
                         compiler::ScalarType::U64 => "u64",
                         compiler::ScalarType::U128 => "u128",
                         compiler::ScalarType::Bytes32 => "bytes32",
-                        compiler::ScalarType::Str64 => "str64",
                     };
 
                     return Err(CliError::InvalidInput(format!(
@@ -423,11 +424,6 @@ fn validate_main_args_against_schema(
                         )));
                     }
                 },
-                compiler::ScalarType::Str64 => {
-                    return Err(CliError::InvalidInput(format!(
-                        "main arg #{pos}: type 'str64' is not supported for CLI public args",
-                    )));
-                }
             },
         }
     }
@@ -642,7 +638,9 @@ fn cmd_prove(
     let secret_vmargs = parse_secret_args(&args.secrets)?;
 
     let program = compiler::compile_entry(&src, &public_u64)?;
+
     validate_main_args_against_schema(&program, &public_vmargs)?;
+
     let pi = build_pi_for_program(&program, &public_vmargs, &secret_vmargs)?;
 
     let opts = proof_opts(args.queries, args.blowup, args.grind, security_bits);
@@ -653,40 +651,33 @@ fn cmd_prove(
             .map_err(CliError::Prover)?;
     }
 
-    let proof =
-        frontend::prove::<WinterfellBackend>(&program, &pi, &opts).map_err(CliError::Prover)?;
+    let (rc_proof, _rc_digest, rc_pi) =
+        recursion::prove_chain::<WinterfellBackend>(&program, &pi, &opts)
+            .map_err(CliError::Prover)?;
 
-    // Serialize proof to bytes
-    let proof_bytes =
-        frontend::encode_proof::<WinterfellBackend>(&proof).map_err(CliError::Prover)?;
+    let artifact_bytes =
+        <WinterfellBackend as recursion::RecursionArtifactCodec>::encode(&rc_proof, &rc_pi)
+            .map_err(CliError::Prover)?;
 
-    // Determine output path:
-    // use --out if provided, otherwise
-    // derive a readable name from source path.
     let out_path = if let Some(path) = args.out {
         path
     } else {
-        let file_name = proof_basename_from_program_path(&args.path);
+        let file_name = proof_basename_from_program_path(&args.path).replace("proof_", "agg_");
+
         PathBuf::from(file_name)
     };
 
-    if let Err(e) = fs::write(&out_path, &proof_bytes) {
-        return Err(CliError::IoPath {
-            source: e,
-            path: out_path,
-        });
-    }
+    fs::write(&out_path, &artifact_bytes).map_err(|e| CliError::IoPath {
+        source: e,
+        path: out_path.clone(),
+    })?;
 
     if !args.quiet {
-        let proof_b64 = base64::engine::general_purpose::STANDARD.encode(&proof_bytes);
-        let len_b64 = proof_b64.len();
-
-        let preview_core = if len_b64 <= 128 {
-            proof_b64
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&artifact_bytes);
+        let preview_core = if b64.len() <= 128 {
+            b64
         } else {
-            let head = &proof_b64[..64];
-            let tail = &proof_b64[len_b64 - 64..];
-            format!("{head}...{tail}")
+            format!("{}...{}", &b64[..64], &b64[b64.len() - 64..])
         };
 
         if json {
@@ -694,19 +685,18 @@ fn cmd_prove(
                 "{}",
                 serde_json::json!({
                     "ok": true,
-                    "proof_path": out_path.to_string_lossy(),
-                    "proof_preview_b64": preview_core,
+                    "agg_proof_path": out_path.to_string_lossy(),
+                    "agg_preview_b64": preview_core,
                     "opts": {"queries": args.queries, "blowup": args.blowup, "grind": args.grind},
-                    "commitment": format!("0x{:02x?}", program.commitment),
+                    "program_commitment": format!("0x{}", hex::encode(program.commitment)),
                 })
             );
         } else {
-            println!("proof saved to {}", out_path.display());
+            println!("agg proof saved to {}", out_path.display());
             println!(
-                "preview: {} (len={} bytes, b64_len={})",
+                "preview: {} (len={} bytes)",
                 preview_core,
-                proof_bytes.len(),
-                len_b64
+                artifact_bytes.len()
             );
         }
     }
@@ -722,14 +712,15 @@ fn cmd_verify(
 ) -> Result<(), CliError> {
     let proof_path_str = args.proof.as_str();
 
-    let proof_bytes = {
+    let artifact_bytes = {
         let meta = fs::metadata(proof_path_str).map_err(|e| CliError::IoPath {
             source: e,
             path: PathBuf::from(proof_path_str),
         })?;
+
         if meta.len() as usize > max_bytes {
             return Err(CliError::InvalidInput(format!(
-                "proof file too large: {} bytes (limit {})",
+                "agg proof file too large: {} bytes (limit {})",
                 meta.len(),
                 max_bytes
             )));
@@ -745,28 +736,45 @@ fn cmd_verify(
     let (public_vmargs, public_u64) = parse_public_args(&args.args)?;
 
     let program = compiler::compile_entry(&src, &public_u64)?;
+
     validate_main_args_against_schema(&program, &public_vmargs)?;
 
-    // Rebuild PI similarly to Prove
-    let pi = build_pi_for_program(&program, &public_vmargs, &[])?;
-    let proof = frontend::decode_proof::<WinterfellBackend>(&proof_bytes)
-        .map_err(|e| CliError::InvalidInput(format!("invalid proof encoding: {e}")))?;
+    let pi_cli = build_pi_for_program(&program, &public_vmargs, &[])?;
+
+    let (rc_proof, rc_pi) =
+        <WinterfellBackend as recursion::RecursionArtifactCodec>::decode(&artifact_bytes)
+            .map_err(CliError::Prover)?;
+
+    if rc_pi.children_count == 0 {
+        return Err(CliError::InvalidInput("agg proof has zero children".into()));
+    }
+
+    if rc_pi.program_id != pi_cli.program_id
+        || rc_pi.program_commitment != pi_cli.program_commitment
+    {
+        let err = error::Error::InvalidInput(
+            "agg proof program (program_id/program_commitment) does not match compiled program"
+                .into(),
+        );
+
+        return Err(CliError::Verify(prove::Error::PublicInputs(err)));
+    }
+
+    let pi_digest_cli = pi_cli.digest();
+    if rc_pi.pi_digest != pi_digest_cli {
+        let err = error::Error::InvalidInput(
+            "agg proof public inputs (main args) do not match CLI --arg".into(),
+        );
+
+        return Err(CliError::Verify(prove::Error::PublicInputs(err)));
+    }
 
     let opts = proof_opts(args.queries, args.blowup, args.grind, security_bits);
-    frontend::verify::<WinterfellBackend>(proof, &program, &pi, &opts).map_err(CliError::Verify)?;
+    frontend::recursion_verify::<WinterfellBackend>(rc_proof, &rc_pi, &opts)
+        .map_err(CliError::Verify)?;
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "opts": {
-                    "queries": args.queries,
-                    "blowup": args.blowup,
-                    "grind": args.grind,
-                }
-            })
-        );
+        println!("{}", serde_json::json!({"ok": true}));
     } else {
         println!("OK");
     }
@@ -1080,51 +1088,59 @@ fn cmd_repl() -> Result<(), CliError> {
                     );
 
                     let opts = proof_opts(64, 8, 0, None);
-                    match frontend::prove::<WinterfellBackend>(&program, &pi, &opts) {
+                    match recursion::prove_chain::<WinterfellBackend>(&program, &pi, &opts) {
                         Err(e) => println!("error: prove: {e}"),
-                        Ok(proof) => match frontend::encode_proof::<WinterfellBackend>(&proof) {
-                            Err(e) => println!("error: serialize proof: {e}"),
-                            Ok(bytes) => {
-                                let file_name = proof_basename_from_expr(expr);
-                                let path = std::path::PathBuf::from(&file_name);
+                        Ok((rc_proof, _rc_digest, rc_pi)) => {
+                            match <WinterfellBackend as recursion::RecursionArtifactCodec>::encode(
+                                &rc_proof, &rc_pi,
+                            ) {
+                                Err(e) => println!("error: serialize agg proof: {e}"),
+                                Ok(bytes) => {
+                                    let file_name =
+                                        proof_basename_from_expr(expr).replace("proof_", "agg_");
+                                    let path = std::path::PathBuf::from(&file_name);
 
-                                match fs::write(&path, &bytes) {
-                                    Err(e) => {
-                                        println!("error: write proof file: {e}");
-                                    }
-                                    Ok(()) => {
-                                        let proof_b64 = base64::engine::general_purpose::STANDARD
-                                            .encode(&bytes);
-                                        let len_b64 = proof_b64.len();
+                                    match fs::write(&path, &bytes) {
+                                        Err(e) => {
+                                            println!("error: write proof file: {e}");
+                                        }
+                                        Ok(()) => {
+                                            let proof_b64 =
+                                                base64::engine::general_purpose::STANDARD
+                                                    .encode(&bytes);
+                                            let len_b64 = proof_b64.len();
 
-                                        let preview_core = if len_b64 <= 128 {
-                                            proof_b64
-                                        } else {
-                                            let head = &proof_b64[..64];
-                                            let tail = &proof_b64[len_b64 - 64..];
+                                            let preview_core = if len_b64 <= 128 {
+                                                proof_b64
+                                            } else {
+                                                let head = &proof_b64[..64];
+                                                let tail = &proof_b64[len_b64 - 64..];
 
-                                            format!("{head}...{tail}")
-                                        };
+                                                format!("{head}...{tail}")
+                                            };
 
-                                        println!("proof saved to {}", path.display());
-                                        println!(
-                                            "preview: {} (len={} bytes, b64_len={})",
-                                            preview_core,
-                                            bytes.len(),
-                                            len_b64
-                                        );
-                                        println!("hint: verify in REPL with `:verify {file_name}`");
-                                        println!(
-                                            "hint: verify via CLI with `zk-lisp verify {file_name} <program.zlisp> --arg ...`"
-                                        );
+                                            println!("agg proof saved to {}", path.display());
+                                            println!(
+                                                "preview: {} (len={} bytes, b64_len={})",
+                                                preview_core,
+                                                bytes.len(),
+                                                len_b64
+                                            );
+                                            println!(
+                                                "hint: verify in REPL with `:verify {file_name}`"
+                                            );
+                                            println!(
+                                                "hint: verify via CLI with `zk-lisp verify {file_name} <program.zlisp> --arg ...`"
+                                            );
 
-                                        // Remember last expression
-                                        // for subsequent :verify
-                                        session.last_expr = Some(expr.to_string());
+                                            // Remember last expression
+                                            // for subsequent :verify
+                                            session.last_expr = Some(expr.to_string());
+                                        }
                                     }
                                 }
                             }
-                        },
+                        }
                     }
                 }
             }
@@ -1170,13 +1186,14 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
-            let proof = match frontend::decode_proof::<WinterfellBackend>(&bytes) {
-                Ok(p) => p,
-                Err(e) => {
-                    println!("error: parse proof: {e}");
-                    continue;
-                }
-            };
+            let (rc_proof, rc_pi) =
+                match <WinterfellBackend as recursion::RecursionArtifactCodec>::decode(&bytes) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        println!("error: parse agg proof: {e}");
+                        continue;
+                    }
+                };
 
             let expr = match &session.last_expr {
                 Some(e) => e.clone(),
@@ -1194,7 +1211,7 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
-            let pi = match build_pi_for_program(&program, &[], &[]) {
+            let _pi = match build_pi_for_program(&program, &[], &[]) {
                 Ok(p) => p,
                 Err(e) => {
                     println!("error: pi: {e}");
@@ -1203,7 +1220,7 @@ fn cmd_repl() -> Result<(), CliError> {
             };
 
             let opts = proof_opts(64, 8, 0, None);
-            match frontend::verify::<WinterfellBackend>(proof, &program, &pi, &opts) {
+            match frontend::recursion_verify::<WinterfellBackend>(rc_proof, &rc_pi, &opts) {
                 Ok(()) => println!("OK"),
                 Err(e) => println!("verify error: {e}"),
             }
@@ -1217,7 +1234,7 @@ fn cmd_repl() -> Result<(), CliError> {
         // Top-level def/deftype
         // are stored into session
         let st = s.trim_start();
-        if st.starts_with("(def ") || st.starts_with("(deftype ") {
+        if st.starts_with("(def ") || st.starts_with("(deftype ") || st.starts_with("(typed-fn ") {
             if let Some(msg) = diagnose_non_ascii(s) {
                 println!("error: {msg}");
                 continue;

@@ -7,7 +7,8 @@ edition.workspace = true
 [dependencies]
 zk-lisp-compiler = { path = "../zk-lisp-compiler" }
 zk-lisp-proof = { path = "../zk-lisp-proof" }
-winterfell = { workspace = true }
+winterfell = "0.13.1"
+winter-utils = "0.13.1"
 thiserror = { workspace = true }
 blake3 = { workspace = true }
 tracing = { workspace = true }
@@ -15,3 +16,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 comfy-table = { workspace = true }
 arrayvec = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }

@@ -10,10 +10,10 @@
 use winterfell::math::fields::f128::BaseElement as BE;
 
 use zk_lisp_compiler::compile_entry;
-use zk_lisp_proof::pi::PublicInputs;
-use zk_lisp_proof_winterfell::layout::Columns;
-use zk_lisp_proof_winterfell::trace::build_trace;
+use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::utils::vm_output_from_trace;
+use zk_lisp_proof_winterfell::vm::layout::Columns;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 #[test]
 fn mulwide_hi_basic() {
@@ -23,7 +23,8 @@ fn mulwide_hi_basic() {
   (mulwide-hi 9223372036854775808 2))
 ";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&p, &PublicInputs::default()).expect("trace");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
 
     let cols = Columns::baseline();
     let (out_reg, out_row) = vm_output_from_trace(&trace);
@@ -37,7 +38,8 @@ fn mulwide_lo_basic() {
     // 3 * 5 = 15 -> lo=15
     let src = "(def (main) (mulwide-lo 3 5))";
     let p = compile_entry(src, &[]).expect("compile");
-    let trace = build_trace(&p, &PublicInputs::default()).expect("trace");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
 
     let cols = Columns::baseline();
     let (out_reg, out_row) = vm_output_from_trace(&trace);

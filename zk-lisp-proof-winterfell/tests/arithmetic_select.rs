@@ -10,9 +10,9 @@
 use winterfell::ProofOptions;
 
 use zk_lisp_compiler::compile_entry;
-use zk_lisp_proof::pi::{self, PublicInputs};
+use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::prove::{self, ZkProver, verify_proof};
-use zk_lisp_proof_winterfell::trace::build_trace;
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 #[test]
 fn arithmetic_select_prove_verify() {
@@ -24,9 +24,9 @@ fn arithmetic_select_prove_verify() {
  ";
     let program = compile_entry(src, &[]).expect("compile");
 
-    let mut pi = PublicInputs::default();
-    pi.feature_mask = pi::FM_VM;
-    pi.program_commitment = program.commitment;
+    let pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
 
     let trace = build_trace(&program, &pi).expect("trace");
     let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);

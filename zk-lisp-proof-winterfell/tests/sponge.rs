@@ -15,11 +15,11 @@ use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_compiler::{CompilerMetrics, compile_entry, compile_str};
 use zk_lisp_proof::frontend::PreflightMode;
 use zk_lisp_proof::pi::{self, PublicInputs, PublicInputsBuilder};
-use zk_lisp_proof_winterfell::layout::{NR, STEPS_PER_LEVEL_P2};
 use zk_lisp_proof_winterfell::poseidon::get_poseidon_suite;
 use zk_lisp_proof_winterfell::preflight::run as run_preflight;
 use zk_lisp_proof_winterfell::prove::{self, ZkProver};
-use zk_lisp_proof_winterfell::trace::build_trace;
+use zk_lisp_proof_winterfell::vm::layout::{NR, STEPS_PER_LEVEL_P2};
+use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
 fn opts() -> ProofOptions {
     ProofOptions::new(
@@ -75,14 +75,14 @@ fn sponge12_ref(inputs: &[BE], suite_id: &[u8; 32]) -> BE {
 
 #[test]
 fn sponge_basic_hash2_prove_verify() {
-    // hash2 sugar → SAbsorbN(2)+SSqueeze
+    // hash2 sugar SAbsorbN(2)+SSqueeze
     let src = "(let ((x 1) (y 2)) (hash2 x y))";
     let program = compile_str(src).expect("compile");
-    let pi = PublicInputs {
-        feature_mask: pi::FM_POSEIDON | pi::FM_VM,
-        program_commitment: program.commitment,
-        ..Default::default()
-    };
+    let mut pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
+    pi.feature_mask = pi::FM_POSEIDON | pi::FM_VM;
+
     let trace = build_trace(&program, &pi).expect("trace");
     let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
 
@@ -103,8 +103,6 @@ fn sponge_basic_hash2_prove_verify() {
 fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
     // Prepare constants r0..r9 = 1..=10,
     // then absorb across multiple levels
-    // (2 + 3 + 5 = 10) and squeeze once.
-    // Expect digest = sponge12_ref([1..=10]).
     let metrics = CompilerMetrics::default();
     let mut b = ProgramBuilder::new();
 
@@ -153,16 +151,16 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
     // Row = level_of_SSqueeze * steps + pos_final + 1
     let steps = STEPS_PER_LEVEL_P2;
     let lvl_ssq = 8 /*consts*/ + 2 /*extra consts*/ + 3 /*absorbs*/; // index where SSqueeze was pushed
-    let out_row = (lvl_ssq * steps + zk_lisp_proof_winterfell::schedule::pos_final() + 1) as u32;
+    let out_row =
+        (lvl_ssq * steps + zk_lisp_proof_winterfell::vm::schedule::pos_final() + 1) as u32;
 
-    let pi = PublicInputs {
-        feature_mask: pi::FM_VM | pi::FM_POSEIDON | pi::FM_VM_EXPECT,
-        program_commitment: program.commitment,
-        vm_out_reg: 0,
-        vm_out_row: out_row,
-        vm_expected_bytes: be_to_bytes32(expected),
-        ..Default::default()
-    };
+    let mut pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
+    pi.vm_out_reg = 0;
+    pi.vm_out_row = out_row;
+    pi.vm_expected_bytes = be_to_bytes32(expected);
+    pi.feature_mask = pi::FM_VM | pi::FM_POSEIDON | pi::FM_VM_EXPECT;
 
     // Build trace
     let trace = build_trace(&program, &pi).expect("trace");
@@ -184,8 +182,6 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
 fn sponge_overflow_more_than_10_inputs_errors() {
     // With strict rate semantics,
     // attempting to absorb more than
-    // 10 inputs before a squeeze
-    // must be rejected with an error.
     let metrics = CompilerMetrics::default();
     let mut b = ProgramBuilder::new();
 
@@ -221,11 +217,10 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
   (let ((x 7) (y 9))
     (+ x y)))";
     let program_vm = compile_entry(src_vm, &[]).expect("compile vm");
-    let pi_vm = PublicInputs {
-        feature_mask: pi::FM_VM,
-        program_commitment: program_vm.commitment,
-        ..Default::default()
-    };
+    let mut pi_vm = PublicInputsBuilder::from_program(&program_vm)
+        .build()
+        .expect("pi_vm");
+    pi_vm.feature_mask = pi::FM_VM;
 
     let trace_vm = build_trace(&program_vm, &pi_vm).expect("trace vm");
     let rom_acc_vm = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program_vm);
@@ -244,11 +239,11 @@ fn vm_only_vs_vm_plus_sponge_both_verify() {
     // VM + Sponge: hash2
     let src_sp = "(let ((x 1) (y 2)) (hash2 x y))";
     let program_sp = compile_str(src_sp).expect("compile sp");
-    let pi_sp = PublicInputs {
-        feature_mask: pi::FM_VM | pi::FM_POSEIDON,
-        program_commitment: program_sp.commitment,
-        ..Default::default()
-    };
+    let mut pi_sp = PublicInputsBuilder::from_program(&program_sp)
+        .build()
+        .expect("pi_sp");
+    pi_sp.feature_mask = pi::FM_VM | pi::FM_POSEIDON;
+
     let trace_sp = build_trace(&program_sp, &pi_sp).expect("trace sp");
     let rom_acc_sp = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program_sp);
 
@@ -299,17 +294,17 @@ fn negative_vm_expected_mismatch() {
     let correct = sponge12_ref(&expected_inputs, &program.commitment);
     let steps = STEPS_PER_LEVEL_P2;
     let lvl_ssq = 3; // const, const, absorb, SSqueeze
-    let out_row = (lvl_ssq * steps + zk_lisp_proof_winterfell::schedule::pos_final() + 1) as u32;
+    let out_row =
+        (lvl_ssq * steps + zk_lisp_proof_winterfell::vm::schedule::pos_final() + 1) as u32;
 
     // Build correct PI to get a valid proof
-    let pi_ok = PublicInputs {
-        feature_mask: pi::FM_VM | pi::FM_POSEIDON | pi::FM_VM_EXPECT,
-        program_commitment: program.commitment,
-        vm_out_reg: 0,
-        vm_out_row: out_row,
-        vm_expected_bytes: be_to_bytes32(correct),
-        ..Default::default()
-    };
+    let mut pi_ok = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi_ok");
+    pi_ok.vm_out_reg = 0;
+    pi_ok.vm_out_row = out_row;
+    pi_ok.vm_expected_bytes = be_to_bytes32(correct);
+    pi_ok.feature_mask = pi::FM_VM | pi::FM_POSEIDON | pi::FM_VM_EXPECT;
 
     let trace = build_trace(&program, &pi_ok).expect("trace");
     let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
@@ -321,14 +316,13 @@ fn negative_vm_expected_mismatch() {
     let mut wrong_bytes = be_to_bytes32(correct);
     wrong_bytes[0] ^= 1; // flip a bit
 
-    let pi_bad = PublicInputs {
-        feature_mask: pi::FM_VM | pi::FM_POSEIDON | pi::FM_VM_EXPECT,
-        program_commitment: program.commitment,
-        vm_out_reg: 0,
-        vm_out_row: out_row,
-        vm_expected_bytes: wrong_bytes,
-        ..Default::default()
-    };
+    let mut pi_bad = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi_bad");
+    pi_bad.vm_out_reg = 0;
+    pi_bad.vm_out_row = out_row;
+    pi_bad.vm_expected_bytes = wrong_bytes;
+    pi_bad.feature_mask = pi::FM_VM | pi::FM_POSEIDON | pi::FM_VM_EXPECT;
 
     prove::verify_proof(proof, &program, pi_bad, &opts(), 64).expect_err("verify must fail");
 }
