@@ -45,6 +45,7 @@ Winterfell proves the trace satisfies AIR.
 
 ## Roadmap
 
+* Property and fuzz test coverage
 * Complex types such as vector, struct and tuple
 * Examples and templates
 * Website, documentation and online REPL
