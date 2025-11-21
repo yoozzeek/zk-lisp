@@ -37,9 +37,15 @@ fn build_large_program_for_multiseg() -> zk_lisp_compiler::Program {
     // Construct target_levels = (MAX_SEGMENT_ROWS / STEPS_PER_LEVEL_P2) + 1
     // We reuse the same op per level; padding to next power-of-two
     // will push total rows above the per-segment cap.
-    // STEPS_PER_LEVEL_P2 = 32, MAX_SEGMENT_ROWS = 1 << 16 in backend code.
+    // STEPS_PER_LEVEL_P2 = 32.
+    // Use env override ZKL_MAX_SEGMENT_ROWS when present
+    // so tests can force multi-seg without huge programs.
     let steps_per_level = zk_lisp_proof_winterfell::layout::STEPS_PER_LEVEL_P2;
-    let target_levels = ((1 << 16) / steps_per_level) + 1; // 2049 levels
+    let max_rows = std::env::var("ZKL_MAX_SEGMENT_ROWS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1 << 16);
+    let target_levels = (max_rows / steps_per_level) + 1;
 
     for _ in 0..target_levels {
         b.push(Op::Const { dst: 0, imm: 1 });

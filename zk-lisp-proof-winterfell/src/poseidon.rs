@@ -44,7 +44,7 @@ pub enum PoseidonError {
     MdsDerivation(String),
 }
 
-static POSEIDON_CACHE: OnceLock<RwLock<HashMap<[u8; 32], PoseidonSuite>>> = OnceLock::new();
+static POSEIDON_CACHE: OnceLock<RwLock<HashMap<([u8; 32], usize), PoseidonSuite>>> = OnceLock::new();
 
 /// Build Poseidon t=12 suite (r=10, c=2)
 /// using conservative rounds by default.
@@ -53,7 +53,11 @@ pub fn get_poseidon_suite(suite_id: &[u8; 32]) -> PoseidonSuite {
 }
 
 pub fn get_poseidon_suite_with_rounds(suite_id: &[u8; 32], rounds: usize) -> PoseidonSuite {
-    if let Some(found) = cache().read().ok().and_then(|m| m.get(suite_id).cloned()) {
+    if let Some(found) = cache()
+        .read()
+        .ok()
+        .and_then(|m| m.get(&(*suite_id, rounds)).cloned())
+    {
         return found;
     }
 
@@ -63,7 +67,7 @@ pub fn get_poseidon_suite_with_rounds(suite_id: &[u8; 32], rounds: usize) -> Pos
     let suite = PoseidonSuite { dom, mds, rc };
 
     if let Ok(mut w) = cache().write() {
-        w.insert(*suite_id, suite.clone());
+        w.insert((*suite_id, rounds), suite.clone());
     }
 
     suite
@@ -449,7 +453,7 @@ fn ro_from_slices(domain: &str, parts: &[&[u8]]) -> BE {
     BE::from(lo) + BE::from(hi) * utils::pow2_64()
 }
 
-fn cache() -> &'static RwLock<HashMap<[u8; 32], PoseidonSuite>> {
+fn cache() -> &'static RwLock<HashMap<([u8; 32], usize), PoseidonSuite>> {
     POSEIDON_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 

@@ -234,13 +234,17 @@ impl Air for ZkLispAir {
             (2 + POSEIDON_ROUNDS) * levels + (4 * POSEIDON_ROUNDS + 2) * levels + 2 * levels;
 
         if features.vm {
-            // bind program commitment at lvl0 map row
-            // + PC=0 at lvl0 map when program
-            // commitment is set (added in schedule block).
+            // PC binding at level-0 map row
+            // is always present in ScheduleAir
             num_assertions += 1;
 
-            if core.program_commitment.iter().any(|b| *b != 0) {
-                num_assertions += 1; // PC=0 at lvl0 map
+            // pi_prog binding is added only when
+            // this trace starts from PC=0 and the
+            // program commitment is set .
+            if pub_inputs.pc_init == BE::from(0u32)
+                && core.program_commitment.iter().any(|b| *b != 0)
+            {
+                num_assertions += 1;
             }
 
             // Bind runtime public main_args slots to the

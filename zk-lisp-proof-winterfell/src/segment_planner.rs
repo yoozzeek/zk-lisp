@@ -52,7 +52,12 @@ impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
                 "WinterfellSegmentPlanner trace length overflow",
             ))?;
 
-        if n_rows <= MAX_SEGMENT_ROWS {
+        let max_rows = std::env::var("ZKL_MAX_SEGMENT_ROWS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(MAX_SEGMENT_ROWS);
+
+        if n_rows <= max_rows {
             // Single well-formed segment covering the full base trace.
             let seg = Segment::new(0, n_rows)?;
 
@@ -60,13 +65,15 @@ impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
                 target = "planner",
                 rows=%n_rows,
                 segments=1,
+                max_rows=%max_rows,
                 "plan_segments single segment",
             );
 
             return Ok(vec![seg]);
         }
 
-        let max_levels_per_segment = (MAX_SEGMENT_ROWS / steps).max(1);
+        let max_levels_per_segment = (max_rows / steps).max(1);
+        
         let mut segments = Vec::new();
         let mut lvl_start = 0usize;
         let mut seg_count = 0usize;
@@ -93,7 +100,7 @@ impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
             target = "planner",
             rows=%n_rows,
             segments=%seg_count,
-            max_rows=%MAX_SEGMENT_ROWS,
+            max_rows=%max_rows,
             "plan_segments multi segment",
         );
 
@@ -148,6 +155,7 @@ mod tests {
         for _ in 0..target_levels {
             b.push(Op::Const { dst: 0, imm: 1 });
         }
+        
         b.push(Op::End);
 
         let program = b.finalize(metrics).expect("finalize must succeed");

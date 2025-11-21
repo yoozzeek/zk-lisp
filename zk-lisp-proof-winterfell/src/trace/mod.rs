@@ -176,9 +176,11 @@ pub fn build_segment_trace_with_state_without_full(
     let row0_map = schedule::pos_map();
     let state_in_hash = utils::vm_state_hash_row(&trace, row0_map);
 
-    let (_out_reg, out_row) = utils::vm_output_from_trace(&trace);
-    let out_row_usize = (out_row as usize).min(trace_len.saturating_sub(1));
-    let state_out_hash = utils::vm_state_hash_row(&trace, out_row_usize);
+    // For segment chaining we want the VM state at the end of this
+    // segment, not the program-level output row. The last row of the
+    // segment carries the post-final register file for the last level.
+    let last_row = trace_len.saturating_sub(1);
+    let state_out_hash = utils::vm_state_hash_row(&trace, last_row);
 
     if let Some(prev) = prev_state {
         if prev.state_out_hash != state_in_hash {
@@ -315,9 +317,9 @@ fn slice_trace_segment(full: &TraceTable<BE>, segment: &Segment) -> TraceTable<B
     let seg_len = segment.r_end - segment.r_start;
     let mut out = TraceTable::new(width, seg_len);
 
-    for row in 0..seg_len {
-        let src_row = segment.r_start + row;
-        for col in 0..width {
+    for col in 0..width {
+        for row in 0..seg_len {
+            let src_row = segment.r_start + row;
             out.set(col, row, full.get(col, src_row));
         }
     }
@@ -380,11 +382,11 @@ pub fn select_partitions_for_trace(trace_width: usize, trace_length: usize) -> (
     }
 
     let num_partitions = if trace_length >= (1 << 20) {
-        8
+        16
     } else if trace_length >= (1 << 18) {
-        4
+        8
     } else if trace_length >= (1 << 16) {
-        2
+        4
     } else {
         1
     };

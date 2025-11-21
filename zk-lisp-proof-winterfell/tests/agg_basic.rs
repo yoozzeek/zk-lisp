@@ -878,9 +878,20 @@ fn agg_fri_binding_rejects_tampered_fri_final() {
         Err(_) => {}
         // Backend reported an error instead of panicking.
         Ok(Err(_)) => {}
-        // Prover must not succeed on tampered FRI remainder.
-        Ok(Ok(_)) => {
-            panic!("agg proof construction unexpectedly succeeded for tampered FRI remainder");
+        // Prover may still construct a proof in release;
+        // verification must fail.
+        Ok(Ok(proof)) => {
+            let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+            let v = winterfell::verify::<
+                ZlAggAir,
+                PoseidonHasher<BE>,
+                DefaultRandomCoin<PoseidonHasher<BE>>,
+                MerkleTree<PoseidonHasher<BE>>,
+            >(proof, agg_pi, &acceptable);
+            assert!(
+                v.is_err(),
+                "agg proof unexpectedly verified for tampered FRI remainder",
+            );
         }
     }
 }
@@ -965,9 +976,20 @@ fn agg_fri_binding_rejects_tampered_fri_layer_value() {
         Err(_) => {}
         // Backend reported an error instead of panicking.
         Ok(Err(_)) => {}
-        // Prover must not succeed on tampered FRI layer values.
-        Ok(Ok(_)) => {
-            panic!("agg proof construction unexpectedly succeeded for tampered FRI layer");
+        // Prover may still construct a proof in release;
+        // verification must fail.
+        Ok(Ok(proof)) => {
+            let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+            let v = winterfell::verify::<
+                ZlAggAir,
+                PoseidonHasher<BE>,
+                DefaultRandomCoin<PoseidonHasher<BE>>,
+                MerkleTree<PoseidonHasher<BE>>,
+            >(proof, agg_pi, &acceptable);
+            assert!(
+                v.is_err(),
+                "agg proof unexpectedly verified for tampered FRI layer",
+            );
         }
     }
 }
@@ -1121,9 +1143,20 @@ fn agg_merkle_binding_rejects_tampered_trace_path() {
         Err(_) => {}
         // Backend reported an error instead of panicking.
         Ok(Err(_)) => {}
-        // Prover must not succeed on tampered Merkle paths.
-        Ok(Ok(_)) => {
-            panic!("agg proof construction unexpectedly succeeded for tampered Merkle paths");
+        // Prover may still construct a proof in release;
+        // verification must fail.
+        Ok(Ok(proof)) => {
+            let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+            let v = winterfell::verify::<
+                ZlAggAir,
+                PoseidonHasher<BE>,
+                DefaultRandomCoin<PoseidonHasher<BE>>,
+                MerkleTree<PoseidonHasher<BE>>,
+            >(proof, agg_pi, &acceptable);
+            assert!(
+                v.is_err(),
+                "agg proof unexpectedly verified for tampered Merkle paths",
+            );
         }
     }
 }

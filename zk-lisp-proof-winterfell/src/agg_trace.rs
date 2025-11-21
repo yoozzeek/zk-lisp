@@ -302,32 +302,9 @@ fn build_agg_trace_core(
         }
     }
 
-    // Enforce that all children share the same global STARK profile
-    // as advertised in AggAirPublicInputs.profile_meta and
-    // AggAirPublicInputs.profile_queries.
-    let pm = &agg_pi.profile_meta;
-    let pq = &agg_pi.profile_queries;
-
-    for child in children {
-        if child.meta.rho != pm.rho
-            || child.meta.o != pm.o
-            || child.meta.lambda != pm.lambda
-            || child.meta.pi_len != pm.pi_len
-        {
-            return Err(error::Error::InvalidInput(
-                "AggAirPublicInputs.profile_meta is inconsistent with child StepMeta",
-            ));
-        }
-
-        if child.meta.q != pq.num_queries {
-            return Err(error::Error::InvalidInput(
-                "AggAirPublicInputs.profile_queries.num_queries is inconsistent with child meta.q",
-            ));
-        }
-    }
-
-    // Segment sanity: all children must advertise valid segment indices
-    // and a contiguous chain in the batch when `segments_total > 1`.
+    // Segment sanity first: make chain errors surface before profile shape errors.
+    // All children must advertise valid segment indices and form a contiguous chain
+    // in the batch when `segments_total > 1`.
     let mut totals: Option<u32> = None;
     let mut indices: Vec<u32> = Vec::with_capacity(n_children);
 
@@ -374,6 +351,30 @@ fn build_agg_trace_core(
                     ));
                 }
             }
+        }
+    }
+
+    // Enforce that all children share the same global STARK profile
+    // as advertised in AggAirPublicInputs.profile_meta and
+    // AggAirPublicInputs.profile_queries.
+    let pm = &agg_pi.profile_meta;
+    let pq = &agg_pi.profile_queries;
+
+    for child in children {
+        if child.meta.rho != pm.rho
+            || child.meta.o != pm.o
+            || child.meta.lambda != pm.lambda
+            || child.meta.pi_len != pm.pi_len
+        {
+            return Err(error::Error::InvalidInput(
+                "AggAirPublicInputs.profile_meta is inconsistent with child StepMeta",
+            ));
+        }
+
+        if child.meta.q != pq.num_queries {
+            return Err(error::Error::InvalidInput(
+                "AggAirPublicInputs.profile_queries.num_queries is inconsistent with child meta.q",
+            ));
         }
     }
 
