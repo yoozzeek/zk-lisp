@@ -61,8 +61,6 @@ fn recursion_single_step_roundtrip() {
 
     // Expected recursion digest from the effective aggregation
     // public inputs used by ZlAggAir. We intentionally mirror
-    // the backend's digest construction here so that the test
-    // stays self-contained.
     let expected_digest = {
         let mut h = Hasher::new();
         h.update(b"zkl/recursion/agg");
@@ -130,7 +128,6 @@ fn recursion_rejects_tampered_v_units_total_at_verify() {
 
     // Tamper with v_units_total in the public inputs: ZlAggAir
     // enforces that the final accumulator equals this value, so
-    // verification must fail under the mutated RecursionPublic.
     let mut bad_pi = agg_pi.clone();
     bad_pi.v_units_total = bad_pi.v_units_total.saturating_add(1);
 

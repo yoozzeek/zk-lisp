@@ -27,7 +27,6 @@ fn hash2_prove_verify() {
 
     // Constrain features to VM+Poseidon as in the
     // original hash2 test so that AIR block
-    // selection and constraint count remain stable.
     pi.feature_mask = core_pi::FM_POSEIDON | core_pi::FM_VM;
 
     let trace = build_trace(&program, &pi).expect("trace");

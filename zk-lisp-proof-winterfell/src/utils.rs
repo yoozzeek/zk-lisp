@@ -46,11 +46,6 @@ pub fn pow2_64() -> BE {
 
 /// Encode a 128-bit unsigned integer into the base
 /// field by interpreting it as a binary polynomial
-/// over F and reducing modulo the field modulus.
-///
-/// This works for all `u128` values without needing
-/// to know the modulus explicitly; the mapping is
-/// `n -> sum_i bit_i * 2^i (mod p)`.
 #[inline]
 pub fn be_from_u128(n: u128) -> BE {
     let mut x = n;
@@ -72,7 +67,6 @@ pub fn be_from_u128(n: u128) -> BE {
 
 /// Encode 16 bytes (little-endian) into a single
 /// base-field element by first interpreting them
-/// as a `u128` and then calling [`be_from_u128`].
 #[inline]
 pub fn be_from_le_bytes16(b16: &[u8; 16]) -> BE {
     let n = u128::from_le_bytes(*b16);
@@ -81,13 +75,6 @@ pub fn be_from_le_bytes16(b16: &[u8; 16]) -> BE {
 
 /// Expand a typed VM argument into one or more
 /// base-field elements used for public-input
-/// encoding or VM register seeding.
-///
-/// Layout:
-/// - `VmArg::U64`   -> 1 element (value as u64)
-/// - `VmArg::U128`  -> 1 element (binary embedding)
-/// - `VmArg::Bytes32` -> 2 elements (lo,hi 16-byte
-///   chunks, each embedded via [`be_from_le_bytes16`]).
 #[inline]
 pub fn encode_vmarg_to_elements(arg: &VmArg, out: &mut Vec<BE>) {
     match arg {
@@ -111,7 +98,6 @@ pub fn encode_vmarg_to_elements(arg: &VmArg, out: &mut Vec<BE>) {
 
 /// Flatten a slice of VmArgs into a sequence of
 /// base-field elements in argument order using
-/// [`encode_vmarg_to_elements`].
 #[inline]
 pub fn encode_main_args_to_slots(args: &[VmArg]) -> Vec<BE> {
     let mut out = Vec::new();
@@ -124,7 +110,6 @@ pub fn encode_main_args_to_slots(args: &[VmArg]) -> Vec<BE> {
 
 // ROM helpers:
 // - weights_for_seed(seed): [g^(seed+1), ..., g^(seed+59)] for g=3
-// - linear encoders from a row slice or a trace row
 #[inline]
 pub fn rom_weights_for_seed(seed: u32) -> [BE; 59] {
     let g = BE::from(3u64);
@@ -316,9 +301,6 @@ pub fn vm_output_from_trace(trace: &TraceTable<BE>) -> (u8, u32) {
 
 /// Compute a 32-byte hash of the VM state at the given
 /// trace row. The state snapshot currently includes only
-/// the full register file r0..r{NR-1}, all encoded as
-/// canonical little-endian u128 limbs under a fixed
-/// Blake3 domain.
 pub fn vm_state_hash_row(trace: &TraceTable<BE>, row: usize) -> [u8; 32] {
     let cols = layout::Columns::baseline();
     let n = trace.length();
@@ -358,13 +340,6 @@ pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {
 
 /// Fold a 32-byte value into a single base-field element.
 ///
-/// This is a deterministic, injective-enough embedding
-/// for digest-style use: we interpret the low and high
-/// 16-byte halves as independent 128-bit values mapped
-/// via [`be_from_le_bytes16`] and then combine them
-/// linearly inside the field. This is not intended as
-/// a cryptographic hash by itself; callers must wrap it
-/// inside a proper domain-separated hash (e.g. Poseidon).
 pub fn fold_bytes32_to_fe(bytes32: &[u8; 32]) -> BE {
     let mut lo16 = [0u8; 16];
     let mut hi16 = [0u8; 16];
@@ -376,17 +351,11 @@ pub fn fold_bytes32_to_fe(bytes32: &[u8; 32]) -> BE {
 
     // Use 2^64 as a mixing factor between halves;
     // this is a simple linear combination in the
-    // field which keeps the mapping deterministic
-    // and cheap.
     a + b * pow2_64()
 }
 
 /// Fold a base-field element into 32 bytes.
 ///
-/// We encode the internal 128-bit integer representation
-/// into the low 16 bytes in little-endian form and leave
-/// the upper half zeroed. This is sufficient for digest
-/// purposes when combined with a domain-separated hash.
 pub fn fe_to_bytes_fold(x: BE) -> [u8; 32] {
     let mut out = [0u8; 32];
     let le16 = x.as_int().to_le_bytes();

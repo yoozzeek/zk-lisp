@@ -557,7 +557,7 @@ mod tests {
             cols,
             features: Default::default(),
             poseidon_rc: rc_box,
-            poseidon_mds: [[BE::ZERO; 12]; 12],
+            poseidon_mds: mds_box,
             poseidon_dom: [BE::ZERO; 2],
             rom_rc: rc3_box,
             rom_mds: mds3_box,

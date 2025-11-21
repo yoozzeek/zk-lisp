@@ -13,7 +13,6 @@
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
-use crate::poseidon;
 use crate::utils;
 use winter_utils::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable};
 use winterfell::crypto::Digest as CryptoDigest;
@@ -53,10 +52,6 @@ impl CryptoDigest for PoseidonDigest {
 
 /// Poseidon-based hasher for Winterfell commitments over f128.
 ///
-/// Note: this hasher is used only for Merkle/coin commitments
-/// inside Winterfell and is not parameterised by per-proof suite
-/// ids; protocol-level binders continue to use zk-lisp Poseidon
-/// digests derived from program-level suite ids.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PoseidonHasher<B: StarkField>(PhantomData<B>);
 
@@ -155,7 +150,6 @@ fn ro_bytes_sponge_custom_rounds(
 ) -> BE {
     // Build suite with the requested number
     // of rounds, keeping MDS/DOM derived from
-    // the suite id consistent with other contexts.
     let ps = crate::poseidon::get_poseidon_suite_with_rounds(suite_id, rounds);
 
     // Domain element
@@ -163,7 +157,7 @@ fn ro_bytes_sponge_custom_rounds(
     let dbytes = domain.as_bytes();
     let copy_len = core::cmp::min(32, dbytes.len());
     dbuf[..copy_len].copy_from_slice(&dbytes[..copy_len]);
-    
+
     let dom_fe = crate::utils::fold_bytes32_to_fe(&dbuf);
 
     // Sponge state: lanes 0..10 are the
@@ -182,7 +176,7 @@ fn ro_bytes_sponge_custom_rounds(
             for v in state.iter_mut() {
                 *v = *v * *v * *v;
             }
-            
+
             let mut new_state = [BE::ZERO; 12];
             for (i, row) in ps.mds.iter().enumerate() {
                 let acc = row
@@ -191,7 +185,7 @@ fn ro_bytes_sponge_custom_rounds(
                     .fold(BE::ZERO, |acc, (m, s)| acc + (*m) * (*s));
                 new_state[i] = acc + rc_r[i];
             }
-    
+
             *state = new_state;
         }
     };
@@ -200,7 +194,7 @@ fn ro_bytes_sponge_custom_rounds(
     let absorb = |msg: BE, state: &mut [BE; 12], lane: &mut usize| {
         state[*lane] += msg;
         *lane += 1;
-            
+
         if *lane == RATE {
             permute(state);
             *lane = 0;
@@ -212,21 +206,21 @@ fn ro_bytes_sponge_custom_rounds(
     // Absorb input as 32-byte chunks folded into field elements.
     let mut chunk = [0u8; 32];
     let mut i = 0usize;
-            
+
     while i < data.len() {
         let end = core::cmp::min(i + 32, data.len());
         let len = end - i;
         chunk[..len].copy_from_slice(&data[i..end]);
-                
+
         if len < 32 {
             for b in &mut chunk[len..] {
                 *b = 0;
             }
         }
-        
+
         let fe = crate::utils::fold_bytes32_to_fe(&chunk);
         absorb(fe, &mut state, &mut lane);
-    
+
         i = end;
     }
 
@@ -239,7 +233,6 @@ fn ro_bytes_sponge_custom_rounds(
 
 /// Select Poseidon rounds for the commitment/coin hasher.
 /// Default is 27 (matches ROM/trace). Can be lowered for
-/// local testing via env var ZKL_POSEIDON_HASHER_ROUNDS.
 fn hasher_rounds() -> usize {
     std::env::var("ZKL_POSEIDON_HASHER_ROUNDS")
         .ok()
@@ -247,4 +240,3 @@ fn hasher_rounds() -> usize {
         .filter(|&v| v > 0)
         .unwrap_or(27)
 }
-

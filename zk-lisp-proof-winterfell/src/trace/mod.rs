@@ -231,7 +231,7 @@ fn build_full_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trac
     let t_empty = std::time::Instant::now();
     let mut trace = build_empty_trace(total_levels);
 
-    tracing::info!(
+    tracing::debug!(
         target="trace.build",
         total_levels=%total_levels,
         steps=%steps,
@@ -248,7 +248,7 @@ fn build_full_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trac
         }
     }
 
-    tracing::info!(target="trace.build", elapsed_ms=%t_pc.elapsed().as_millis(), "pc lanes filled");
+    tracing::debug!(target="trace.build", elapsed_ms=%t_pc.elapsed().as_millis(), "pc lanes filled");
 
     // Ensure Poseidon domain tags are
     // present on map rows for all levels.
@@ -261,7 +261,7 @@ fn build_full_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trac
         trace.set(cols.lane_c1, row_map, dom_all[1]);
     }
 
-    tracing::info!(target="trace.build", elapsed_ms=%t_tags.elapsed().as_millis(), "poseidon tags filled");
+    tracing::debug!(target="trace.build", elapsed_ms=%t_tags.elapsed().as_millis(), "poseidon tags filled");
 
     // RAM: host-side memory map
     // and event log (addr, clk, val, is_write)
@@ -281,7 +281,7 @@ fn build_full_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trac
     VmTraceBuilder::new(&mut mem, &mut ram_events, &pi.secret_args, &pi.main_args)
         .fill_table(ctx, &mut trace)?;
 
-    tracing::info!(
+    tracing::debug!(
         target="trace.build",
         elapsed_ms=%t_vm.elapsed().as_millis(),
         "vm filled",
@@ -292,7 +292,7 @@ fn build_full_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trac
     RamTraceBuilder::new(&ctx.prog.commitment, ram_events.as_mut_slice())
         .fill_table(ctx, &mut trace)?;
 
-    tracing::info!(
+    tracing::debug!(
         target="trace.build",
         elapsed_ms=%t_ram.elapsed().as_millis(),
         "ram filled",
@@ -302,7 +302,7 @@ fn build_full_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trac
     let t_rom = std::time::Instant::now();
     RomTraceBuilder::new().fill_table(ctx, &mut trace)?;
 
-    tracing::info!(
+    tracing::debug!(
         target="trace.build",
         elapsed_ms=%t_rom.elapsed().as_millis(),
         total_ms=%t_all.elapsed().as_millis(),
@@ -368,13 +368,6 @@ pub(super) fn build_empty_trace(total_levels: usize) -> TraceTable<BE> {
 
 /// Select partitioning parameters for
 /// a trace of given width and length.
-///
-/// Notes on hash_rate:
-/// - Keep it small and stable to avoid exploding Poseidon work when
-///   committing wide traces. Large values (e.g. ~= trace_width) cause
-///   a proportional increase in the number of sponge permutations per
-///   leaf and can slow proofs by orders of magnitude on large traces.
-/// - We use 8 for very narrow traces and 16 otherwise.
 pub fn select_partitions_for_trace(trace_width: usize, trace_length: usize) -> (usize, usize) {
     let hash_rate = if trace_width <= 32 { 8 } else { 16 };
     if trace_length <= (1 << 14) || trace_width <= 16 {

@@ -27,14 +27,10 @@ use crate::layout::STEPS_PER_LEVEL_P2;
 
 /// Maximum number of base-trace rows per execution segment. Programs
 /// whose full trace length does not exceed this value are kept as a
-/// single segment; larger programs are split into multiple
-/// level-aligned segments of at most this length.
 const MAX_SEGMENT_ROWS: usize = 1 << 16;
 
 /// Segment planner for the Winterfell backend. For small programs this
 /// returns a single segment covering the entire execution trace. For
-/// larger programs it produces a sequence of level-aligned segments
-/// whose concatenation spans the full trace.
 pub struct WinterfellSegmentPlanner;
 
 impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
@@ -61,7 +57,7 @@ impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
             // Single well-formed segment covering the full base trace.
             let seg = Segment::new(0, n_rows)?;
 
-            tracing::info!(
+            tracing::debug!(
                 target = "planner",
                 rows=%n_rows,
                 segments=1,
@@ -73,7 +69,7 @@ impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
         }
 
         let max_levels_per_segment = (max_rows / steps).max(1);
-        
+
         let mut segments = Vec::new();
         let mut lvl_start = 0usize;
         let mut seg_count = 0usize;
@@ -96,7 +92,7 @@ impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
             lvl_start = lvl_end;
         }
 
-        tracing::info!(
+        tracing::debug!(
             target = "planner",
             rows=%n_rows,
             segments=%seg_count,
@@ -155,7 +151,7 @@ mod tests {
         for _ in 0..target_levels {
             b.push(Op::Const { dst: 0, imm: 1 });
         }
-        
+
         b.push(Op::End);
 
         let program = b.finalize(metrics).expect("finalize must succeed");

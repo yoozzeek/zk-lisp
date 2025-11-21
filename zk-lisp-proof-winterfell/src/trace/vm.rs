@@ -65,7 +65,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
         // Reserve tail of register
         // file for runtime public
         // main_args, flattened into slots.
-        let main_slots = crate::utils::encode_main_args_to_slots(self.main_args);
+        let main_slots = utils::encode_main_args_to_slots(self.main_args);
         let slots_len = main_slots.len();
         if slots_len > NR {
             return Err(Error::InvalidInput(
@@ -106,9 +106,13 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
         let mut pending_regs: ArrayVec<u8, 10> = ArrayVec::new();
 
         let commitment = &ctx.prog.commitment;
-
         let total_lvls = ctx.prog.ops.len();
-        tracing::info!(target="trace.vm", levels=%total_lvls, "vm fill start");
+
+        tracing::debug!(
+            target="trace.vm",
+            levels=%total_lvls,
+            "vm fill start",
+        );
 
         for (lvl, op) in ctx.prog.ops.iter().enumerate() {
             // snapshot current regs and
@@ -830,11 +834,11 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
             regs = next_regs;
 
             if lvl % 512 == 0 || lvl + 1 == total_lvls {
-                tracing::info!(target="trace.vm", lvl=%lvl, "% progressed");
+                tracing::debug!(target="trace.vm", lvl=%lvl, "% progressed");
             }
         }
 
-        tracing::info!(
+        tracing::debug!(
             target="trace.vm",
             elapsed_ms=%t_all.elapsed().as_millis(),
             "vm fill done",

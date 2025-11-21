@@ -78,11 +78,6 @@ pub struct Columns {
 
     // Packed sponge lane selectors:
     // For each lane i in 0..10,
-    // store SPONGE_IDX_BITS boolean bits (b0..bN)
-    // selecting a register index in [0..NR),
-    // and one boolean "active" bit.
-    // Layout: bits[10 * SPONGE_IDX_BITS]
-    // followed by active[10].
     pub sel_s_bits_start: usize,
     pub sel_s_active_start: usize,
 
@@ -125,7 +120,6 @@ pub struct Columns {
 
     // Gadget witnesses:
     // reusable 32-bit pool
-    // for bit-based gadgets.
     pub gadget_b_start: usize,
 
     width: usize,
@@ -172,7 +166,6 @@ impl Columns {
 
         // Sponge lane selectors
         // bits: 10 * SPONGE_IDX_BITS;
-        // active: 10
         let sel_s_bits_start = sel_dst1_start + NR;
         let sel_s_active_start = sel_s_bits_start + (10 * SPONGE_IDX_BITS);
 

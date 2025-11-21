@@ -163,8 +163,6 @@ fn divmod_q_r_e2e_small_cases() {
 fn divmod_q_r_e2e_more_cases_and_prove() {
     // q: 100/10=10, r=0;
     // q: 5/2=2, r=1;
-    // q: 0/10=0, r=0;
-    // q: 7/1=7, r=0
     let cases = vec![
         ("(def (main) (divmod-q 100 10))", 10u64),
         ("(def (main) (divmod-q 5 2))", 2u64),
@@ -236,7 +234,6 @@ fn divmod_q_r_e2e_more_cases_and_prove() {
 fn divmod_divide_by_zero_proving_fails() {
     // Using immediate zero to
     // ensure dynamic lowering path;
-    // assertion should fail at prove time.
     let src = "(def (main) (divmod-q 5 0))";
     let program = compile_entry(src, &[]).expect("compile");
 
@@ -254,7 +251,6 @@ fn divmod_divide_by_zero_proving_fails() {
         Ok(proof) => {
             // In release builds, the prover
             // may succeed even for invalid traces;
-            // verification must then fail.
             let v = verify_proof(proof, &program, pi, &opts, 64);
             assert!(
                 v.is_err(),
@@ -290,8 +286,6 @@ fn rom_one_hot_op_mismatch_proof_fails() {
 
     // Flip a ROM one-hot bit at the first
     // map row to mismatch op_* vs ROM
-    // Program has op_const at level 0 map row;
-    // we set rom_op[1] (mov) = 1 as well.
     let row_map0 = pos_map();
     trace.set(cols.rom_op_index(1), row_map0, BE::ONE);
 
@@ -305,7 +299,6 @@ fn rom_one_hot_op_mismatch_proof_fails() {
         Ok(proof) => {
             // In release builds, the prover may
             // succeed even for invalid traces;
-            // verification must then fail.
             let v = verify_proof(proof, &program, pi, &opts, 64);
             assert!(
                 v.is_err(),

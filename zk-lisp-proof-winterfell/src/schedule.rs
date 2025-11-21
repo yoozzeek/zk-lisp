@@ -32,8 +32,6 @@ pub fn pos_final() -> usize {
 
 // Build periodic selectors
 // over the full trace length n.
-// Columns: p_map, p_r[0..R-1],
-// p_final, p_pad, p_pad_last, p_last
 pub fn build_periodic_selectors(n: usize) -> Vec<Vec<u8>> {
     let cycle = STEPS_PER_LEVEL_P2;
     let cols_len = 1 + POSEIDON_ROUNDS + 1 + 1 + 1 + 1;

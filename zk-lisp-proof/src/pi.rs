@@ -15,6 +15,7 @@
 
 use crate::error::{Error, Result};
 
+use blake3::Hasher;
 use zk_lisp_compiler::builder::Op;
 use zk_lisp_compiler::{CompilerMetrics, Program};
 
@@ -28,9 +29,6 @@ pub const FM_RAM: u64 = 1 << 7;
 
 /// Typed VM argument value.
 ///
-/// This enum is shared between public and secret
-/// arguments so frontends can keep a single
-/// representation for CLI/DSL inputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VmArg {
     U64(u64),
@@ -52,45 +50,24 @@ pub struct FeaturesMap {
 pub struct PublicInputs {
     /// Deterministic identifier
     /// of the program semantics.
-    ///
-    /// This is computed as a Blake3
-    /// hash of the canonical VM bytecode
-    /// encoding (see `zk_lisp_compiler::builder::encode_ops`).
-    /// It is stable across proving backends
-    /// and is intended to serve as
-    /// the logical program id.
     pub program_id: [u8; 32],
 
     /// Blake3 commitment of the program
     /// as used by the base VM AIR. For
-    /// now this is set equal to `program_id`,
-    /// but backends may derive additional
-    /// internal commitments from it.
     pub program_commitment: [u8; 32],
 
     pub merkle_root: [u8; 32],
 
     /// Public VM arguments (typed).
     ///
-    /// These are currently metadata
-    /// only and are not encoded into
-    /// the AIR public input vector.
     pub public_args: Vec<VmArg>,
 
     /// Runtime public arguments for `main`.
     ///
-    /// From the backend perspective these are
-    /// just typed values; the Const vs Let role
-    /// is enforced at the frontend via schemas.
     pub main_args: Vec<VmArg>,
 
     /// Secret VM arguments (typed).
     ///
-    /// These are witness values used
-    /// to seed the VM register file
-    /// for the first level and are
-    /// intentionally not exposed via
-    /// AIR public inputs.
     pub secret_args: Vec<VmArg>,
 
     pub vm_out_reg: u8,
@@ -109,9 +86,6 @@ impl PublicInputsBuilder {
     pub fn from_program(program: &Program) -> Self {
         // The compiler exposes a single Blake3
         // commitment over the canonical bytecode
-        // encoding. We use it both as a stable
-        // semantic program id and as the base
-        // VM-level program commitment.
         let program_id = program.commitment;
 
         let mut builder = Self {
@@ -191,9 +165,6 @@ impl PublicInputsBuilder {
 
     /// Attach typed public VM arguments.
     ///
-    /// These arguments are kept for metadata and
-    /// future schema/typing, but are not exposed
-    /// directly to the AIR as public inputs.
     pub fn with_public_args(mut self, args: &[VmArg]) -> Self {
         self.pi.public_args = args.to_vec();
         self
@@ -208,9 +179,6 @@ impl PublicInputsBuilder {
 
     /// Attach typed secret VM arguments.
     ///
-    /// These arguments seed the VM register file
-    /// in the backend trace builder but remain
-    /// witness-only from the AIR perspective.
     pub fn with_secret_args(mut self, args: &[VmArg]) -> Self {
         self.pi.secret_args = args.to_vec();
         self.pi.feature_mask |= FM_VM;
@@ -273,5 +241,41 @@ impl PublicInputs {
         }
 
         Ok(())
+    }
+
+    pub fn digest(&self) -> [u8; 32] {
+        let mut h = Hasher::new();
+        h.update(b"zkl/pi/v1");
+        h.update(&self.program_id);
+        h.update(&self.program_commitment);
+        h.update(&self.merkle_root);
+        h.update(&self.feature_mask.to_le_bytes());
+
+        // Stable encoding of main_args:
+        // tag + little-endian bytes.
+        h.update(&(self.main_args.len() as u32).to_le_bytes());
+
+        for arg in &self.main_args {
+            match arg {
+                VmArg::U64(v) => {
+                    h.update(&[0u8]);
+                    h.update(&v.to_le_bytes());
+                }
+                VmArg::U128(v) => {
+                    h.update(&[1u8]);
+                    h.update(&v.to_le_bytes());
+                }
+                VmArg::Bytes32(bytes) => {
+                    h.update(&[2u8]);
+                    h.update(bytes);
+                }
+            }
+        }
+
+        let digest = h.finalize();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(digest.as_bytes());
+
+        out
     }
 }

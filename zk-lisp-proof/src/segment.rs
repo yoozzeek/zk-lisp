@@ -21,17 +21,9 @@ use crate::error;
 
 /// Backend-agnostic trait for planning execution
 /// segments. Implementors are expected to return a
-/// deterministic, non-empty sequence of disjoint
-/// segments which cover the portion of the trace they
-/// intend to prove.
 pub trait SegmentPlanner<B: ZkBackend> {
     /// Select a sequence of execution segments for the
     /// given program, public inputs and prover options.
-    ///
-    /// Implementations must return segments which are
-    /// strictly increasing and non-overlapping and may
-    /// reject inputs which cannot be segmented
-    /// consistently.
     fn plan_segments(
         program: &B::Program,
         pub_inputs: &B::PublicInputs,
@@ -41,7 +33,6 @@ pub trait SegmentPlanner<B: ZkBackend> {
 
 /// A half-open row interval `[r_start, r_end)` in the
 /// base execution trace. Segments are expressed in
-/// terms of absolute row indices at level 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Segment {
     /// First row of the segment (inclusive).
@@ -65,5 +56,10 @@ impl Segment {
     /// Return the number of rows in this segment.
     pub fn len(&self) -> usize {
         self.r_end - self.r_start
+    }
+
+    /// Return true if the segment is empty.
+    pub fn is_empty(&self) -> bool {
+        self.r_start >= self.r_end
     }
 }

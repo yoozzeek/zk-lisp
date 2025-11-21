@@ -44,7 +44,6 @@ pub struct ZlChildCompact {
 
     /// Per-proof metadata echoing the proving
     /// profile (m, rho, q, o, lambda, pi_len,
-    /// v_units).
     pub meta: StepMeta,
 
     /// Backend-agnostic public inputs
@@ -61,11 +60,6 @@ pub struct ZlChildCompact {
 
     /// Folded trace/constraint/FRI commitment root
     /// derived from the inner Winterfell proof.
-    ///
-    /// In the initial aggregation skeleton this is
-    /// used only to build simple consistency checks
-    /// in the aggregator AIR; its semantics may be
-    /// refined as the recursion layer evolves.
     pub trace_root: [u8; 32],
 
     /// Segment index and total segment count as
@@ -75,13 +69,11 @@ pub struct ZlChildCompact {
 
     /// VM state hash at the beginning and end of
     /// this segment, as exposed via zl1 public
-    /// inputs.
     pub state_in_hash: [u8; 32],
     pub state_out_hash: [u8; 32],
 
     /// RAM grand-product accumulators at the
     /// boundaries of this segment for unsorted
-    /// and sorted RAM tables.
     pub ram_gp_unsorted_in: [u8; 32],
     pub ram_gp_unsorted_out: [u8; 32],
     pub ram_gp_sorted_in: [u8; 32],
@@ -94,7 +86,6 @@ pub struct ZlChildCompact {
 
     /// Per-trace-segment Merkle roots for the
     /// base execution trace as exposed by the
-    /// underlying Winterfell proof.
     pub trace_roots: Vec<[u8; 32]>,
 
     /// Merkle root of the constraint composition
@@ -107,38 +98,27 @@ pub struct ZlChildCompact {
 
     /// Proof-of-work nonce used for query seed
     /// grinding in the underlying Winterfell proof.
-    /// This is needed to deterministically recompute
-    /// query positions from the same public coin
-    /// state during transcript-based verification.
     pub pow_nonce: u64,
 
     /// Fiat–Shamir challenges as seen by the
     /// child verifier. This will be populated from
-    /// the Poseidon-based FS transcript once the
-    /// replay logic is in place.
     pub fs_challenges: Option<ZlFsChallenges>,
 
     /// Merkle authentication data for trace,
     /// constraint and FRI trees at all query
-    /// positions. This stays optional until the
-    /// extraction from the underlying Winterfell
-    /// proof is implemented.
     pub merkle_proofs: Option<ZlMerkleProofs>,
 }
 
 /// Fiat–Shamir challenges needed to replay
 /// zk-lisp AIR verification at the aggregator
-/// level.
 #[derive(Clone, Debug)]
 pub struct ZlFsChallenges {
     /// One or more OOD evaluation points used
     /// for DEEP composition. Most AIRs use a
-    /// single point, but we keep this generic.
     pub ood_points: Vec<BE>,
 
     /// Opaque list of DEEP/composition coefficients
     /// (α, β, γ, etc.) in the order expected by
-    /// the aggregation constraints.
     pub deep_coeffs: Vec<BE>,
 
     /// Per-layer FRI folding challenges.
@@ -151,8 +131,6 @@ pub struct ZlFsChallenges {
 
 /// Simple Merkle path represented by a leaf digest
 /// and a list of sibling digests from leaf to root.
-/// Direction at each level is derived from the leaf
-/// index (stored separately) and is not encoded here.
 #[derive(Clone, Debug)]
 pub struct ZlMerklePath {
     pub leaf: PoseidonDigest,
@@ -161,19 +139,13 @@ pub struct ZlMerklePath {
 
 /// Per-layer FRI Merkle proof for a single leaf
 /// in the FRI commitment at a given layer.
-///
-/// For folding factor 2 each leaf carries two
-/// evaluations (v0, v1) committed under the
-/// corresponding FRI root at index `idx`.
 #[derive(Clone, Debug)]
 pub struct ZlFriLayerProof {
     /// Leaf index in the FRI layer commitment
     /// domain. For layer `d` this must equal
-    /// the folded position `fold_positions_d[j]`.
     pub idx: u32,
     /// Values committed in the leaf at `idx`;
     /// for folding factor 2 this is a pair of
-    /// evaluations for the corresponding coset.
     pub values: [BE; 2],
     /// Merkle authentication path from the leaf
     /// hash H(values) up to fri_roots[d].
@@ -190,7 +162,6 @@ pub struct ZlMerkleProofs {
 
     /// Per-query Merkle paths for constraint
     /// /composition openings under
-    /// `constraint_root`.
     pub constraint_paths: Vec<ZlMerklePath>,
 
     /// FRI Merkle proofs indexed as
@@ -263,8 +234,6 @@ impl ZlChildCompact {
 
         // Replay FS challenges exactly as seen by Winterfell verifier.
         // This provides a single source of randomness for aggregation
-        // which is bit-for-bit consistent with the underlying child
-        // proof transcript.
         let fs_challenges = if num_queries == 0 {
             None
         } else {
@@ -273,7 +242,6 @@ impl ZlChildCompact {
 
         // Extract Merkle authentication data for trace,
         // constraint and FRI queries using the same
-        // layout and partitioning as the Winterfell verifier.
         let merkle_proofs = {
             if num_queries == 0 {
                 None
@@ -305,7 +273,6 @@ impl ZlChildCompact {
 
                 // Rebuild leaf digests for each queried
                 // main-trace row using the same partitioning
-                // logic as Winterfell verifier.
                 let partition_opts = options.partition_options();
                 let partition_size_main =
                     partition_opts.partition_size::<BE>(trace_info.main_trace_width());
@@ -315,7 +282,6 @@ impl ZlChildCompact {
 
                 // Each row in `main_table` is ordered consistently
                 // with `fs.query_positions`, and the Merkle tree
-                // is built over the LDE domain [0, lde_domain_size).
                 for (row, &pos) in main_table.rows().zip(fs.query_positions.iter()) {
                     let leaf = hash_row_poseidon(row, partition_size_main);
                     trace_leaves.push(leaf);
@@ -345,7 +311,6 @@ impl ZlChildCompact {
 
                 // Infer constraint frame width from the serialized
                 // constraint queries and use it to parse the table
-                // in the same way as Winterfell verifier.
                 let cq_clone = wf_proof.constraint_queries.clone();
                 let cq_bytes = Serializable::to_bytes(&cq_clone);
                 let mut reader = SliceReader::new(&cq_bytes);
@@ -446,7 +411,6 @@ impl ZlChildCompact {
                 if num_fri_layers > 0 && num_queries > 0 {
                     // Parse FRI layers into per-query values and
                     // batch Merkle proofs using the same layout as
-                    // Winterfell's FriProver/FriVerifier.
                     let fri_proof_clone = wf_proof.fri_proof.clone();
                     let (layer_queries, layer_proofs) = fri_proof_clone
                         .parse_layers::<BE, PoseidonHasher<BE>, MerkleTree<PoseidonHasher<BE>>>(
@@ -464,9 +428,6 @@ impl ZlChildCompact {
 
                     // Reconstruct folded query positions for each
                     // FRI layer exactly as FriProver::build_proof
-                    // does: starting from FS query_positions and
-                    // folding the domain size by `folding` at each
-                    // step.
                     let mut positions: Vec<usize> =
                         fs.query_positions.iter().map(|&p| p as usize).collect();
                     let mut domain_size = lde_domain_size;
@@ -512,7 +473,6 @@ impl ZlChildCompact {
 
                         // Decompress the batch proof into individual
                         // openings, preserving the same order as in
-                        // `folded_positions`.
                         let openings = mproof
                             .into_openings(&hashed_leaves, &folded_positions)
                             .map_err(|_| {
@@ -587,7 +547,6 @@ pub struct ZlChildTranscript {
 
     /// Per-trace-segment Merkle roots for the
     /// base execution trace as exposed by the
-    /// underlying Winterfell proof.
     pub trace_roots: Vec<[u8; 32]>,
 
     /// Merkle root of the constraint composition
@@ -604,7 +563,6 @@ pub struct ZlChildTranscript {
 
     /// Number of unique FS queries used by the
     /// child proof. This matches `num_unique_queries`
-    /// in the underlying Winterfell proof context.
     pub num_queries: u8,
 
     /// Per-query main-trace openings for
@@ -626,7 +584,6 @@ pub struct ZlChildTranscript {
 
     /// OOD trace evaluations (aux segment)
     /// at points z and z * g. Empty when the
-    /// underlying trace has no auxiliary segment.
     pub ood_aux_current: Vec<BE>,
     pub ood_aux_next: Vec<BE>,
 
@@ -637,7 +594,6 @@ pub struct ZlChildTranscript {
 
     /// Trace and constraint widths needed to
     /// interpret OOD rows and constraint
-    /// openings.
     pub main_trace_width: u32,
     pub aux_trace_width: u32,
     pub constraint_frame_width: u32,
@@ -645,8 +601,6 @@ pub struct ZlChildTranscript {
 
 /// FRI remainder polynomial container used by
 /// child transcripts. Coefficients are kept in
-/// the base field to be directly usable by
-/// aggregation logic.
 #[derive(Clone, Debug)]
 pub struct ZlFriFinal {
     pub deg: u16,
@@ -696,7 +650,6 @@ impl ZlChildTranscript {
 
         // Decode main-trace openings for each
         // unique query position from the first
-        // (and currently only) trace segment.
         let mut trace_main_openings = Vec::new();
 
         if num_queries > 0 {
@@ -718,7 +671,6 @@ impl ZlChildTranscript {
 
         // Decode constraint composition openings at query positions
         // and reconstruct the constraint frame width in a backend-
-        // agnostic way.
         let (constraint_openings, constraint_frame_width) = if num_queries == 0 {
             (Vec::new(), 0u32)
         } else {
@@ -782,9 +734,6 @@ impl ZlChildTranscript {
 
         // Decode FRI per-layer query values for the
         // DEEP composition polynomial. For each layer
-        // `l`, we obtain a flat vector of length
-        // `num_queries * folding_factor` and split it
-        // into (v0, v1) pairs per query.
         let mut fri_layers: Vec<Vec<[BE; 2]>> = Vec::new();
 
         if num_queries > 0 && num_fri_layers > 0 {
@@ -969,8 +918,6 @@ pub fn children_root_from_compact(suite_id: &[u8; 32], children: &[ZlChildCompac
 pub fn verify_child_transcript(tx: &ZlChildTranscript) -> error::Result<()> {
     // Recompute the Blake3 commitment root over
     // trace and FRI commitments and compare it
-    // against the compact view embedded
-    // into `ZlChildCompact`.
     let mut h = Blake3Hasher::new();
     h.update(b"zkl/step/root_trace");
     h.update(&tx.compact.suite_id);
@@ -1071,7 +1018,6 @@ pub fn verify_child_transcript(tx: &ZlChildTranscript) -> error::Result<()> {
 
     // FRI remainder polynomial must be
     // non-empty and its reported degree
-    // must not exceed coeffs.len() - 1.
     let coeffs_len = tx.fri_final.coeffs.len();
     if coeffs_len == 0 {
         return Err(error::Error::InvalidInput(
@@ -1104,8 +1050,6 @@ fn hash_row_poseidon(row: &[BE], partition_size: usize) -> PoseidonDigest {
 
     // Fold partitions with Poseidon hasher
     // in the same way as Winterfell verifier
-    // does when building Merkle leaves
-    // from wide rows.
     if digests.len() == 1 {
         digests[0]
     } else {
@@ -1115,11 +1059,6 @@ fn hash_row_poseidon(row: &[BE], partition_size: usize) -> PoseidonDigest {
 
 /// Recompute a binary Poseidon Merkle root from a leaf
 /// digest, its sibling path and the leaf index.
-///
-/// The path is interpreted from leaf to root; at each
-/// step we use the least-significant bit of `idx` to
-/// decide whether the current accumulator is the left
-/// or right child of the sibling.
 pub fn merkle_root_from_leaf(
     leaf: &PoseidonDigest,
     mut idx: usize,
@@ -1143,9 +1082,6 @@ pub fn merkle_root_from_leaf(
 
 /// Fold query positions from a source domain of the
 /// given size into a smaller domain by the specified
-/// folding factor, mirroring winter-fri's
-/// `fold_positions` helper. Duplicates are removed
-/// while preserving ascending order.
 pub fn fold_positions_usize(
     positions: &[usize],
     source_domain_size: usize,

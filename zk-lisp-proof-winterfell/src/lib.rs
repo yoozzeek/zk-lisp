@@ -38,20 +38,20 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField, ToElements};
 use winterfell::{BatchingMethod, FieldExtension, Proof, ProofOptions, Trace};
 use zk_lisp_compiler::Program;
-use zk_lisp_proof::frontend::{
-    PreflightBackend, PreflightMode, ProofCodec, VmBackend, VmRunResult,
-};
+use zk_lisp_proof::frontend::{PreflightBackend, PreflightMode, VmBackend, VmRunResult};
 use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
-use zk_lisp_proof::recursion::{RecursionBackend, RecursionDigest};
+use zk_lisp_proof::recursion::{
+    RecursionArtifactCodec, RecursionBackend, RecursionDigest, RecursionPublicBuilder,
+    RecursionStepProver,
+};
 use zk_lisp_proof::{ProverOptions, ZkBackend, ZkField};
 
 use crate::agg_air::AggAirPublicInputs;
-use crate::agg_child::{ZlChildTranscript, verify_child_transcript};
+use crate::agg_child::{
+    ZlChildCompact, ZlChildTranscript, children_root_from_compact, verify_child_transcript,
+};
 use crate::trace::build_trace;
 
-/// Newtype wrapper for the Winterfell
-/// base field implementing the
-/// backend-agnostic `ZkField` trait.
 #[derive(Clone, Debug)]
 pub struct WinterfellField(pub BE);
 
@@ -73,42 +73,15 @@ impl ZkField for WinterfellField {
     }
 }
 
-/// Public inputs visible to the Winterfell AIR.
-///
-/// `core` wraps backend-agnostic public inputs used
-/// across backends. `rom_acc` carries the offline ROM
-/// accumulator state lanes (t=3 sponge) computed from
-/// the program; it is currently kept for backwards
-/// compatibility and debugging. Segment-local boundary
-/// state (PC, RAM GPs, ROM lanes) is provided via
-/// dedicated fields below and derived directly from the
-/// concrete execution trace for each proof.
 #[derive(Clone, Debug)]
 pub struct AirPublicInputs {
     pub core: CorePublicInputs,
-
-    /// Offline ROM accumulator derived from the program
-    /// commitment. Not used directly by the AIR for
-    /// segment-local ROM binding but preserved for
-    /// backwards compatibility and potential cross-checks.
     pub rom_acc: [BE; 3],
-
-    /// Program counter value at the first map row of the
-    /// trace segment proved by this AIR instance.
     pub pc_init: BE,
-
-    /// RAM grand-product accumulators for the unsorted and
-    /// sorted RAM tables at the first and last rows of the
-    /// trace segment.
     pub ram_gp_unsorted_in: BE,
     pub ram_gp_unsorted_out: BE,
     pub ram_gp_sorted_in: BE,
     pub ram_gp_sorted_out: BE,
-
-    /// ROM t=3 accumulator state at the logical beginning
-    /// and end of the trace segment. `rom_s_in` is taken at
-    /// the map row of the first level; `rom_s_out` at the
-    /// final row of the last level.
     pub rom_s_in: [BE; 3],
     pub rom_s_out: [BE; 3],
 }
@@ -149,14 +122,12 @@ impl ToElements<BE> for AirPublicInputs {
 
         // Encode main_args as a flattened sequence of
         // base-field elements using the same layout as
-        // VM registers / AIR assertions.
         let main_slots = utils::encode_main_args_to_slots(&self.core.main_args);
         out.reserve(main_slots.len() + 16);
         out.extend_from_slice(&main_slots);
 
         // Include segment-local boundary state into the
         // public-element vector so that Fiat–Shamir
-        // challenges depend on these values.
         out.push(self.pc_init);
         out.push(self.ram_gp_unsorted_in);
         out.push(self.ram_gp_unsorted_out);
@@ -180,67 +151,8 @@ impl ZkBackend for WinterfellBackend {
     type Field = WinterfellField;
     type Program = Program;
     type PublicInputs = CorePublicInputs;
-    type Proof = Proof;
     type Error = crate::prove::Error;
     type ProverOptions = ProverOptions;
-
-    fn prove(
-        program: &Self::Program,
-        pub_inputs: &Self::PublicInputs,
-        opts: &Self::ProverOptions,
-    ) -> Result<Self::Proof, Self::Error> {
-        let base_opts = ProofOptions::new(
-            opts.queries as usize,
-            opts.blowup as usize,
-            opts.grind,
-            FieldExtension::Quadratic,
-            2,
-            1,
-            BatchingMethod::Linear,
-            BatchingMethod::Linear,
-        );
-
-        // Build trace first so we can size partition options.
-        let trace = build_trace(program, pub_inputs)?;
-        let trace_width = trace.width();
-        let trace_length = trace.length();
-        let (num_partitions, hash_rate) =
-            trace::select_partitions_for_trace(trace_width, trace_length);
-
-        let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
-
-        // Offline ROM accumulator from program
-        let rom_acc = if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-            romacc::rom_acc_from_program(program)
-        } else {
-            [BE::ZERO; 3]
-        };
-
-        let prover = prove::ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc);
-
-        prover.prove(trace)
-    }
-
-    fn verify(
-        proof: Self::Proof,
-        program: &Self::Program,
-        pub_inputs: &Self::PublicInputs,
-        opts: &Self::ProverOptions,
-    ) -> Result<(), Self::Error> {
-        let min_bits = opts.min_security_bits;
-        let wf_opts = ProofOptions::new(
-            opts.queries as usize,
-            opts.blowup as usize,
-            opts.grind,
-            FieldExtension::Quadratic,
-            2,
-            1,
-            BatchingMethod::Linear,
-            BatchingMethod::Linear,
-        );
-
-        prove::verify_proof(proof, program, pub_inputs.clone(), &wf_opts, min_bits)
-    }
 }
 
 impl VmBackend for WinterfellBackend {
@@ -290,18 +202,6 @@ impl PreflightBackend for WinterfellBackend {
     }
 }
 
-impl ProofCodec for WinterfellBackend {
-    type CodecError = crate::prove::Error;
-
-    fn proof_to_bytes(proof: &Self::Proof) -> Result<Vec<u8>, Self::CodecError> {
-        Ok(proof.to_bytes())
-    }
-
-    fn proof_from_bytes(bytes: &[u8]) -> Result<Self::Proof, Self::CodecError> {
-        Proof::from_bytes(bytes).map_err(|e| prove::Error::BackendSource(Box::new(e)))
-    }
-}
-
 impl RecursionBackend for WinterfellBackend {
     type StepProof = zl_step::ZlStepProof;
     type RecursionProof = Proof;
@@ -318,11 +218,6 @@ impl RecursionBackend for WinterfellBackend {
             ));
         }
 
-        // Basic shape validation for aggregation public inputs relative to
-        // the number of step proofs supplied. Callers may either leave
-        // children_count/children_ms unset (0/empty) or provide values
-        // consistent with `steps.len()`; any other configuration is
-        // rejected early to avoid surprising aggregation profiles.
         let expected_children = steps.len() as u32;
         if rc_pi.children_count != 0 && rc_pi.children_count != expected_children {
             return Err(prove::Error::RecursionInvalid(
@@ -343,12 +238,8 @@ impl RecursionBackend for WinterfellBackend {
             transcripts.push(tx);
         }
 
-        // Derive helper fields of AggAirPublicInputs from
-        // steps so callers do not need to supply them manually.
         let mut agg_pi = rc_pi.clone();
 
-        // Suite id must be consistent across all children;
-        // derive it from the first step and enforce equality.
         let suite_id = steps[0].proof.header.suite_id;
         for step in steps.iter().skip(1) {
             if step.proof.header.suite_id != suite_id {
@@ -363,10 +254,6 @@ impl RecursionBackend for WinterfellBackend {
         agg_pi.children_ms = steps.iter().map(|s| s.proof.meta.m).collect();
 
         let proof = prove::prove_agg_air(&agg_pi, &transcripts, opts)?;
-
-        // Compute a recursion digest from the effective
-        // aggregation public inputs; this binds the proof
-        // to its batch config.
         let digest = prove::recursion_digest_from_agg_pi(&agg_pi);
 
         Ok((proof, digest))
@@ -378,15 +265,19 @@ impl RecursionBackend for WinterfellBackend {
         opts: &Self::ProverOptions,
     ) -> Result<(), Self::Error> {
         let min_bits = opts.min_security_bits;
-
-        // Use at least 16 queries for the aggregation AIR.
         let agg_queries = core::cmp::max(opts.queries as usize, 16usize);
+
+        let field_extension = if min_bits >= 128 {
+            FieldExtension::Quadratic
+        } else {
+            FieldExtension::None
+        };
 
         let wf_opts = ProofOptions::new(
             agg_queries,
             opts.blowup as usize,
             opts.grind,
-            FieldExtension::Quadratic,
+            field_extension,
             2,
             1,
             BatchingMethod::Linear,
@@ -394,5 +285,400 @@ impl RecursionBackend for WinterfellBackend {
         );
 
         prove::verify_agg_air(proof, rc_pi, &wf_opts, min_bits)
+    }
+}
+
+impl RecursionStepProver for WinterfellBackend {
+    fn step_prove_all(
+        program: &Self::Program,
+        pub_inputs: &Self::PublicInputs,
+        opts: &Self::ProverOptions,
+    ) -> Result<Vec<Self::StepProof>, Self::Error> {
+        prove::prove_program_steps(program, pub_inputs, opts)
+    }
+}
+
+impl RecursionPublicBuilder for WinterfellBackend {
+    fn build_recursion_public(
+        _program: &Self::Program,
+        pub_inputs: &Self::PublicInputs,
+        steps: &[Self::StepProof],
+        _opts: &Self::ProverOptions,
+    ) -> Result<Self::RecursionPublic, Self::Error> {
+        if steps.is_empty() {
+            return Err(prove::Error::RecursionInvalid(
+                "build_recursion_public requires at least one step",
+            ));
+        }
+
+        for step in steps {
+            let pi = &step.pi_core;
+            if pi.program_id != pub_inputs.program_id
+                || pi.program_commitment != pub_inputs.program_commitment
+                || pi.main_args != pub_inputs.main_args
+            {
+                return Err(prove::Error::RecursionInvalid(
+                    "build_recursion_public requires all steps to share the same program_id, program_commitment and main_args as recursion public inputs",
+                ));
+            }
+        }
+
+        let mut children = Vec::with_capacity(steps.len());
+        let mut v_units_total: u64 = 0;
+
+        for step in steps {
+            let c = ZlChildCompact::from_step(step)?;
+            v_units_total = v_units_total.saturating_add(c.meta.v_units);
+            children.push(c);
+        }
+
+        let first = &children[0];
+        let children_root = children_root_from_compact(&first.suite_id, &children);
+        let suite_id = first.suite_id;
+        let children_ms = children.iter().map(|c| c.meta.m).collect::<Vec<_>>();
+
+        let profile_meta = crate::agg_air::AggProfileMeta {
+            m: first.meta.m,
+            rho: first.meta.rho,
+            q: first.meta.q,
+            o: first.meta.o,
+            lambda: first.meta.lambda,
+            pi_len: first.meta.pi_len,
+            v_units: first.meta.v_units,
+        };
+        let profile_fri = crate::agg_air::AggFriProfile {
+            lde_blowup: first.meta.rho as u32,
+            folding_factor: 2,
+            redundancy: 1,
+            num_layers: 1,
+        };
+        let profile_queries = crate::agg_air::AggQueryProfile {
+            num_queries: first.meta.q,
+            grinding_factor: 0,
+        };
+
+        let vm_state_initial = steps.first().unwrap().state_in_hash();
+        let vm_state_final = steps.last().unwrap().state_out_hash();
+
+        let program_id = pub_inputs.program_id;
+        let program_commitment = pub_inputs.program_commitment;
+        let pi_digest = pub_inputs.digest();
+
+        let a0 = crate::agg_air::AggAirPublicInputs::from_step_proof(&steps[0])?;
+        let al = crate::agg_air::AggAirPublicInputs::from_step_proof(steps.last().unwrap())?;
+
+        Ok(crate::agg_air::AggAirPublicInputs {
+            program_id,
+            program_commitment,
+            pi_digest,
+            children_root,
+            v_units_total,
+            children_count: steps.len() as u32,
+            batch_id: [0u8; 32],
+            profile_meta,
+            profile_fri,
+            profile_queries,
+            suite_id,
+            children_ms,
+            vm_state_initial,
+            vm_state_final,
+            ram_gp_unsorted_initial: a0.ram_gp_unsorted_initial,
+            ram_gp_unsorted_final: al.ram_gp_unsorted_final,
+            ram_gp_sorted_initial: a0.ram_gp_sorted_initial,
+            ram_gp_sorted_final: al.ram_gp_sorted_final,
+            rom_s_initial: a0.rom_s_initial,
+            rom_s_final: al.rom_s_final,
+        })
+    }
+}
+
+impl RecursionArtifactCodec for WinterfellBackend {
+    type CodecError = crate::prove::Error;
+
+    fn encode_recursion_artifact(
+        proof: &Self::RecursionProof,
+        rc_pi: &Self::RecursionPublic,
+    ) -> Result<Vec<u8>, Self::CodecError> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"ZKLRC1");
+
+        let pi = rc_pi;
+
+        out.extend_from_slice(&pi.program_id);
+        out.extend_from_slice(&pi.program_commitment);
+        out.extend_from_slice(&pi.pi_digest);
+
+        out.extend_from_slice(&pi.children_root);
+        out.extend_from_slice(&pi.batch_id);
+        out.extend_from_slice(&pi.v_units_total.to_le_bytes());
+        out.extend_from_slice(&pi.children_count.to_le_bytes());
+
+        out.extend_from_slice(&pi.profile_meta.m.to_le_bytes());
+        out.extend_from_slice(&pi.profile_meta.rho.to_le_bytes());
+        out.extend_from_slice(&pi.profile_meta.q.to_le_bytes());
+        out.extend_from_slice(&pi.profile_meta.o.to_le_bytes());
+        out.extend_from_slice(&pi.profile_meta.lambda.to_le_bytes());
+        out.extend_from_slice(&pi.profile_meta.pi_len.to_le_bytes());
+        out.extend_from_slice(&pi.profile_meta.v_units.to_le_bytes());
+
+        out.extend_from_slice(&pi.profile_fri.lde_blowup.to_le_bytes());
+        out.extend_from_slice(&pi.profile_fri.folding_factor.to_le_bytes());
+        out.extend_from_slice(&pi.profile_fri.redundancy.to_le_bytes());
+        out.extend_from_slice(&pi.profile_fri.num_layers.to_le_bytes());
+
+        out.extend_from_slice(&pi.profile_queries.num_queries.to_le_bytes());
+        out.extend_from_slice(&pi.profile_queries.grinding_factor.to_le_bytes());
+
+        out.extend_from_slice(&pi.suite_id);
+
+        let n_ms = pi.children_ms.len() as u32;
+        out.extend_from_slice(&n_ms.to_le_bytes());
+
+        for m in &pi.children_ms {
+            out.extend_from_slice(&m.to_le_bytes());
+        }
+
+        out.extend_from_slice(&pi.vm_state_initial);
+        out.extend_from_slice(&pi.vm_state_final);
+        out.extend_from_slice(&pi.ram_gp_unsorted_initial);
+        out.extend_from_slice(&pi.ram_gp_unsorted_final);
+        out.extend_from_slice(&pi.ram_gp_sorted_initial);
+        out.extend_from_slice(&pi.ram_gp_sorted_final);
+
+        for lane in &pi.rom_s_initial {
+            out.extend_from_slice(lane);
+        }
+
+        for lane in &pi.rom_s_final {
+            out.extend_from_slice(lane);
+        }
+
+        let p_bytes = proof.to_bytes();
+        out.extend_from_slice(&(p_bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(&p_bytes);
+
+        Ok(out)
+    }
+
+    fn decode_recursion_artifact(
+        bytes: &[u8],
+    ) -> Result<(Self::RecursionProof, Self::RecursionPublic), Self::CodecError> {
+        let mut i = 0usize;
+        let magic = b"ZKLRC1";
+
+        if bytes.len() < magic.len() || &bytes[..magic.len()] != magic {
+            return Err(prove::Error::PublicInputs(
+                zk_lisp_proof::error::Error::InvalidInput("invalid recursion artifact magic"),
+            ));
+        }
+
+        i += magic.len();
+
+        let take32 = |idx: &mut usize, name: &'static str| -> Result<[u8; 32], Self::CodecError> {
+            if bytes.len() < *idx + 32 {
+                return Err(prove::Error::PublicInputs(
+                    zk_lisp_proof::error::Error::InvalidInput(name),
+                ));
+            }
+
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&bytes[*idx..*idx + 32]);
+
+            *idx += 32;
+
+            Ok(out)
+        };
+
+        // Program binding fields
+        let program_id = take32(&mut i, "program_id truncated")?;
+        let program_commitment = take32(&mut i, "program_commitment truncated")?;
+        let pi_digest = take32(&mut i, "pi_digest truncated")?;
+
+        let children_root = take32(&mut i, "children_root truncated")?;
+        let batch_id = take32(&mut i, "batch_id truncated")?;
+
+        // u64 v_units_total
+        if bytes.len() < i + 8 {
+            return Err(prove::Error::PublicInputs(
+                zk_lisp_proof::error::Error::InvalidInput("v_units_total truncated"),
+            ));
+        }
+
+        let mut u8b = [0u8; 8];
+        u8b.copy_from_slice(&bytes[i..i + 8]);
+
+        let v_units_total = u64::from_le_bytes(u8b);
+        i += 8;
+
+        // children_count u32
+        if bytes.len() < i + 4 {
+            return Err(prove::Error::PublicInputs(
+                zk_lisp_proof::error::Error::InvalidInput("children_count truncated"),
+            ));
+        }
+
+        let mut u4 = [0u8; 4];
+        u4.copy_from_slice(&bytes[i..i + 4]);
+
+        let children_count = u32::from_le_bytes(u4);
+        i += 4;
+
+        // profile_meta
+        let read_u32 = |bytes: &[u8], i: &mut usize| -> Result<u32, Self::CodecError> {
+            if bytes.len() < *i + 4 {
+                return Err(prove::Error::PublicInputs(
+                    zk_lisp_proof::error::Error::InvalidInput("u32 truncated"),
+                ));
+            }
+
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&bytes[*i..*i + 4]);
+            *i += 4;
+
+            Ok(u32::from_le_bytes(b))
+        };
+
+        let read_u16 = |bytes: &[u8], i: &mut usize| -> Result<u16, Self::CodecError> {
+            if bytes.len() < *i + 2 {
+                return Err(prove::Error::PublicInputs(
+                    zk_lisp_proof::error::Error::InvalidInput("u16 truncated"),
+                ));
+            }
+
+            let mut b = [0u8; 2];
+            b.copy_from_slice(&bytes[*i..*i + 2]);
+            *i += 2;
+
+            Ok(u16::from_le_bytes(b))
+        };
+
+        let read_u8 = |bytes: &[u8], i: &mut usize| -> Result<u8, Self::CodecError> {
+            if bytes.len() < *i + 1 {
+                return Err(prove::Error::PublicInputs(
+                    zk_lisp_proof::error::Error::InvalidInput("u8 truncated"),
+                ));
+            }
+
+            let b = bytes[*i];
+            *i += 1;
+
+            Ok(b)
+        };
+
+        let m = read_u32(bytes, &mut i)?;
+        let rho = read_u16(bytes, &mut i)?;
+        let q = read_u16(bytes, &mut i)?;
+        let o = read_u16(bytes, &mut i)?;
+        let lambda = read_u16(bytes, &mut i)?;
+        let pi_len = read_u32(bytes, &mut i)?;
+
+        let mut u8b2 = [0u8; 8];
+
+        if bytes.len() < i + 8 {
+            return Err(prove::Error::PublicInputs(
+                zk_lisp_proof::error::Error::InvalidInput("v_units(meta) truncated"),
+            ));
+        }
+
+        u8b2.copy_from_slice(&bytes[i..i + 8]);
+        i += 8;
+
+        let v_units_meta = u64::from_le_bytes(u8b2);
+        let profile_meta = crate::agg_air::AggProfileMeta {
+            m,
+            rho,
+            q,
+            o,
+            lambda,
+            pi_len,
+            v_units: v_units_meta,
+        };
+        let lde_blowup = read_u32(bytes, &mut i)?;
+        let folding_factor = read_u8(bytes, &mut i)?;
+        let redundancy = read_u8(bytes, &mut i)?;
+        let num_layers = read_u8(bytes, &mut i)?;
+        let profile_fri = crate::agg_air::AggFriProfile {
+            lde_blowup,
+            folding_factor,
+            redundancy,
+            num_layers,
+        };
+        let num_queries = read_u16(bytes, &mut i)?;
+        let grinding_factor = read_u32(bytes, &mut i)?;
+        let profile_queries = crate::agg_air::AggQueryProfile {
+            num_queries,
+            grinding_factor,
+        };
+        let suite_id = take32(&mut i, "suite_id truncated")?;
+        let n_ms = read_u32(bytes, &mut i)? as usize;
+
+        let mut children_ms = Vec::with_capacity(n_ms);
+        for _ in 0..n_ms {
+            children_ms.push(read_u32(bytes, &mut i)?);
+        }
+
+        let vm_state_initial = take32(&mut i, "vm_state_initial truncated")?;
+        let vm_state_final = take32(&mut i, "vm_state_final truncated")?;
+        let ram_gp_unsorted_initial = take32(&mut i, "ram_gp_unsorted_initial truncated")?;
+        let ram_gp_unsorted_final = take32(&mut i, "ram_gp_unsorted_final truncated")?;
+        let ram_gp_sorted_initial = take32(&mut i, "ram_gp_sorted_initial truncated")?;
+        let ram_gp_sorted_final = take32(&mut i, "ram_gp_sorted_final truncated")?;
+
+        let mut rom_s_initial = [[0u8; 32]; 3];
+        for lane in &mut rom_s_initial {
+            *lane = take32(&mut i, "rom_s_initial lane truncated")?;
+        }
+
+        let mut rom_s_final = [[0u8; 32]; 3];
+        for lane in &mut rom_s_final {
+            *lane = take32(&mut i, "rom_s_final lane truncated")?;
+        }
+
+        // proof bytes
+        if bytes.len() < i + 4 {
+            return Err(prove::Error::PublicInputs(
+                zk_lisp_proof::error::Error::InvalidInput("proof length truncated"),
+            ));
+        }
+
+        let mut pb = [0u8; 4];
+        pb.copy_from_slice(&bytes[i..i + 4]);
+        i += 4;
+
+        let plen = u32::from_le_bytes(pb) as usize;
+
+        if bytes.len() < i + plen {
+            return Err(prove::Error::PublicInputs(
+                zk_lisp_proof::error::Error::InvalidInput("proof bytes truncated"),
+            ));
+        }
+
+        let proof = Proof::from_bytes(&bytes[i..i + plen])
+            .map_err(|e| prove::Error::BackendSource(Box::new(e)))?;
+
+        let rc_pi = crate::agg_air::AggAirPublicInputs {
+            program_id,
+            program_commitment,
+            pi_digest,
+            children_root,
+            v_units_total,
+            children_count,
+            batch_id,
+            profile_meta,
+            profile_fri,
+            profile_queries,
+            suite_id,
+            children_ms,
+            vm_state_initial,
+            vm_state_final,
+            ram_gp_unsorted_initial,
+            ram_gp_unsorted_final,
+            ram_gp_sorted_initial,
+            ram_gp_sorted_final,
+            rom_s_initial,
+            rom_s_final,
+        };
+
+        Ok((proof, rc_pi))
     }
 }

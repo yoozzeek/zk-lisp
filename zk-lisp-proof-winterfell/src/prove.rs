@@ -20,10 +20,9 @@ use winterfell::{
     Air, CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
     DefaultConstraintEvaluator, DefaultTraceLde, PartitionOptions, Proof, ProofOptions,
     Prover as WProver, StarkDomain, Trace, TraceInfo, TracePolyTable, TraceTable,
-    crypto::{DefaultRandomCoin, MerkleTree},
-    math::FieldElement,
-    math::ToElements,
+    crypto::{DefaultRandomCoin, Hasher as WfHasher, MerkleTree},
     math::fields::f128::BaseElement as BE,
+    math::{FieldElement, StarkField, ToElements},
     matrix::ColMatrix,
 };
 use zk_lisp_compiler::Program;
@@ -39,10 +38,9 @@ use crate::agg_trace::build_agg_trace_from_transcripts;
 use crate::air::ZkLispAir;
 use crate::layout::{Columns, STEPS_PER_LEVEL_P2};
 use crate::poseidon_hasher::PoseidonHasher;
-use crate::schedule;
 use crate::segment_planner::WinterfellSegmentPlanner;
 use crate::zl_step::{StepMeta, ZlStepProof};
-use crate::{preflight::run as run_preflight, trace, utils};
+use crate::{preflight::run as run_preflight, schedule, trace, utils};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -68,7 +66,7 @@ pub struct VerifyBoundaries {
 }
 
 impl VerifyBoundaries {
-    pub fn from_step(step: &crate::zl_step::ZlStepProof) -> Self {
+    pub fn from_step(step: &ZlStepProof) -> Self {
         let pi = &step.proof.pi;
         VerifyBoundaries {
             pc_init: pi.pc_init,
@@ -162,16 +160,9 @@ impl ZkProver {
 
         // Winterfell orchestration timing
         let t0 = std::time::Instant::now();
-        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tracing::info!(target = "proof.prove", "winterfell.prove enter");
-
-            let out = prover.prove(trace);
-            tracing::info!(target = "proof.prove", "winterfell.prove return");
-
-            out
-        }))
-        .map_err(|_| Error::Backend("winterfell panic during proving".into()))
-        .and_then(|r| r.map_err(|e| Error::BackendSource(Box::new(e))));
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prover.prove(trace)))
+            .map_err(|_| Error::Backend("winterfell panic during proving".into()))
+            .and_then(|r| r.map_err(|e| Error::BackendSource(Box::new(e))));
 
         match res {
             Ok(proof) => {
@@ -197,9 +188,6 @@ struct ZkWinterfellProver {
 
 /// Byte-encoded boundary state for a single execution
 /// segment. These values are derived from the concrete
-/// execution trace and stored in zl1 public inputs so
-/// that the aggregation layer can reconstruct them as
-/// field elements.
 struct SegmentBoundaryBytes {
     pc_init: [u8; 32],
     ram_gp_unsorted_in: [u8; 32],
@@ -251,10 +239,6 @@ fn compute_segment_boundary_bytes(
 
     // ROM t=3 accumulator state is defined in terms of VM levels.
     // We select the map row of the first level touched by the
-    // segment as rom_s_in and the final row of the last level
-    // touched by the segment as rom_s_out. This matches the
-    // semantics of RomTraceBuilder and will generalize cleanly
-    // to level-aligned multi-segment plans.
     let lvl_first = r_start / steps;
     let lvl_last = (r_end - 1) / steps;
 
@@ -300,7 +284,7 @@ fn compute_segment_boundary_bytes(
         rom_s_out_2: utils::fe_to_bytes_fold(rom_s_out_2_fe),
     };
 
-    tracing::info!(
+    tracing::debug!(
         target = "proof.segment",
         seg_rows = %segment.len(),
         elapsed_ms = %t.elapsed().as_millis(),
@@ -331,8 +315,6 @@ impl WProver for ZkWinterfellProver {
         if (pi.feature_mask & core_pi::FM_VM) != 0 {
             // If caller provided explicit VM_EXPECT location via
             // vm_out_reg/vm_out_row, respect it. Otherwise, detect
-            // the output cell from the trace even when FM_VM_EXPECT
-            // is set (builder-provided expected value only).
             let has_explicit_loc = pi.vm_out_row != 0 || pi.vm_out_reg != 0;
             if !has_explicit_loc {
                 let (r, row) = utils::vm_output_from_trace(trace);
@@ -348,7 +330,7 @@ impl WProver for ZkWinterfellProver {
         let n_rows = trace.length();
 
         let pc_init = if n_rows > 0 {
-            trace.get(cols.pc, crate::schedule::pos_map())
+            trace.get(cols.pc, schedule::pos_map())
         } else {
             BE::ZERO
         };
@@ -373,8 +355,8 @@ impl WProver for ZkWinterfellProver {
             let lvl_first = 0usize;
             let lvl_last = last / steps;
 
-            let row_map_first = lvl_first * steps + crate::schedule::pos_map();
-            let row_final_last = lvl_last * steps + crate::schedule::pos_final();
+            let row_map_first = lvl_first * steps + schedule::pos_map();
+            let row_final_last = lvl_last * steps + schedule::pos_final();
 
             if row_map_first < n_rows && row_final_last < n_rows {
                 let s_in = [
@@ -422,7 +404,8 @@ impl WProver for ZkWinterfellProver {
     ) -> (Self::TraceLde<E>, TracePolyTable<E>) {
         let t = std::time::Instant::now();
         let (lde, polys) = DefaultTraceLde::new(trace_info, main_trace, domain, partition_option);
-        tracing::info!(
+
+        tracing::debug!(
             target = "proof.prove",
             rows = %main_trace.num_rows(),
             cols = %main_trace.num_cols(),
@@ -430,6 +413,7 @@ impl WProver for ZkWinterfellProver {
             elapsed_ms = %t.elapsed().as_millis(),
             "new_trace_lde done",
         );
+
         (lde, polys)
     }
 
@@ -441,7 +425,13 @@ impl WProver for ZkWinterfellProver {
     ) -> Self::ConstraintEvaluator<'a, E> {
         let t = std::time::Instant::now();
         let ev = DefaultConstraintEvaluator::new(air, aux_rand_elements, composition_coefficients);
-        tracing::info!(target = "proof.prove", elapsed_ms=%t.elapsed().as_millis(), "new_evaluator done");
+
+        tracing::debug!(
+            target = "proof.prove",
+            elapsed_ms=%t.elapsed().as_millis(),
+            "new_evaluator done",
+        );
+
         ev
     }
 
@@ -459,18 +449,22 @@ impl WProver for ZkWinterfellProver {
             domain,
             partition_options,
         );
-        tracing::info!(target = "proof.prove", elapsed_ms=%t.elapsed().as_millis(), "build_constraint_commitment done");
+
+        tracing::debug!(
+            target = "proof.prove",
+            elapsed_ms=%t.elapsed().as_millis(),
+            "build_constraint_commitment done",
+        );
+
         out
     }
 }
 
 // -----------------------------------------
 // AGGREGATION AIR PROVER (ZlAggAir)
-// -----------------------------------------
 
 /// Winterfell prover wrapper for the aggregation AIR
 /// `ZlAggAir`. This mirrors `ZlIvWinterfellProver` but
-/// uses `AggAirPublicInputs` as public inputs.
 struct ZlAggWinterfellProver {
     options: ProofOptions,
     pub_inputs: AggAirPublicInputs,
@@ -535,8 +529,6 @@ impl WProver for ZlAggWinterfellProver {
 
 /// Compute a 32-byte recursion digest from aggregation
 /// public inputs. This binds the aggregation proof to
-/// its batch configuration (suite, batch id, children
-/// root, counts and global profiles).
 pub(crate) fn recursion_digest_from_agg_pi(agg_pi: &AggAirPublicInputs) -> [u8; 32] {
     let mut h = Hasher::new();
     h.update(b"zkl/recursion/agg");
@@ -572,7 +564,6 @@ pub(crate) fn recursion_digest_from_agg_pi(agg_pi: &AggAirPublicInputs) -> [u8; 
 
 /// Prove a single aggregation step over `ZlAggAir` using
 /// fully decoded child transcripts and aggregation public
-/// inputs.
 #[tracing::instrument(
     level = "info",
     skip(agg_pi, transcripts, opts),
@@ -588,18 +579,9 @@ pub fn prove_agg_air(
     opts: &zk_lisp_proof::ProverOptions,
 ) -> Result<Proof, Error> {
     let min_bits = opts.min_security_bits;
-    let blowup = if min_bits >= 128 && opts.blowup < 16 {
-        16
-    } else {
-        opts.blowup
-    };
-    let grind = if min_bits >= 128 && opts.grind < 16 {
-        16
-    } else {
-        opts.grind
-    };
+    let blowup = opts.blowup;
+    let grind = opts.grind;
 
-    // Build aggregation trace first to size partition options.
     let agg_trace = build_agg_trace_from_transcripts(agg_pi, transcripts)?;
     let trace = agg_trace.trace;
     let trace_width = trace.width();
@@ -607,21 +589,45 @@ pub fn prove_agg_air(
 
     let (num_partitions, hash_rate) = trace::select_partitions_for_trace(trace_width, trace_length);
 
-    // Use at least 16 queries for the aggregation AIR.
-    let agg_queries = core::cmp::max(opts.queries as usize, 16usize);
+    let agg_queries = opts.queries.max(16) as usize;
 
-    let wf_opts = ProofOptions::new(
+    let field_extension = if min_bits >= 128 {
+        winterfell::FieldExtension::Quadratic
+    } else {
+        winterfell::FieldExtension::None
+    };
+
+    let base_opts = ProofOptions::new(
         agg_queries,
         blowup as usize,
         grind,
-        winterfell::FieldExtension::None,
+        field_extension,
         2,
         1,
         winterfell::BatchingMethod::Linear,
         winterfell::BatchingMethod::Linear,
-    )
-    .with_partitions(num_partitions, hash_rate);
+    );
 
+    if min_bits >= 64 {
+        let bits = estimate_conjectured_security_bits(&base_opts);
+        if bits < min_bits {
+            tracing::error!(
+                target = "proof.agg.prove",
+                estimated_bits = bits,
+                min_bits,
+                queries = agg_queries,
+                blowup,
+                grind,
+                "aggregation prover options do not meet requested security",
+            );
+
+            return Err(Error::PublicInputs(error::Error::InvalidInput(
+                "aggregation prover options do not achieve requested min_security_bits; increase --queries/--blowup/--grind or lower --security-bits",
+            )));
+        }
+    }
+
+    let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
     let prover = ZlAggWinterfellProver {
         options: wf_opts,
         pub_inputs: agg_pi.clone(),
@@ -664,6 +670,7 @@ pub fn prove_agg_air(
     level = "info",
     skip(proof, agg_pi, opts),
     fields(
+        min_bits = %min_bits,
         q = %opts.num_queries(),
         blowup = %opts.blowup_factor(),
         grind = %opts.grinding_factor(),
@@ -679,6 +686,7 @@ pub fn verify_agg_air(
 
     tracing::info!(
         target = "proof.agg.verify",
+        min_bits = %min_bits,
         q = %opts.num_queries(),
         blowup = %opts.blowup_factor(),
         grind = %opts.grinding_factor(),
@@ -747,7 +755,6 @@ pub fn verify_proof(
 ) -> Result<(), Error> {
     // Slow path retained for compatibility;
     // prefer verify_proof_fast when caller
-    // can supply segment-local boundaries.
     pi.validate_flags()?;
 
     // Enforce a minimum conjectured security
@@ -755,7 +762,6 @@ pub fn verify_proof(
 
     // Recompute offline ROM accumulator
     // from the program when a non-zero
-    // program commitment is present.
     let rom_acc = if pi.program_commitment.iter().any(|b| *b != 0) {
         crate::romacc::rom_acc_from_program(program)
     } else {
@@ -772,7 +778,6 @@ pub fn verify_proof(
 
     // Rebuild a minimal execution trace to derive the same
     // boundary public inputs used by the prover so that the
-    // verifier's FS seed matches bit-for-bit.
     let trace = crate::trace::build_trace(program, &pi)?;
     let cols = crate::layout::Columns::baseline();
     let steps = crate::layout::STEPS_PER_LEVEL_P2;
@@ -780,7 +785,7 @@ pub fn verify_proof(
     let last = n_rows.saturating_sub(1);
 
     let pc_init = if n_rows > 0 {
-        trace.get(cols.pc, crate::schedule::pos_map())
+        trace.get(cols.pc, schedule::pos_map())
     } else {
         BE::ZERO
     };
@@ -800,8 +805,8 @@ pub fn verify_proof(
     let (rom_s_in, rom_s_out) = if n_rows > 0 && steps > 0 {
         let lvl_first = 0usize;
         let lvl_last = last / steps;
-        let row_map_first = lvl_first * steps + crate::schedule::pos_map();
-        let row_final_last = lvl_last * steps + crate::schedule::pos_final();
+        let row_map_first = lvl_first * steps + schedule::pos_map();
+        let row_final_last = lvl_last * steps + schedule::pos_final();
 
         if row_map_first < n_rows && row_final_last < n_rows {
             let s_in = [
@@ -878,7 +883,6 @@ pub fn verify_proof(
 
 /// Fast verification using side-car boundary state (no trace rebuild).
 /// Caller must ensure that `boundaries` correspond to the concrete
-/// execution segment proved in `proof` under `pi`.
 #[tracing::instrument(
     level = "info",
     skip(proof, program, pi, boundaries, opts),
@@ -945,9 +949,6 @@ pub fn verify_proof_fast(
 
 /// Produce a step-level proof wrapper
 /// zk-lisp execution segment. This helper mirrors
-/// the configuration used by `WinterfellBackend` and
-/// returns a `ZlStepProof` ready to be used by
-/// the recursion layer.
 #[tracing::instrument(
     level = "info",
     skip(program, pub_inputs, opts),
@@ -963,16 +964,8 @@ pub fn prove_step(
     opts: &zk_lisp_proof::ProverOptions,
 ) -> Result<ZlStepProof, Error> {
     let min_bits = opts.min_security_bits;
-    let blowup = if min_bits >= 128 && opts.blowup < 16 {
-        16
-    } else {
-        opts.blowup
-    };
-    let grind = if min_bits >= 128 && opts.grind < 16 {
-        16
-    } else {
-        opts.grind
-    };
+    let blowup = opts.blowup;
+    let grind = opts.grind;
 
     let base_opts = ProofOptions::new(
         opts.queries as usize,
@@ -987,8 +980,6 @@ pub fn prove_step(
 
     // Plan execution segments using the backend-specific
     // planner. For now we expect a single full-trace
-    // segment; multi-segment support is exposed via
-    // `prove_program_steps`.
     let segments = WinterfellSegmentPlanner::plan_segments(program, pub_inputs, opts)?;
     if segments.is_empty() {
         return Err(Error::PublicInputs(error::Error::InvalidInput(
@@ -1068,11 +1059,6 @@ pub fn prove_step(
 
 /// Prove a sequence of execution segments for a single
 /// zk-lisp program, returning one `ZlStepProof` per
-/// segment. The current implementation is restricted to
-/// a single full-trace segment; multi-segment support
-/// will extend `WinterfellSegmentPlanner` and
-/// `build_segment_trace_with_state` without changing
-/// this API.
 #[tracing::instrument(
     level = "info",
     skip(program, pub_inputs, opts),
@@ -1088,16 +1074,8 @@ pub fn prove_program_steps(
     opts: &zk_lisp_proof::ProverOptions,
 ) -> Result<Vec<ZlStepProof>, Error> {
     let min_bits = opts.min_security_bits;
-    let blowup = if min_bits >= 128 && opts.blowup < 16 {
-        16
-    } else {
-        opts.blowup
-    };
-    let grind = if min_bits >= 128 && opts.grind < 16 {
-        16
-    } else {
-        opts.grind
-    };
+    let blowup = opts.blowup;
+    let grind = opts.grind;
 
     let base_opts = ProofOptions::new(
         opts.queries as usize,
@@ -1136,7 +1114,6 @@ pub fn prove_program_steps(
 
         // Boundary bytes are derived from the segment-local trace; use a
         // local segment [0, trace_len) rather than the global indices
-        // returned by the planner.
         let seg_local = zk_lisp_proof::segment::Segment::new(0, trace_len)?;
         let boundary_bytes = compute_segment_boundary_bytes(&trace, &seg_local)?;
 
@@ -1200,4 +1177,25 @@ pub fn prove_program_steps(
     }
 
     Ok(steps)
+}
+
+fn estimate_conjectured_security_bits(opts: &ProofOptions) -> u32 {
+    let base_field_bits = BE::MODULUS_BITS;
+    let field_security = base_field_bits * opts.field_extension().degree();
+
+    let blowup = opts.blowup_factor() as u32;
+    let security_per_query = blowup.ilog2();
+    let mut query_security = security_per_query * opts.num_queries() as u32;
+
+    if query_security >= 80 {
+        query_security += opts.grinding_factor();
+    }
+
+    let collision_resistance =
+        <crate::poseidon_hasher::PoseidonHasher<BE> as WfHasher>::COLLISION_RESISTANCE;
+
+    core::cmp::min(
+        core::cmp::min(field_security, query_security) - 1,
+        collision_resistance,
+    )
 }

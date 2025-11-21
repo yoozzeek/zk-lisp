@@ -223,7 +223,6 @@ fn recursion_two_step_chain_aggregates_tamper_rejected() {
 
     // 2) children_root tamper: aggregation proof is bound to
     // AggAirPublicInputs.children_root, so verification must
-    // fail when it is mutated.
     let mut agg_pi2_root_bad = agg_pi2.clone();
     agg_pi2_root_bad.children_root[0] ^= 1;
 

@@ -87,12 +87,7 @@ struct AirSharedContext {
     pub program_fe: [BaseElement; 2],
 
     /// Runtime public arguments to `main` flattened
-    /// into base-field "slots" in the same order as
-    /// in `core.main_args` using
-    /// utils::encode_main_args_to_slots.
-    ///
-    /// Each slot corresponds to one VM register at
-    /// level 0 map row when the VM feature is enabled.
+    /// into base-field "slots".
     pub main_args: Vec<BaseElement>,
 }
 

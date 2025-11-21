@@ -44,7 +44,9 @@ pub enum PoseidonError {
     MdsDerivation(String),
 }
 
-static POSEIDON_CACHE: OnceLock<RwLock<HashMap<([u8; 32], usize), PoseidonSuite>>> = OnceLock::new();
+#[allow(clippy::type_complexity)]
+static POSEIDON_CACHE: OnceLock<RwLock<HashMap<([u8; 32], usize), PoseidonSuite>>> =
+    OnceLock::new();
 
 /// Build Poseidon t=12 suite (r=10, c=2)
 /// using conservative rounds by default.
@@ -75,7 +77,6 @@ pub fn get_poseidon_suite_with_rounds(suite_id: &[u8; 32], rounds: usize) -> Pos
 
 /// Checked construction: attempt to
 /// derive MDS with bounded fallback;
-/// return Err on failure.
 pub fn validate_poseidon_suite(suite_id: &[u8; 32]) -> Result<(), PoseidonError> {
     // Try deriving the MDS once in a checked mode;
     // DOM tags/RC are deterministic and infallible.
@@ -108,7 +109,6 @@ pub fn derive_poseidon_mds_cauchy_12x12(suite_id: &[u8; 32]) -> [[BE; 12]; 12] {
 
 /// Checked derivation that returns Err
 /// if a valid MDS could not be derived
-/// using a bounded search.
 pub fn try_derive_poseidon_mds_cauchy_12x12(
     suite_id: &[u8; 32],
 ) -> Result<[[BE; 12]; 12], PoseidonError> {
@@ -294,7 +294,6 @@ pub fn poseidon_hash_two_lanes(suite_id: &[u8; 32], left: BE, right: BE) -> BE {
 
 /// Poseidon-based random oracle over
 /// arbitrary byte parts under a
-/// per-proof suite identifier.
 pub fn poseidon_ro_parts(suite_id: &[u8; 32], domain: &str, parts: &[&[u8]]) -> BE {
     let mut acc = BE::from(0u64);
 
@@ -327,14 +326,6 @@ pub fn poseidon_ro_parts(suite_id: &[u8; 32], domain: &str, parts: &[&[u8]]) -> 
 
 /// Poseidon-based random oracle over arbitrary input bytes
 /// under a per-proof suite identifier and string domain.
-///
-/// This variant implements a standard sponge over the
-/// t=12 state with rate=10, absorbing field elements
-/// derived from the input bytes in blocks before
-/// applying the Poseidon2 permutation. This reduces
-/// the number of full permutations compared to chaining
-/// `poseidon_hash_two_lanes` per 32-byte chunk, while
-/// keeping collision resistance at 128 bits.
 pub fn poseidon_ro_bytes_sponge(suite_id: &[u8; 32], domain: &str, data: &[u8]) -> BE {
     let ps = get_poseidon_suite(suite_id);
 
@@ -423,10 +414,6 @@ pub fn poseidon_ro_bytes_sponge(suite_id: &[u8; 32], domain: &str, data: &[u8]) 
 
 /// Public helper for domain-separated RO→field mapping.
 ///
-/// Kept thin and explicit so higher-level modules
-/// (e.g. recursion/digest code) can derive challenges and
-/// binders under their own string domains without
-/// re-implementing Blake3 plumbing.
 pub fn ro_to_fe(domain: &str, parts: &[&[u8]]) -> BE {
     ro_from_slices(domain, parts)
 }

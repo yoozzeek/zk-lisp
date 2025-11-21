@@ -19,7 +19,6 @@ use zk_lisp_proof_winterfell::utils::vm_output_from_trace;
 fn begin_variadic_and_def_let_multiform() {
     // def: multi-form body, implicit begin
     // let: multi-form body, implicit begin
-    // begin: variadic sequence
     let src = r#"
 (def (main)
   (let ((x 5) (y 6))

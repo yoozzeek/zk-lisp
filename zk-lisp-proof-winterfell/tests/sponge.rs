@@ -103,8 +103,6 @@ fn sponge_basic_hash2_prove_verify() {
 fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
     // Prepare constants r0..r9 = 1..=10,
     // then absorb across multiple levels
-    // (2 + 3 + 5 = 10) and squeeze once.
-    // Expect digest = sponge12_ref([1..=10]).
     let metrics = CompilerMetrics::default();
     let mut b = ProgramBuilder::new();
 
@@ -183,8 +181,6 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
 fn sponge_overflow_more_than_10_inputs_errors() {
     // With strict rate semantics,
     // attempting to absorb more than
-    // 10 inputs before a squeeze
-    // must be rejected with an error.
     let metrics = CompilerMetrics::default();
     let mut b = ProgramBuilder::new();
 

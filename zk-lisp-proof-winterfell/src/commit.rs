@@ -28,10 +28,6 @@ pub fn program_commitment(bytes: &[u8]) -> [u8; 32] {
 
 /// Compute a field-friendly (internal)
 /// program commitment using Poseidon2
-/// absorbing the 32-byte Blake3 digest
-/// as two field elements and returning
-/// two field elements (≈256-bit). This
-/// is intended for in-circuit binding.
 pub fn program_field_commitment(blake32: &[u8; 32]) -> [BE; 2] {
     let sid = blake32;
     let suite = crate::poseidon::get_poseidon_suite(sid);

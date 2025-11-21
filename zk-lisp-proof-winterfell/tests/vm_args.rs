@@ -119,7 +119,6 @@ fn secret_arg_non_u64_rejected() {
 
     // Provide non-u64 secret arg;
     // VM trace builder should reject
-    // this with a clear InvalidInput error.
     let pi = PublicInputsBuilder::from_program(&program)
         .with_public_args(&[])
         .with_secret_args(&[VmArg::Bytes32([1u8; 32])])
@@ -139,7 +138,6 @@ fn secret_arg_non_u64_rejected() {
 fn main_args_seed_tail_registers_at_level0_map() {
     // Simple program that does not
     // depend on args; we only inspect
-    // the initial register snapshot.
     let src = "(def (main) 0)";
     let program = compile_entry(src, &[]).expect("compile");
 
@@ -170,7 +168,6 @@ fn main_args_seed_tail_registers_at_level0_map() {
 fn main_args_do_not_overwrite_secret_args_prefix() {
     // Use both secret_args and main_args and
     // ensure prefix registers come from secrets
-    // and tail registers from main_args.
     let src = "(def (main) 0)";
     let program = compile_entry(src, &[]).expect("compile");
 

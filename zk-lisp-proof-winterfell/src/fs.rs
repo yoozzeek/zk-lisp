@@ -69,7 +69,6 @@ pub fn replay_fs_from_step(step: &ZlStepProof) -> error::Result<ZlFsChallenges> 
 
     // Seed for the public coin:
     // proof context elements + AIR public inputs,
-    // exactly as in winter_verifier::verify.
     let mut seed_elems = wf_proof.context.to_elements();
     let mut pi_elems = air_pi.to_elements();
     seed_elems.append(&mut pi_elems);
@@ -78,15 +77,12 @@ pub fn replay_fs_from_step(step: &ZlStepProof) -> error::Result<ZlFsChallenges> 
 
     // Instantiate AIR for this proof
     // instance so that auxiliary randomness
-    // and DEEP coefficients are drawn
-    // in the same way as inside the verifier.
     let trace_info = wf_proof.trace_info().clone();
     let options = wf_proof.options().clone();
     let air = ZkLispAir::new(trace_info, air_pi, options.clone());
 
     // Parse commitments into
     // trace / constraint / FRI roots using the
-    // same layout as Winterfell prover/verifier.
     let num_trace_segments = air.trace_info().num_segments();
     let lde_domain_size = wf_proof.lde_domain_size();
     let fri_opts = options.to_fri_options();
@@ -125,7 +121,6 @@ pub fn replay_fs_from_step(step: &ZlStepProof) -> error::Result<ZlFsChallenges> 
 
         // Auxiliary randomness is not used
         // directly here but consumes
-        // coin state exactly as in the verifier.
         let _aux_rand = air
             .get_aux_rand_elements::<BE, DefaultRandomCoin<PoseidonHasher<BE>>>(&mut coin)
             .map_err(|_| {
@@ -185,11 +180,6 @@ pub fn replay_fs_from_step(step: &ZlStepProof) -> error::Result<ZlFsChallenges> 
 
     // 5) FRI layer alphas
     // --------------------
-    // Mirror FriVerifier::new: reseed the coin with
-    // every FRI commitment (including the remainder commitment)
-    // and draw an alpha per commitment. The last alpha is not
-    // used by the verifier but participates in the transcript
-    // and thus must be included here to keep the public coin state in sync.
     let mut fri_alphas = Vec::with_capacity(fri_roots_h.len());
     let mut max_degree_plus_1 = air.trace_poly_degree() + 1;
 

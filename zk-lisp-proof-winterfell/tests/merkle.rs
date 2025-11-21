@@ -163,7 +163,6 @@ fn merkle_two_steps_positive_prove_verify() {
 
     // second level:
     // dir/sib set;
-    // last flag at final
     let m1 = ov.at_map(levels[1]);
     assert_eq!(m1.dir, BE::from(d1));
     assert_eq!(m1.sib, BE::from(s1));

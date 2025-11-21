@@ -18,7 +18,6 @@ use zk_lisp_proof_winterfell::trace::build_trace;
 fn assert_positive() {
     // Use compile_entry to ensure
     // a minimal VM shape even if
-    // the assert folds to a constant.
     let src = r"
 (def (eq1 x y) (= x y))
 (def (main)
@@ -95,9 +94,6 @@ fn if_positive() {
 
 // Compiler-side negative test
 // for constant false asserts will
-// be covered in zk-lisp-compiler
-// tests; we keep only backend
-// behaviour here.
 #[test]
 fn assert_negative_may_fail_at_prove_or_verify() {
     let src = "(let ((a 5) (b 6)) (assert (= a b)))";

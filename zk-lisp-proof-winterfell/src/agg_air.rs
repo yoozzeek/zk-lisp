@@ -31,24 +31,21 @@ use zk_lisp_proof::error;
 
 /// Public inputs for the aggregation AIR.
 ///
-/// At the logical level these inputs expose the
-/// children aggregation root and a global STARK
-/// profile shared by all children (see AGG_SPEC.md
-/// for the high-level protocol). In the current
-/// implementation we also keep a few helper fields
-/// (`suite_id`, `children_ms`) used by the trace
-/// builder; these may be removed or folded into
-/// `batch_id` in future revisions.
 #[derive(Clone, Debug)]
 pub struct AggAirPublicInputs {
+    /// Program identity and public-input digest
+    /// (program + public main args) proved by the
+    /// underlying step proofs.
+    pub program_id: [u8; 32],
+    pub program_commitment: [u8; 32],
+    pub pi_digest: [u8; 32],
+
     /// Canonical aggregation root over compact
     /// children as defined in AGG_SPEC §2.1.
     pub children_root: [u8; 32],
 
     /// Global sum of child work units; the
     /// aggregator AIR enforces that the work
-    /// accumulator equals this value on the
-    /// last row.
     pub v_units_total: u64,
 
     /// Number of children in the batch.
@@ -56,9 +53,6 @@ pub struct AggAirPublicInputs {
 
     /// Aggregation batch identifier (optional
     /// from protocol perspective). This can
-    /// be used to tie the aggregation instance
-    /// to a particular higher-level protocol
-    /// state or program set.
     pub batch_id: [u8; 32],
 
     /// Global zk-lisp STARK profile that all
@@ -73,11 +67,6 @@ pub struct AggAirPublicInputs {
 
     /// Helper field used by the current
     /// aggregation trace builder to check
-    /// suite-id consistency and recompute
-    /// `children_root`. This is not encoded
-    /// directly into the public elements and
-    /// may be removed once batch_id fully
-    /// covers protocol binding.
     pub suite_id: [u8; 32],
 
     /// Helper field used by the trace builder
@@ -90,13 +79,11 @@ pub struct AggAirPublicInputs {
 
     /// Global VM state at the beginning and end
     /// of the aggregated prefix (including all
-    /// children in this aggregation step).
     pub vm_state_initial: [u8; 32],
     pub vm_state_final: [u8; 32],
 
     /// Global RAM grand-product accumulators for
     /// unsorted and sorted RAM tables at the
-    /// beginning and end of the aggregated prefix.
     pub ram_gp_unsorted_initial: [u8; 32],
     pub ram_gp_unsorted_final: [u8; 32],
     pub ram_gp_sorted_initial: [u8; 32],
@@ -110,9 +97,6 @@ pub struct AggAirPublicInputs {
 
 /// Global zk-lisp STARK profile shared by all
 /// children in a batch. For now this simply
-/// mirrors `StepMeta` but is not yet enforced
-/// by `ZlAggAir`; the enforcement logic will
-/// be added incrementally.
 #[derive(Clone, Debug, Default)]
 pub struct AggProfileMeta {
     pub m: u32,
@@ -145,12 +129,12 @@ pub struct AggQueryProfile {
 impl AggAirPublicInputs {
     /// Build aggregation public inputs for a single zk-lisp
     /// step proof by deriving a compact child view and child
-    /// transcript from `ZlStepProof`. This mirrors the helper
-    /// logic used in recursion tests and provides a stable
-    /// construction for frontends.
     pub fn from_step_proof(step: &ZlStepProof) -> error::Result<Self> {
         let compact = ZlChildCompact::from_step(step)?;
         let transcript = ZlChildTranscript::from_step(step)?;
+
+        let core_pi = &compact.pi_core;
+        let pi_digest = core_pi.digest();
 
         let children = vec![compact.clone()];
         let children_root = children_root_from_compact(&compact.suite_id, &children);
@@ -178,6 +162,9 @@ impl AggAirPublicInputs {
         };
 
         Ok(AggAirPublicInputs {
+            program_id: core_pi.program_id,
+            program_commitment: core_pi.program_commitment,
+            pi_digest,
             children_root,
             v_units_total: compact.meta.v_units,
             children_count: 1,
@@ -203,8 +190,12 @@ impl ToElements<BE> for AggAirPublicInputs {
     fn to_elements(&self) -> Vec<BE> {
         let mut out = Vec::with_capacity(32);
 
+        out.push(utils::fold_bytes32_to_fe(&self.program_id));
+        out.push(utils::fold_bytes32_to_fe(&self.program_commitment));
+        out.push(utils::fold_bytes32_to_fe(&self.pi_digest));
         out.push(utils::fold_bytes32_to_fe(&self.children_root));
         out.push(utils::fold_bytes32_to_fe(&self.batch_id));
+
         out.push(BE::from(self.profile_meta.m));
         out.push(BE::from(self.profile_meta.rho as u64));
         out.push(BE::from(self.profile_meta.q as u64));
@@ -223,7 +214,6 @@ impl ToElements<BE> for AggAirPublicInputs {
 
         // Fold global boundary bytes into field elements as
         // part of the aggregation FS seed so that any change
-        // in these values perturbs the aggregation transcript.
         out.push(utils::fold_bytes32_to_fe(&self.vm_state_initial));
         out.push(utils::fold_bytes32_to_fe(&self.vm_state_final));
         out.push(utils::fold_bytes32_to_fe(&self.ram_gp_unsorted_initial));
@@ -267,26 +257,6 @@ impl Air for ZlAggAir {
 
         // We currently expose twenty-four constraints:
         // C0: ok == 0 on all rows;
-        // C1: work accumulator chain gated to non-last rows.
-        // C2: trace_root_err must be zero on all rows.
-        // C3: constraint_root_err must be zero on all rows.
-        // C4–C7: FS challenges (r, alpha, beta, gamma) are constant
-        //        across the trace (and thus per segment).
-        // C8–C10: FRI layer-0 accumulators v0_sum, v1_sum and
-        //         vnext_sum form a gated chain over child segments.
-        // C11: child_count_acc chain gated to non-last rows.
-        // C12: minimal on-circuit FRI-folding check for a
-        //      per-child binary FRI sample.
-        // C13: FRI layer-1 evaluations == query_values sample.
-        // C14: DEEP composition vs FRI layer-0 sample.
-        // C15: aggregated FRI layer-1 evaluations == query_values
-        //      error over all query positions.
-        // C16: local FRI path folding and remainder consistency
-        //      across all layers for a single query path.
-        // C17: global FRI paths folding and remainder consistency
-        //      aggregated over all query paths.
-        // C18–C23: global VM / RAM / ROM boundary chain errors,
-        //          required to be identically zero across the trace.
         let degrees = vec![
             TransitionConstraintDegree::new(1),
             TransitionConstraintDegree::with_cycles(2, vec![trace_len]),
@@ -402,24 +372,14 @@ impl Air for ZlAggAir {
 
         // C1: work accumulator chain gated to non-last rows.
         // When seg_first == 1 (first row of a child segment),
-        // v_units_acc is incremented by v_units_child; otherwise
-        // it stays constant. We do not enforce the relation on
-        // the last row to avoid an artificial wrap-around to
-        // the first row induced by the evaluation domain.
         result[1] = not_last * (v_acc_next - (v_acc + v_child * seg_first));
 
         // C2: trace-root error column must be identically zero.
         // The trace builder populates this column with
-        // `expected_root - actual_root` on the first row of
-        // each child segment and zeros elsewhere.
         result[2] = trace_root_err;
 
         // C3: constraint-root error column must also be
         // identically zero. The trace builder populates this
-        // column with an aggregated difference between the
-        // advertised constraint commitment root and roots
-        // reconstructed from Merkle paths at all query
-        // positions.
         result[3] = constraint_root_err;
 
         // C4–C7: FS challenges must be constant across the
@@ -431,8 +391,6 @@ impl Air for ZlAggAir {
 
         // C8–C10: FRI accumulators are currently kept constant
         // across the trace; they are reserved for future use in
-        // DEEP/FRI composition checks. For now we simply enforce
-        // that v*_sum do not change between consecutive rows.
         result[8] = not_last * (v0_sum_next - v0_sum);
         result[9] = not_last * (v1_sum_next - v1_sum);
         result[10] = not_last * (vnext_sum_next - vnext_sum);
@@ -443,11 +401,6 @@ impl Air for ZlAggAir {
 
         // C12: minimal on-circuit FRI-folding constraint
         // for a single binary FRI sample per child. On
-        // rows where fri_*_child are zero this vanishes
-        // automatically; on segment-first rows the trace
-        // builder populates (v0, v1, vnext, alpha, x0, x1)
-        // so that they satisfy the binary folding relation:
-        // (x1 - x0) * vnext == v1 * (alpha - x0) - v0 * (alpha - x1).
         let x_diff = fri_x1_child - fri_x0_child;
         let lhs = fri_vnext_child * x_diff;
         let rhs = fri_v1_child * (fri_alpha_child - fri_x0_child)
@@ -456,44 +409,26 @@ impl Air for ZlAggAir {
 
         // C13: FRI layer-1 evaluations == query_values
         // sample. The trace builder wires vnext_child
-        // as the evaluation obtained by folding the
-        // first-layer coset, and fri_q1_child as the
-        // corresponding value read from fri_layers[1]
-        // via get_query_values semantics.
         result[13] = fri_vnext_child - fri_q1_child;
 
         // C14: DEEP composition vs FRI layer-0 sample.
         // We aggregate DEEP vs FRI layer-0 errors across all
-        // query positions for each child and wire the result
-        // into comp_sum on segment-first rows. This must be
-        // identically zero across the trace.
         result[14] = comp_sum;
 
         // C15: aggregated FRI layer-1 evaluations == query_values
         // error over all query positions. The trace builder populates
-        // alpha_div_zm_sum with this aggregate on segment-first rows
-        // and zeros elsewhere; we require it to be identically
-        // zero across the trace.
         result[15] = fri_layer1_agg;
 
         // C16: local FRI path folding and remainder consistency
         // across all FRI layers for a single query path. The
-        // trace builder wires the aggregate error into map_l0_sum
-        // on segment-first rows and zeros elsewhere; we require
-        // it to be identically zero across the trace.
         result[16] = fri_path_agg;
 
         // C17: global FRI paths folding and remainder consistency
         // aggregated over all query paths. The trace builder wires
-        // this scalar into final_llast_sum on segment-first rows and
-        // zeros elsewhere; we require it to be identically zero
-        // across the trace.
         result[17] = fri_paths_agg;
 
         // C18–C23: global VM / RAM / ROM boundary chain
         // errors are wired directly into dedicated columns
-        // by the trace builder and must be identically zero
-        // across the entire trace.
         result[18] = vm_chain_err;
         result[19] = ram_u_chain_err;
         result[20] = ram_s_chain_err;

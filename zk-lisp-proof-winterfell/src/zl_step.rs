@@ -27,10 +27,6 @@ use zk_lisp_proof::pi::{PublicInputs as CorePublicInputs, VmArg};
 
 /// Minimal per-proof echo used for digest computation.
 ///
-/// These fields are chosen to capture the essential
-/// shape of the proof (trace length, blowup, queries)
-/// and a coarse "work" estimate without pulling the
-/// entire public input vector into the digest.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StepMeta {
     /// Base trace length m (number of rows before blowup).
@@ -58,12 +54,6 @@ pub struct StepMeta {
 
 /// Concrete step-proof wrapper used as the
 /// backend-specific `StepProof` type for
-/// the recursion layer.
-///
-/// This structure carries the zl1 step proof container
-/// which in turn encapsulates profile metadata, public
-/// inputs echo, commitment echo and the underlying
-/// Winterfell proof.
 #[derive(Clone, Debug)]
 pub struct ZlStepProof {
     pub proof: zl1::format::Proof,
@@ -83,24 +73,18 @@ impl ZlStepProof {
 
     /// Return the VM state hash at the beginning
     /// of this segment as recorded in the zl1
-    /// step public inputs.
     pub fn state_in_hash(&self) -> [u8; 32] {
         self.proof.pi.state_in_hash
     }
 
     /// Return the VM state hash at the end of
     /// this segment as recorded in the zl1
-    /// step public inputs.
     pub fn state_out_hash(&self) -> [u8; 32] {
         self.proof.pi.state_out_hash
     }
 
     /// Encode this step proof into a compact binary format
     /// suitable for CLI storage. The encoding focuses on
-    /// data required to reconstruct an equivalent
-    /// `ZlStepProof` for recursion and FS replay and does
-    /// not aim to be a general-purpose archive of all
-    /// backend internals.
     pub fn to_bytes(&self) -> error::Result<Vec<u8>> {
         let mut out = Vec::new();
 
@@ -169,8 +153,6 @@ impl ZlStepProof {
 
     /// Decode a `ZlStepProof` from bytes produced by
     /// [`ZlStepProof::to_bytes`]. This reconstructs an
-    /// equivalent zl1 step container and public inputs
-    /// sufficient for recursion and FS replay.
     pub fn from_bytes(bytes: &[u8]) -> error::Result<Self> {
         const MAGIC: &[u8; 7] = b"ZKLSTP1";
 
@@ -490,7 +472,6 @@ impl StepMeta {
 
     /// Convenience constructor for building
     /// step metadata from runtime proof
-    /// options and trace shape.
     pub fn from_env(
         trace_len: usize,
         wf_opts: &ProofOptions,
@@ -503,7 +484,6 @@ impl StepMeta {
 
         // current backend commits the
         // main trace and a single
-        // composition column;
         let o: u16 = 2;
 
         let lambda = lambda_bits.min(u16::MAX as u32) as u16;

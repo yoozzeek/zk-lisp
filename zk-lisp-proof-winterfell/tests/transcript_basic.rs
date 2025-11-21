@@ -56,7 +56,6 @@ fn transcript_commitments_match_zl1_root_trace() {
 
     // Verify that transcript commitments recombine into
     // the same aggregated root as stored in the compact
-    // zl1 step container.
     verify_child_transcript(&transcript)
         .expect("child transcript commitments must match compact trace_root");
 
@@ -69,7 +68,6 @@ fn transcript_commitments_match_zl1_root_trace() {
 
     // Trace openings, constraint openings and FRI
     // layer values must be shape-consistent with
-    // num_queries and reported widths.
     let num_q = transcript.num_queries as usize;
     assert_eq!(num_q, transcript.trace_main_openings.len());
     assert_eq!(num_q, transcript.constraint_openings.len());

@@ -60,7 +60,6 @@ pub struct AggColumns {
 
     /// Fiat–Shamir challenges, constant per child
     /// segment. The initial aggregator skeleton does
-    /// not yet enforce their consistency.
     pub r: usize,
     pub alpha: usize,
     pub beta: usize,
@@ -83,19 +82,10 @@ pub struct AggColumns {
 
     /// Accumulator over child segments; increments
     /// by one at each `seg_first == 1` row and stays
-    /// constant elsewhere. The final value must equal
-    /// `children_count` in public inputs.
     pub child_count_acc: usize,
 
     /// Error scalars enforcing VM / RAM / ROM
     /// boundary chains across children. These
-    /// columns are populated by the trace
-    /// builder with differences between
-    /// advertised global boundary values in
-    /// `AggAirPublicInputs` and per-child
-    /// boundaries exposed via `ZlChildCompact`.
-    /// The aggregation AIR requires them to be
-    /// identically zero.
     pub vm_chain_err: usize,
     pub ram_u_chain_err: usize,
     pub ram_s_chain_err: usize,
@@ -112,7 +102,6 @@ impl AggColumns {
     pub const fn baseline() -> Self {
         // Keep columns densely packed starting
         // from zero to simplify reasoning about
-        // width and offsets.
         let ok = 0;
         let v0_sum = ok + 1;
         let v1_sum = v0_sum + 1;

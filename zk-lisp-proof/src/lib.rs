@@ -21,7 +21,6 @@ pub mod segment;
 
 /// Backend-agnostic proving options.
 /// These are enough to construct concrete
-/// backend options (e.g. backend-specific `ProofOptions`).
 #[derive(Clone, Copy, Debug)]
 pub struct ProverOptions {
     pub queries: u8,
@@ -55,27 +54,12 @@ pub trait ZkField: Sized + Clone + 'static {
     fn to_u128(&self) -> u128;
 }
 
-/// Generic backend interface.
-/// Future GPU / alternative STARK
-/// backends should implement this trait.
+/// Generic backend type-bag used
+// by frontend extension traits.
 pub trait ZkBackend {
     type Field: ZkField;
     type Program;
     type PublicInputs;
-    type Proof;
     type Error;
     type ProverOptions;
-
-    fn prove(
-        program: &Self::Program,
-        pub_inputs: &Self::PublicInputs,
-        opts: &Self::ProverOptions,
-    ) -> Result<Self::Proof, Self::Error>;
-
-    fn verify(
-        proof: Self::Proof,
-        program: &Self::Program,
-        pub_inputs: &Self::PublicInputs,
-        opts: &Self::ProverOptions,
-    ) -> Result<(), Self::Error>;
 }

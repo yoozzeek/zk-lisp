@@ -68,7 +68,6 @@ fn fs_replay_smoke_invariants() {
 
     // Query positions must match
     // num_unique_queries and
-    // lie inside the LDE domain.
     let num_unique = wf_proof.num_unique_queries as usize;
     if num_unique == 0 {
         assert!(fs.query_positions.is_empty());
@@ -119,7 +118,6 @@ fn fs_replay_matches_reference_coin() {
 
     // Rebuild AIR public inputs and
     // seed the public coin the same
-    // way as in the verifier.
     let pi_zl1 = &step.proof.pi;
     let air_pi = zk_lisp_proof_winterfell::AirPublicInputs {
         core: step.pi_core.clone(),

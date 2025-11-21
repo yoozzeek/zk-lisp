@@ -67,7 +67,6 @@ struct AggFsWeights {
 
 /// Shared context for DEEP aggregation over all query positions
 /// for a single child transcript. This bundles together domain
-/// geometry, FS challenges and widths.
 struct DeepContext<'a> {
     _child: &'a ZlChildCompact,
     trace_width: usize,
@@ -94,7 +93,6 @@ struct DeepContext<'a> {
 fn derive_agg_fs_weights(agg_pi: &AggAirPublicInputs) -> error::Result<AggFsWeights> {
     // Derive aggregation weights from AggAirPublicInputs via a
     // dedicated Fiat–Shamir coin so that DEEP / FRI aggregates use
-    // unpredictable challenges rather than fixed constants.
     let mut seed_elems = agg_pi.to_elements();
 
     // Simple domain separator to make aggregation FS distinct from
@@ -152,11 +150,6 @@ pub fn build_agg_trace(
 
 /// Build an aggregation trace from full child transcripts
 /// (ZlChildTranscript) and aggregation public inputs.
-///
-/// This builder reuses `build_agg_trace_core` for all
-/// shape checks, Merkle binding and segment layout, and
-/// then overlays per-child FRI/DEEP aggregates on the
-/// first row of each child segment.
 pub fn build_agg_trace_from_transcripts(
     agg_pi: &AggAirPublicInputs,
     transcripts: &[ZlChildTranscript],
@@ -179,7 +172,6 @@ pub fn build_agg_trace_from_transcripts(
 
     // Derive aggregation Fiat–Shamir weights once per aggregation
     // instance and reuse them across all children so that DEEP and
-    // FRI aggregates are driven by unpredictable challenges.
     let AggFsWeights {
         beta_deep,
         beta_fri_layer1,
@@ -195,11 +187,6 @@ pub fn build_agg_trace_from_transcripts(
 
         // Minimal per-child FRI-folding sample: we pick a
         // single binary FRI coset from the first layer and
-        // compute (v0, v1, vnext, alpha, x0, x1) for it. These
-        // values are wired into dedicated columns so that the
-        // AIR can enforce the binary folding relation. When FRI
-        // data or query positions are unavailable, we fall back
-        // to zeros so that the constraint becomes vacuous.
         let FriDeepSample {
             v0: fri_v0_child_fe,
             v1: fri_v1_child_fe,
@@ -213,36 +200,25 @@ pub fn build_agg_trace_from_transcripts(
 
         // Aggregate DEEP vs FRI layer-0 errors across all
         // query positions for this child using a simple
-        // geometric weighting beta^k drawn from the aggregation
-        // Fiat–Shamir transcript.
         let deep_agg = compute_deep_agg_over_queries(tx, beta_deep)?;
 
         // Aggregate FRI layer-1 evaluations == query_values
         // errors across all query positions for this child.
-        // We use a separate geometric weighting beta_fri^k so
-        // that DEEP and FRI aggregates remain statistically
-        // independent.
         let fri_layer1_agg =
             compute_fri_layer1_agg_over_queries(tx, &agg_pi.profile_fri, beta_fri_layer1)?;
 
         // Aggregate local FRI folding errors along a single
         // path across all layers, including the remainder
-        // polynomial. We use an independent delta challenge
-        // so that this aggregate stays statistically
-        // independent from beta-based aggregates.
         let fri_path_agg =
             compute_fri_path_agg_over_layers(tx, &agg_pi.profile_fri, delta_depth, 0usize)?;
 
         // Aggregate FRI folding and remainder errors over all query
         // paths using a separate geometric weighting beta_paths^k so
-        // that depth and path aggregates remain statistically
-        // independent.
         let fri_paths_agg =
             compute_fri_paths_agg_over_layers(tx, &agg_pi.profile_fri, delta_depth, beta_paths)?;
 
         // Overlay FRI/DEEP aggregates on the first row of the
         // corresponding child segment. All other rows and padding
-        // remain at their default zero values for these columns.
         trace.set(cols.fri_v0_child, start_row, fri_v0_child_fe);
         trace.set(cols.fri_v1_child, start_row, fri_v1_child_fe);
         trace.set(cols.fri_vnext_child, start_row, fri_vnext_child_fe);
@@ -304,7 +280,6 @@ fn build_agg_trace_core(
 
     // Segment sanity first: make chain errors surface before profile shape errors.
     // All children must advertise valid segment indices and form a contiguous chain
-    // in the batch when `segments_total > 1`.
     let mut totals: Option<u32> = None;
     let mut indices: Vec<u32> = Vec::with_capacity(n_children);
 
@@ -356,7 +331,6 @@ fn build_agg_trace_core(
 
     // Enforce that all children share the same global STARK profile
     // as advertised in AggAirPublicInputs.profile_meta and
-    // AggAirPublicInputs.profile_queries.
     let pm = &agg_pi.profile_meta;
     let pq = &agg_pi.profile_queries;
 
@@ -446,7 +420,6 @@ fn build_agg_trace_core(
 
     // Decode global boundary state from AggAirPublicInputs once
     // so that VM / RAM / ROM chain checks can be expressed as
-    // simple differences per child.
     let vm_initial_fe = utils::fold_bytes32_to_fe(&agg_pi.vm_state_initial);
     let vm_final_fe = utils::fold_bytes32_to_fe(&agg_pi.vm_state_final);
     let ram_u_initial_fe = utils::fold_bytes32_to_fe(&agg_pi.ram_gp_unsorted_initial);
@@ -498,8 +471,6 @@ fn build_agg_trace_core(
 
         // Compute chain errors for this child relative to the
         // global boundary state and previous children. These
-        // scalars are written into dedicated columns and the
-        // aggregation AIR requires them to be identically zero.
         let is_first_child = i == 0;
         let is_last_child = i + 1 == n_children;
 
@@ -562,9 +533,6 @@ fn build_agg_trace_core(
 
         // Aggregate Merkle root errors for trace and constraint
         // commitments for this child. When Fiat–Shamir challenges
-        // or Merkle proofs are missing (e.g. for synthetic children
-        // in tests or zero-query profiles), we keep the errors at
-        // zero so that the AIR does not enforce Merkle binding.
         let mut trace_root_err_fe = BE::ZERO;
         let mut constraint_root_err_fe = BE::ZERO;
 
@@ -698,7 +666,6 @@ fn build_agg_trace_core(
 
     // Padding rows (if any): keep accumulator and chain error
     // scalars constant and disable seg_first, v_units_child and
-    // trace_root_err / fri_root_err.
     let pad_vm_err = BE::ZERO;
     let pad_ram_u_err = BE::ZERO;
     let pad_ram_s_err = BE::ZERO;
@@ -738,27 +705,6 @@ fn build_agg_trace_core(
 
 /// Aggregate local FRI folding errors along a single FRI query path
 /// across all FRI layers and the remainder polynomial for a child
-/// transcript.
-///
-/// This function mirrors the structure of FriVerifier::verify_generic
-/// for folding factor 2 but restricts to a single query path. For each
-/// FRI depth d it:
-/// - recovers the coset index for the path via fold_positions_usize;
-/// - reconstructs x-coordinates for the two points in the coset using
-///   the same domain generator and offset as Winterfell FRI;
-/// - computes the folded value v_{d+1} at alpha_d via the binary
-///   degree-respecting projection;
-/// - for all but the last layer, checks that v_{d+1} matches the
-///   committed evaluation in the next FRI layer for the same path;
-/// - on the last layer, treats v_{L} as the evaluation of the final
-///   folded polynomial on the smallest domain and compares it against
-///   the remainder polynomial at the corresponding point.
-///
-/// All errors for a single path indexed by `sample_idx` are accumulated
-/// into a scalar using a geometric weighting delta^d so that a non-zero
-/// result flags any inconsistency along that path. When FRI data or FS
-/// challenges are missing, or when num_layers < 2, the function falls
-/// back to zero so that the AIR constraint becomes vacuous.
 fn compute_fri_path_agg_over_layers(
     tx: &ZlChildTranscript,
     fri_profile: &AggFriProfile,
@@ -785,7 +731,6 @@ fn compute_fri_path_agg_over_layers(
         None => {
             // Without FS challenges we cannot reconstruct the FRI
             // domain geometry or alphas; fall back to zero so that
-            // AIR constraints become vacuous.
             return Ok(BE::ZERO);
         }
     };
@@ -821,7 +766,6 @@ fn compute_fri_path_agg_over_layers(
 
     // Domain generator at depth 0 matches Winterfell FRI domain
     // generator used by the verifier; we update it by powering
-    // with folding_factor at each subsequent depth.
     let mut domain_generator_d = BE::get_root_of_unity(lde_domain_size.ilog2());
 
     // Folding roots are computed once from the base domain and
@@ -835,7 +779,6 @@ fn compute_fri_path_agg_over_layers(
 
     // We track the final folded evaluation at the remainder domain
     // for the chosen path so that we can compare it against
-    // fri_final at the end.
     let mut v_remainder_path = BE::ZERO;
     let mut pos_remainder = 0usize;
 
@@ -889,7 +832,6 @@ fn compute_fri_path_agg_over_layers(
 
         // Prepare geometry for the next domain (after folding this
         // layer) regardless of whether there is another FRI layer or
-        // we are at the remainder step.
         let domain_size_next =
             domain_size_d
                 .checked_div(folding)
@@ -908,7 +850,6 @@ fn compute_fri_path_agg_over_layers(
         if depth + 1 < num_layers {
             // There is a next FRI layer; check that the value obtained
             // by folding this layer matches the committed
-            // evaluation in the next layer for the same path.
             let layer_next_vals = &tx.fri_layers[depth + 1];
             let folded_positions_next =
                 fold_positions_usize(&positions_next, domain_size_next, folding)?;
@@ -976,7 +917,6 @@ fn compute_fri_path_agg_over_layers(
         } else {
             // Last FRI layer: vnext is the evaluation of the final
             // folded polynomial (remainder) at the corresponding
-            // position in the smallest domain.
             if sample_idx >= positions_next.len() {
                 return Err(error::Error::InvalidInput(
                     "sample index out of bounds for remainder positions in compute_fri_path_agg_over_layers",
@@ -996,8 +936,6 @@ fn compute_fri_path_agg_over_layers(
 
     // Final remainder check using Horner evaluation
     // over tx.fri_final.coeffs in the same
-    // reverse-coefficient convention
-    // as winter-fri's eval_horner_rev.
     if tx.fri_final.coeffs.is_empty() {
         return Err(error::Error::InvalidInput(
             "ZlChildTranscript.fri_final.coeffs must be non-empty in compute_fri_path_agg_over_layers",
@@ -1025,18 +963,6 @@ fn compute_fri_path_agg_over_layers(
 
 /// Aggregate FRI folding and remainder errors over all query paths and
 /// all FRI layers for a child transcript.
-///
-/// For each FRI path index `k` (coset index shared across all layers)
-/// this function computes the single-path aggregate
-/// `path_err_k = compute_fri_path_agg_over_layers` with depth challenge
-/// `delta`, and then folds all such paths into a single scalar
-///
-/// agg = sum_{k} beta^k * path_err_k
-///
-/// using an independent path-weighting challenge `beta`. When FRI data
-/// or FS challenges are missing, or when there are fewer than two FRI
-/// layers or no non-empty layers, the aggregate falls back to zero so
-/// that the corresponding AIR constraint becomes vacuous.
 fn compute_fri_paths_agg_over_layers(
     tx: &ZlChildTranscript,
     fri_profile: &AggFriProfile,
@@ -1052,7 +978,6 @@ fn compute_fri_paths_agg_over_layers(
 
     // Use the minimum non-empty layer length as the number of FRI paths
     // that can be followed consistently across all depths without
-    // running out of samples.
     let min_paths = tx
         .fri_layers
         .iter()
@@ -1079,14 +1004,6 @@ fn compute_fri_paths_agg_over_layers(
 
 /// fs.deep_coeffs and matches it against the FRI layer-0
 /// query value q0_k obtained via `get_query_values`-style
-/// indexing into `fri_layers[0]`. It then computes a
-/// weighted sum
-///
-/// deep_agg = sum_{k=0..num_q-1} beta^k * (Y(x_k) - q0_k)
-///
-/// and returns deep_agg. When FRI/DEEP data is missing we
-/// fall back to zero so that the AIR constraint over
-/// `comp_sum` becomes vacuous.
 fn prepare_deep_context<'a>(
     tx: &'a ZlChildTranscript,
     fs: &'a ZlFsChallenges,
@@ -1326,15 +1243,12 @@ fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Res
         None => {
             // Without FS challenges we cannot reconstruct
             // the FRI / DEEP domain geometry; fall back to
-            // zero so that AIR constraints become vacuous.
             return Ok(BE::ZERO);
         }
     };
 
     // Prepare shared DEEP context;
     // when folded positions or layer-0
-    // values are empty the aggregate
-    // becomes vacuous.
     let ctx = match prepare_deep_context(tx, fs)? {
         Some(ctx) => ctx,
         None => return Ok(BE::ZERO),
@@ -1355,20 +1269,6 @@ fn compute_deep_agg_over_queries(tx: &ZlChildTranscript, beta: BE) -> error::Res
 
 /// Aggregate FRI layer-1 evaluations == query_values
 /// errors over all FS query positions for a single
-/// child transcript.
-///
-/// For folding factor 2 this function reconstructs
-/// per-query folding results v_next,k from layer-0
-/// pairs (v0_k, v1_k) using the first FRI alpha and
-/// matches them against layer-1 query values q1_k
-/// obtained via `get_query_values` geometry. It then
-/// computes a weighted sum
-///
-/// fri_agg = sum_{k=0..num_q-1} beta^k * (v_next,k - q1_k)
-///
-/// and returns fri_agg. When FRI data is missing we
-/// fall back to zero so that the AIR constraint over
-/// `alpha_div_zm_sum` becomes vacuous.
 fn compute_fri_layer1_agg_over_queries(
     tx: &ZlChildTranscript,
     fri_profile: &AggFriProfile,
@@ -1394,7 +1294,6 @@ fn compute_fri_layer1_agg_over_queries(
         None => {
             // Without FS challenges we cannot reconstruct
             // the FRI domain geometry; fall back to zero
-            // so that AIR constraints become vacuous.
             return Ok(BE::ZERO);
         }
     };
@@ -1545,20 +1444,6 @@ fn compute_fri_layer1_agg_over_queries(
 
 /// Compute a minimal per-child binary FRI-folding
 /// and DEEP-composition sample from a child transcript.
-///
-/// We pick the first FRI layer and the first coset
-/// in that layer and derive (v0, v1, vnext, alpha,
-/// x0, x1) for a binary FRI step. We also compute a
-/// layer-1 FRI query value `q1` matching `vnext` via
-/// `get_query_values` semantics and a DEEP composition
-/// error `deep_err = Y(x_0) - q0`, where `Y(x_0)` is
-/// reconstructed from trace / constraint openings and
-/// OOD frames and `q0` is the FRI layer-0 query value
-/// at the same query position.
-///
-/// When FRI data or query positions are unavailable,
-/// we return all zeros so that the corresponding AIR
-/// constraints become vacuous.
 fn sample_fri_fold_child(
     tx: &ZlChildTranscript,
     fri_profile: &AggFriProfile,
@@ -1598,7 +1483,6 @@ fn sample_fri_fold_child(
         None => {
             // Without FS challenges we cannot reconstruct
             // the FRI / DEEP domain geometry; fall back to
-            // zeros so that AIR constraints become vacuous.
             return Ok(FriDeepSample {
                 v0: BE::ZERO,
                 v1: BE::ZERO,
@@ -1720,7 +1604,6 @@ fn sample_fri_fold_child(
 
     // --- FRI layer-1 evaluations == query_values sample ---
     // Reconstruct layer-1 query value for the same path
-    // using `get_query_values` geometry.
     let layer1_vals = tx.fri_layers.get(1).ok_or(error::Error::InvalidInput(
         "ZlChildTranscript.fri_layers must contain at least two layers in sample_fri_fold_child",
     ))?;
@@ -1781,9 +1664,6 @@ fn sample_fri_fold_child(
 
     // --- DEEP composition vs FRI layer-0 sample ---
     // Reconstruct a single DEEP composition value Y(x_0)
-    // for the same query position and compare it to the
-    // corresponding FRI layer-0 query value q0 using the
-    // shared DEEP context helper.
     let ctx = match prepare_deep_context(tx, fs)? {
         Some(ctx) => ctx,
         None => {

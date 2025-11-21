@@ -21,10 +21,7 @@ use crate::layout::{self, Columns, POSEIDON_ROUNDS};
 use crate::{poseidon, schedule};
 
 /// Apply one Poseidon level at `level`
-/// absorbing up to 10 inputs. Map row:
-/// set lane[0..inputs.len()) = inputs, lane[10..12) = domain tags,
-/// rest of rate lanes are set to 0.
-/// Then apply R rounds and write final row.
+/// absorbing up to 10 inputs.
 pub fn apply_level_absorb(
     trace: &mut TraceTable<BE>,
     suite_id: &[u8; 32],

@@ -84,9 +84,6 @@ fn stack_fill_empty_sum() {
 fn stack_with_load_store_interop() {
     // push 7 at base+0;
     // load base+0 -> 7;
-    // store base+0 <- 9;
-    // pop -> 9;
-    // total = 7 + 9 = 16
     let src = r#"
 (def (main)
   (let ((addr 1000000))

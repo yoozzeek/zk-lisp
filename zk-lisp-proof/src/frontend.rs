@@ -17,22 +17,8 @@
 use crate::ZkBackend;
 use crate::recursion::{RecursionBackend, RecursionDigest};
 
-/// Backend-provided proof serialization.
-///
-/// This trait is implemented by concrete backends to expose
-/// encoding/decoding of opaque proof types into raw bytes.
-pub trait ProofCodec: ZkBackend {
-    type CodecError;
-
-    fn proof_to_bytes(proof: &Self::Proof) -> Result<Vec<u8>, Self::CodecError>;
-    fn proof_from_bytes(bytes: &[u8]) -> Result<Self::Proof, Self::CodecError>;
-}
-
 /// Generic preflight reporting mode.
 ///
-/// Backends may interpret these modes as they see fit,
-/// e.g. printing human-readable diagnostics, emitting
-/// structured JSON, or doing nothing in release builds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreflightMode {
     Off,
@@ -69,26 +55,6 @@ pub trait PreflightBackend: ZkBackend {
     ) -> Result<(), Self::Error>;
 }
 
-/// Thin wrapper over [`ZkBackend::prove`] for ergonomic use
-/// from frontends.
-pub fn prove<B: ZkBackend>(
-    program: &B::Program,
-    pub_inputs: &B::PublicInputs,
-    opts: &B::ProverOptions,
-) -> Result<B::Proof, B::Error> {
-    B::prove(program, pub_inputs, opts)
-}
-
-/// Thin wrapper over [`ZkBackend::verify`].
-pub fn verify<B: ZkBackend>(
-    proof: B::Proof,
-    program: &B::Program,
-    pub_inputs: &B::PublicInputs,
-    opts: &B::ProverOptions,
-) -> Result<(), B::Error> {
-    B::verify(proof, program, pub_inputs, opts)
-}
-
 /// Execute a program and obtain its VM output cell and
 /// trace length via a backend implementing [`VmBackend`].
 pub fn run_vm<B: VmBackend>(
@@ -109,19 +75,8 @@ pub fn preflight<B: PreflightBackend>(
     B::run_preflight(mode, opts, program, pub_inputs)
 }
 
-/// Encode a backend proof into raw bytes.
-pub fn encode_proof<B: ProofCodec>(proof: &B::Proof) -> Result<Vec<u8>, B::CodecError> {
-    B::proof_to_bytes(proof)
-}
-
-/// Decode a backend proof from raw bytes.
-pub fn decode_proof<B: ProofCodec>(bytes: &[u8]) -> Result<B::Proof, B::CodecError> {
-    B::proof_from_bytes(bytes)
-}
-
 /// Produce a new recursion aggregation step over a batch
 /// of step proofs using a backend implementing
-/// [`RecursionBackend`].
 pub fn recursion_prove<B: RecursionBackend>(
     steps: &[B::StepProof],
     rc_pi: &B::RecursionPublic,

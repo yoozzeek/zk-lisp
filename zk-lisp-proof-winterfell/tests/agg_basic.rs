@@ -127,14 +127,11 @@ fn make_children() -> Vec<ZlChildCompact> {
 
     // Two children with different m (base trace length)
     // but identical global STARK profile parameters
-    // (rho, q, o, lambda, pi_len). This matches the
-    // AggAirPublicInputs.profile_* contract.
     let meta1 = StepMeta::new(4, 8, 2, 2, 40, 1);
     let meta2 = StepMeta::new(8, 8, 2, 2, 40, 1);
 
     // For the initial aggregator skeleton we keep
     // trace roots trivial and equal to the public
-    // `children_root` value used in tests (all zeros).
     let trace_root = [0u8; 32];
 
     let pi_core = CorePublicInputs::default();
@@ -267,6 +264,9 @@ fn agg_proof_roundtrip_ok() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: children[0].pi_core.program_id,
+        program_commitment: children[0].pi_core.program_commitment,
+        pi_digest: children[0].pi_core.digest(),
         children_root,
         v_units_total: v1 + v2,
         children_count: children.len() as u32,
@@ -342,6 +342,9 @@ fn agg_build_rejects_wrong_v_units_total() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: children[0].pi_core.program_id,
+        program_commitment: children[0].pi_core.program_commitment,
+        pi_digest: children[0].pi_core.digest(),
         children_root,
         v_units_total: v1 + v2 + 1, // mismatch
         children_count: children.len() as u32,
@@ -403,6 +406,9 @@ fn agg_build_rejects_wrong_children_ms() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: children[0].pi_core.program_id,
+        program_commitment: children[0].pi_core.program_commitment,
+        pi_digest: children[0].pi_core.digest(),
         children_root,
         v_units_total: v1 + v2,
         children_count: children.len() as u32,
@@ -464,6 +470,9 @@ fn agg_build_rejects_wrong_profile_meta() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: children[0].pi_core.program_id,
+        program_commitment: children[0].pi_core.program_commitment,
+        pi_digest: children[0].pi_core.digest(),
         children_root,
         v_units_total: v1 + v2,
         children_count: children.len() as u32,
@@ -529,6 +538,9 @@ fn agg_build_rejects_mixed_suite_id() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: children[0].pi_core.program_id,
+        program_commitment: children[0].pi_core.program_commitment,
+        pi_digest: children[0].pi_core.digest(),
         children_root,
         v_units_total: v1 + v2,
         children_count: children.len() as u32,
@@ -592,6 +604,9 @@ fn agg_merkle_binding_accepts_honest_child() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: child.pi_core.program_id,
+        program_commitment: child.pi_core.program_commitment,
+        pi_digest: child.pi_core.digest(),
         children_root,
         v_units_total: child.meta.v_units,
         children_count: 1,
@@ -653,7 +668,6 @@ fn agg_merkle_binding_rejects_tampered_trace_root() {
 
     // Corrupt the first trace root while keeping the aggregate
     // Blake3 root unchanged. This must be detected by Merkle
-    // binding in the aggregator.
     if let Some(first) = child.trace_roots.first_mut() {
         first[0] ^= 1;
     }
@@ -684,6 +698,9 @@ fn agg_merkle_binding_rejects_tampered_trace_root() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: child.pi_core.program_id,
+        program_commitment: child.pi_core.program_commitment,
+        pi_digest: child.pi_core.digest(),
         children_root,
         v_units_total: child.meta.v_units,
         children_count: 1,
@@ -755,6 +772,9 @@ fn agg_fri_binding_accepts_honest_child_transcript() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: child.pi_core.program_id,
+        program_commitment: child.pi_core.program_commitment,
+        pi_digest: child.pi_core.digest(),
         children_root,
         v_units_total: child.meta.v_units,
         children_count: 1,
@@ -841,6 +861,9 @@ fn agg_fri_binding_rejects_tampered_fri_final() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: child.pi_core.program_id,
+        program_commitment: child.pi_core.program_commitment,
+        pi_digest: child.pi_core.digest(),
         children_root,
         v_units_total: child.meta.v_units,
         children_count: 1,
@@ -910,7 +933,6 @@ fn agg_fri_binding_rejects_tampered_fri_layer_value() {
 
     // Corrupt a single FRI layer-0 value while keeping the overall
     // transcript shape consistent. This should break DEEP vs FRI
-    // layer-0 and FRI folding aggregates.
     if let Some(layer0) = transcript.fri_layers.get_mut(0) {
         if let Some(pair) = layer0.get_mut(0) {
             pair[0] += BE::ONE;
@@ -944,6 +966,9 @@ fn agg_fri_binding_rejects_tampered_fri_layer_value() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: child.pi_core.program_id,
+        program_commitment: child.pi_core.program_commitment,
+        pi_digest: child.pi_core.digest(),
         children_root,
         v_units_total: child.meta.v_units,
         children_count: 1,
@@ -1037,6 +1062,9 @@ fn agg_builder_rejects_inconsistent_query_count() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: child.pi_core.program_id,
+        program_commitment: child.pi_core.program_commitment,
+        pi_digest: child.pi_core.digest(),
         children_root,
         v_units_total: child.meta.v_units,
         children_count: 1,
@@ -1111,6 +1139,9 @@ fn agg_merkle_binding_rejects_tampered_trace_path() {
     };
 
     let agg_pi = AggAirPublicInputs {
+        program_id: child.pi_core.program_id,
+        program_commitment: child.pi_core.program_commitment,
+        pi_digest: child.pi_core.digest(),
         children_root,
         v_units_total: child.meta.v_units,
         children_count: 1,

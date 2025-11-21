@@ -36,15 +36,11 @@ fn build_large_program_for_multiseg() -> zk_lisp_compiler::Program {
 
     // Construct target_levels = (MAX_SEGMENT_ROWS / STEPS_PER_LEVEL_P2) + 1
     // We reuse the same op per level; padding to next power-of-two
-    // will push total rows above the per-segment cap.
-    // STEPS_PER_LEVEL_P2 = 32.
-    // Use env override ZKL_MAX_SEGMENT_ROWS when present
-    // so tests can force multi-seg without huge programs.
     let steps_per_level = zk_lisp_proof_winterfell::layout::STEPS_PER_LEVEL_P2;
     let max_rows = std::env::var("ZKL_MAX_SEGMENT_ROWS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1 << 16);
+        .unwrap_or(1 << 10);
     let target_levels = (max_rows / steps_per_level) + 1;
 
     for _ in 0..target_levels {
@@ -88,6 +84,9 @@ fn agg_multiseg_positive_builds_trace() {
     let children_ms: Vec<u32> = children.iter().map(|c| c.meta.m).collect();
 
     let agg_pi = AggAirPublicInputs {
+        program_id: pi.program_id,
+        program_commitment: pi.program_commitment,
+        pi_digest: pi.digest(),
         children_root,
         v_units_total: v_sum,
         children_count: children.len() as u32,
@@ -149,6 +148,9 @@ fn agg_multiseg_negative_invalid_index_rejected() {
 
     // Minimal agg_pi (values unused due to early sanity failure)
     let agg_pi = AggAirPublicInputs {
+        program_id: children[0].pi_core.program_id,
+        program_commitment: children[0].pi_core.program_commitment,
+        pi_digest: children[0].pi_core.digest(),
         children_root,
         v_units_total: children.iter().map(|c| c.meta.v_units).sum(),
         children_count: children.len() as u32,
@@ -202,6 +204,9 @@ fn agg_multiseg_negative_missing_segment_rejected() {
     let children_root = children_root_from_compact(&suite_id, &children);
 
     let agg_pi = AggAirPublicInputs {
+        program_id: children[0].pi_core.program_id,
+        program_commitment: children[0].pi_core.program_commitment,
+        pi_digest: children[0].pi_core.digest(),
         children_root,
         v_units_total: children.iter().map(|c| c.meta.v_units).sum(),
         children_count: children.len() as u32,

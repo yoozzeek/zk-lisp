@@ -17,8 +17,6 @@ pub mod format {
     use winterfell::crypto::Digest;
     use winterfell::math::fields::f128::BaseElement as BE;
 
-    /// Step proof header echoing the proving profile under which the
-    /// underlying Winterfell proof was generated.
     #[derive(Clone, Debug)]
     pub struct Header {
         /// Profile identifier (1 = zk-lisp Poseidon profile v1).
@@ -39,19 +37,8 @@ pub mod format {
         pub ext: u8,
     }
 
-    /// Minimal public input echo used at the step level for digest
-    /// computation and future recursion/aggregation wiring. This is
-    /// intentionally narrower than the full AIR public inputs, but it
-    /// is rich enough to expose all per-segment boundary state needed
-    /// for strict STARK-in-STARK recursion (VM, RAM and ROM chains).
     #[derive(Clone, Debug)]
     pub struct PublicInputs {
-        /// Deterministic identifier of the zk-lisp program.
-        ///
-        /// For now this is set equal to the Blake3
-        /// `program_commitment`; it can be generalized to
-        /// a separate logical id later without changing
-        /// the rest of the layout.
         pub program_id: [u8; 32],
         /// Blake3 commitment of the program as used by the
         /// base VM AIR.
@@ -66,15 +53,9 @@ pub mod format {
         pub pc_init: [u8; 32],
         /// VM state hash at the beginning of this segment.
         ///
-        /// This is a 32-byte digest derived from the initial
-        /// register file and program counter at the map row
-        /// of level 0 for single-segment proofs.
         pub state_in_hash: [u8; 32],
         /// VM state hash at the end of this segment.
         ///
-        /// For single-segment proofs this is computed from the
-        /// row where the final VM result is observed in the
-        /// execution trace.
         pub state_out_hash: [u8; 32],
         /// RAM grand-product accumulator at the first row of
         /// this segment for the unsorted RAM event stream.
@@ -90,13 +71,11 @@ pub mod format {
         pub ram_gp_sorted_out: [u8; 32],
         /// ROM t=3 state at the logical beginning of this
         /// segment. For single-segment proofs this is the
-        /// state on the map row of level 0.
         pub rom_s_in_0: [u8; 32],
         pub rom_s_in_1: [u8; 32],
         pub rom_s_in_2: [u8; 32],
         /// ROM t=3 state at the logical end of this segment.
         /// For single-segment proofs this is the state on the
-        /// final row of the last level.
         pub rom_s_out_0: [u8; 32],
         pub rom_s_out_1: [u8; 32],
         pub rom_s_out_2: [u8; 32],
@@ -104,12 +83,6 @@ pub mod format {
 
     /// Commitment echo for the underlying Winterfell proof.
     ///
-    /// At this stage we do not expose the internal trace/FRI
-    /// Merkle roots used by Winterfell. Instead we derive a
-    /// single 32-byte root deterministically from the suite id
-    /// and the serialized Winterfell proof bytes under a fixed
-    /// Blake3 domain. This value is then included into the
-    /// step digest as a commitment to the base proof.
     #[derive(Clone, Debug)]
     pub struct Commitments {
         pub root_trace: [u8; 32],
@@ -117,9 +90,6 @@ pub mod format {
 
     /// Full zl1 step proof container.
     ///
-    /// This structure ties together profile header, public
-    /// inputs echo, commitment echo, per-proof metadata and
-    /// the opaque Winterfell proof bytes.
     #[derive(Clone, Debug)]
     pub struct Proof {
         pub header: Header,
@@ -131,6 +101,7 @@ pub mod format {
 
     impl Proof {
         /// Construct a multi-segment zl1 proof with explicit segment indices.
+        #[allow(clippy::too_many_arguments)]
         pub fn new_multi_segment(
             suite_id: [u8; 32],
             meta: StepMeta,
@@ -171,18 +142,15 @@ pub mod format {
                 rom_s_out_2,
                 wf_proof,
             )?;
+
             p.pi.segment_index = segment_index;
             p.pi.segments_total = segments_total;
+
             Ok(p)
         }
         /// Construct a single-segment zl1 proof from the
         /// suite id, per-proof metadata, backend-agnostic
-        /// public inputs and the underlying Winterfell proof.
-        ///
-        /// Besides VM state hashes this constructor also expects
-        /// per-segment RAM and ROM boundary state in a backend-
-        /// neutral, byte-encoded form so that the recursion layer
-        /// can reconstruct them as field elements when needed.
+        #[allow(clippy::too_many_arguments)]
         pub fn new_single_segment(
             suite_id: [u8; 32],
             meta: StepMeta,
@@ -217,8 +185,6 @@ pub mod format {
 
             // Backend-agnostic public inputs
             // provide a canonical semantic
-            // program id and a VM-level
-            // program commitment.
             let program_id = core_pi.program_id;
             let program_commitment = core_pi.program_commitment;
             let feature_mask = core_pi.feature_mask;
@@ -246,11 +212,6 @@ pub mod format {
 
             // Derive a single commitment root
             // over the internal Winterfell commitments
-            // (trace, constraint, FRI), domain-separated
-            // from other uses of Blake3. This binds the
-            // zl1 step to the full set of STARK
-            // commitments without depending on the exact
-            // serialization of the proof object.
             let num_trace_segments = wf_proof.trace_info().num_segments();
             let options = wf_proof.options();
             let fri_opts = options.to_fri_options();
@@ -312,10 +273,6 @@ pub mod digest {
 
     /// Compute a 32-byte step digest from zl1 proof components.
     ///
-    /// The digest is derived from:
-    /// - the step metadata echo (`StepMeta`),
-    /// - a compact public-input echo (`PublicInputs`), and
-    /// - the commitment echo (`Commitments::root_trace`).
     pub fn step_digest(proof: &format::Proof) -> [u8; 32] {
         // suite_fe = RO2F("zkl/step/digest/suite", suite_id)
         let suite_fe = poseidon::ro_to_fe("zkl/step/digest/suite", &[&proof.header.suite_id]);

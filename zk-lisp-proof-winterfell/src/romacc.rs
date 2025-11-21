@@ -256,7 +256,6 @@ fn encode_map_row_for_op(row: &mut [BE], cols: &Columns, op: &Op) {
         MerkleStepFirst { .. } | MerkleStep { .. } | MerkleStepLast { .. } | End => {
             // Merkle and End ops do not set
             // ALU opcode bits or selectors
-            // on map rows; ROM sees zero row.
         }
     }
 }
