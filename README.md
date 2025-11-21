@@ -89,9 +89,8 @@ cargo run tests --release
 
 ## Donation
 
-The best way to contribute and speed up the release of features and bug fixes,
-and possibly even conduct at least a partial security audit, is to provide
-financial support to the author.
+The most effective way to accelerate new features, bug fixes, and even partial
+security audits is to provide financial support to the author.
 
 * **Bitcoin (taproot):** bc1ptere63tyqms6erw6hl9zpxwcuvnw4434f7eshem4l98tg6vl7xpqazjma7
 * **ZCash:** t1LKxwJ64yJN7GKbp63JjUjWfgwuaVyjW88
