@@ -24,7 +24,9 @@ mod schedule;
 
 use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
 use crate::vm::air::{merkle::MerkleAir, poseidon::PoseidonAir, schedule::ScheduleAir};
-use crate::vm::layout::{Columns, LayoutConfig, NR, POSEIDON_ROUNDS, SPONGE_IDX_BITS, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{
+    Columns, LayoutConfig, NR, POSEIDON_ROUNDS, SPONGE_IDX_BITS, STEPS_PER_LEVEL_P2,
+};
 use crate::vm::schedule as schedule_core;
 use crate::{poseidon as poseidon_core, utils};
 
