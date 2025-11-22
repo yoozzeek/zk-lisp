@@ -446,3 +446,70 @@ impl Columns {
 pub fn fe_u32(v: u32) -> BE {
     BE::from(v as u64)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_width_shrinks_when_disabling_blocks() {
+        let cfg_all = LayoutConfig {
+            vm: true,
+            ram: true,
+            sponge: true,
+            merkle: true,
+            rom: true,
+        };
+        let cols_all = Columns::for_config(&cfg_all);
+        let w_all = cols_all.width(0);
+
+        let cfg_no_rom = LayoutConfig {
+            vm: true,
+            ram: true,
+            sponge: true,
+            merkle: true,
+            rom: false,
+        };
+        let w_no_rom = Columns::for_config(&cfg_no_rom).width(0);
+
+        let cfg_vm_only = LayoutConfig {
+            vm: true,
+            ram: false,
+            sponge: false,
+            merkle: false,
+            rom: false,
+        };
+        let w_vm_only = Columns::for_config(&cfg_vm_only).width(0);
+
+        assert!(w_no_rom < w_all);
+        assert!(w_vm_only <= w_no_rom);
+    }
+
+    #[test]
+    fn core_indices_are_stable_across_layout_configs() {
+        let cfg_all = LayoutConfig {
+            vm: true,
+            ram: true,
+            sponge: true,
+            merkle: true,
+            rom: true,
+        };
+        let cfg_vm_only = LayoutConfig {
+            vm: true,
+            ram: false,
+            sponge: false,
+            merkle: false,
+            rom: false,
+        };
+
+        let cols_all = Columns::for_config(&cfg_all);
+        let cols_vm = Columns::for_config(&cfg_vm_only);
+
+        for i in 0..NR {
+            assert_eq!(cols_all.r_index(i), cols_vm.r_index(i));
+        }
+
+        assert_eq!(cols_all.op_const, cols_vm.op_const);
+        assert_eq!(cols_all.op_store, cols_vm.op_store);
+    }
+}

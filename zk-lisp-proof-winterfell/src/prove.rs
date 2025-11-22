@@ -1389,3 +1389,56 @@ fn compute_segment_boundary_bytes(
 
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::segment_planner::{SegmentFeatures, compute_segment_feature_mask};
+    use zk_lisp_proof::pi::{FM_POSEIDON, FM_RAM, FM_SPONGE, FM_VM, FM_VM_EXPECT};
+
+    fn derive_seg_mask_for_air(base_mask: u64, seg_features: &SegmentFeatures) -> (u64, u64) {
+        let mut pi = PublicInputs::default();
+        pi.feature_mask = base_mask;
+
+        let seg_mask = compute_segment_feature_mask(&pi, seg_features);
+        let use_seg_mask = seg_mask != 0 && seg_mask != base_mask;
+        let eff_mask = if use_seg_mask { seg_mask } else { base_mask };
+        let seg_air = if use_seg_mask { eff_mask } else { 0 };
+
+        (seg_mask, seg_air)
+    }
+
+    #[test]
+    fn seg_air_mask_zero_when_equal_to_global() {
+        let base = FM_VM | FM_VM_EXPECT | FM_RAM;
+        let seg = SegmentFeatures {
+            vm: true,
+            ram: true,
+            sponge: false,
+            merkle: false,
+        };
+
+        let (seg_mask, seg_air) = derive_seg_mask_for_air(base, &seg);
+        assert_eq!(seg_mask, base);
+        assert_eq!(seg_air, 0);
+    }
+
+    #[test]
+    fn seg_air_mask_nonzero_when_optional_feature_dropped() {
+        let base = FM_VM | FM_VM_EXPECT | FM_RAM | FM_SPONGE | FM_POSEIDON;
+        let seg = SegmentFeatures {
+            vm: true,
+            ram: false,
+            sponge: false,
+            merkle: false,
+        };
+        let (seg_mask, seg_air) = derive_seg_mask_for_air(base, &seg);
+
+        assert_ne!(seg_mask, 0);
+        assert_ne!(seg_mask, base);
+        assert_eq!(seg_air, seg_mask);
+        assert_eq!(seg_air & !base, 0);
+        assert_eq!(seg_air & (FM_RAM | FM_SPONGE | FM_POSEIDON), 0);
+        assert_ne!(seg_air & (FM_VM | FM_VM_EXPECT), 0);
+    }
+}

@@ -411,4 +411,59 @@ mod tests {
 
         assert_eq!(acc_start, expected_rows);
     }
+
+    #[test]
+    fn segment_feature_mask_is_subset_of_global_mask() {
+        let mut core_pi = CorePublicInputs::default();
+        core_pi.feature_mask = FM_VM | FM_VM_EXPECT | FM_RAM | FM_MERKLE | FM_SPONGE | FM_POSEIDON;
+
+        let seg_features = SegmentFeatures {
+            vm: true,
+            ram: false,
+            sponge: true,
+            merkle: false,
+        };
+
+        let seg_mask = compute_segment_feature_mask(&core_pi, &seg_features);
+        assert_eq!(seg_mask & !core_pi.feature_mask, 0);
+
+        assert_eq!(seg_mask & FM_RAM, 0);
+        assert_eq!(seg_mask & FM_MERKLE, 0);
+
+        assert_ne!(seg_mask & FM_VM, 0);
+        assert_ne!(seg_mask & FM_VM_EXPECT, 0);
+
+        assert_ne!(seg_mask & FM_SPONGE, 0);
+        assert_ne!(seg_mask & FM_POSEIDON, 0);
+    }
+
+    #[test]
+    fn segment_feature_mask_drops_optional_features_on_empty_segment() {
+        let mut core_pi = CorePublicInputs::default();
+        core_pi.feature_mask = FM_VM | FM_VM_EXPECT | FM_RAM | FM_MERKLE | FM_SPONGE | FM_POSEIDON;
+
+        let seg_features = SegmentFeatures::default(); // vm=false, ram=false, sponge=false, merkle=false
+        let seg_mask = compute_segment_feature_mask(&core_pi, &seg_features);
+
+        assert_eq!(seg_mask & (FM_RAM | FM_MERKLE | FM_SPONGE | FM_POSEIDON), 0);
+
+        assert_ne!(seg_mask & FM_VM, 0);
+        assert_ne!(seg_mask & FM_VM_EXPECT, 0);
+    }
+
+    #[test]
+    fn segment_feature_mask_keeps_core_vm_flags_only() {
+        let mut core_pi = CorePublicInputs::default();
+        core_pi.feature_mask = FM_VM | FM_VM_EXPECT;
+
+        let seg_features = SegmentFeatures {
+            vm: true,
+            ram: true,
+            sponge: true,
+            merkle: true,
+        };
+
+        let seg_mask = compute_segment_feature_mask(&core_pi, &seg_features);
+        assert_eq!(seg_mask, core_pi.feature_mask);
+    }
 }
