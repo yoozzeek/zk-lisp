@@ -37,9 +37,11 @@ use crate::agg::child::ZlChildTranscript;
 use crate::agg::trace::build_agg_trace_from_transcripts;
 use crate::poseidon::hasher::PoseidonHasher;
 use crate::proof::step::{StepMeta, StepProof};
-use crate::segment_planner::WinterfellSegmentPlanner;
+use crate::segment_planner::{
+    WinterfellSegmentPlanner, compute_segment_feature_mask, compute_segment_features_for_levels,
+};
 use crate::vm::air::ZkLispAir;
-use crate::vm::layout::{Columns, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{Columns, LayoutConfig, STEPS_PER_LEVEL_P2};
 use crate::vm::{schedule, trace};
 use crate::{preflight::run as run_preflight, utils};
 
@@ -81,12 +83,35 @@ impl VerifyBoundaries {
     }
 }
 
+/// Field-level boundary state for a single
+/// execution segment, mirroring
+/// [`SegmentBoundaryBytes`] but using
+/// `BaseElement` values.
+#[derive(Clone, Debug)]
+pub(crate) struct SegmentBoundariesFe {
+    pc_init: BE,
+    ram_gp_unsorted_in: BE,
+    ram_gp_unsorted_out: BE,
+    ram_gp_sorted_in: BE,
+    ram_gp_sorted_out: BE,
+    rom_s_in: [BE; 3],
+    rom_s_out: [BE; 3],
+}
+
 #[derive(Debug)]
 pub struct ZkProver {
     options: ProofOptions,
     pub_inputs: PublicInputs,
     rom_acc: [BE; 3],
     preflight: PreflightMode,
+    /// Optional segment-local feature mask used
+    /// when proving a single execution segment.
+    /// Zero means "use core.feature_mask".
+    segment_feature_mask: u64,
+    /// Optional layout for the concrete trace.
+    segment_cols: Option<Columns>,
+    /// Optional precomputed boundary state.
+    segment_boundaries: Option<SegmentBoundariesFe>,
 }
 
 impl ZkProver {
@@ -111,7 +136,22 @@ impl ZkProver {
             pub_inputs,
             rom_acc,
             preflight: pf,
+            segment_feature_mask: 0,
+            segment_cols: None,
+            segment_boundaries: None,
         }
+    }
+
+    fn with_segment_layout(
+        mut self,
+        segment_feature_mask: u64,
+        cols: Columns,
+        boundaries: SegmentBoundariesFe,
+    ) -> Self {
+        self.segment_feature_mask = segment_feature_mask;
+        self.segment_cols = Some(cols);
+        self.segment_boundaries = Some(boundaries);
+        self
     }
 
     pub fn with_preflight_mode(mut self, mode: PreflightMode) -> Self {
@@ -157,6 +197,9 @@ impl ZkProver {
             options: self.options.clone(),
             pub_inputs: self.pub_inputs.clone(),
             rom_acc: self.rom_acc,
+            segment_feature_mask: self.segment_feature_mask,
+            segment_cols: self.segment_cols.clone(),
+            segment_boundaries: self.segment_boundaries.clone(),
         };
 
         // Winterfell orchestration timing
@@ -185,6 +228,9 @@ struct ZkWinterfellProver {
     options: ProofOptions,
     pub_inputs: PublicInputs,
     rom_acc: [BE; 3],
+    segment_feature_mask: u64,
+    segment_cols: Option<Columns>,
+    segment_boundaries: Option<SegmentBoundariesFe>,
 }
 
 /// Byte-encoded boundary state for a single execution
@@ -201,6 +247,28 @@ struct SegmentBoundaryBytes {
     rom_s_out_0: [u8; 32],
     rom_s_out_1: [u8; 32],
     rom_s_out_2: [u8; 32],
+}
+
+impl From<&SegmentBoundaryBytes> for SegmentBoundariesFe {
+    fn from(b: &SegmentBoundaryBytes) -> Self {
+        SegmentBoundariesFe {
+            pc_init: utils::fe_from_bytes_fold(&b.pc_init),
+            ram_gp_unsorted_in: utils::fe_from_bytes_fold(&b.ram_gp_unsorted_in),
+            ram_gp_unsorted_out: utils::fe_from_bytes_fold(&b.ram_gp_unsorted_out),
+            ram_gp_sorted_in: utils::fe_from_bytes_fold(&b.ram_gp_sorted_in),
+            ram_gp_sorted_out: utils::fe_from_bytes_fold(&b.ram_gp_sorted_out),
+            rom_s_in: [
+                utils::fe_from_bytes_fold(&b.rom_s_in_0),
+                utils::fe_from_bytes_fold(&b.rom_s_in_1),
+                utils::fe_from_bytes_fold(&b.rom_s_in_2),
+            ],
+            rom_s_out: [
+                utils::fe_from_bytes_fold(&b.rom_s_out_0),
+                utils::fe_from_bytes_fold(&b.rom_s_out_1),
+                utils::fe_from_bytes_fold(&b.rom_s_out_2),
+            ],
+        }
+    }
 }
 
 impl WProver for ZkWinterfellProver {
@@ -220,83 +288,109 @@ impl WProver for ZkWinterfellProver {
     fn get_pub_inputs(&self, trace: &Self::Trace) -> <Self::Air as Air>::PublicInputs {
         let mut pi = self.pub_inputs.clone();
 
-        // Compute VM output location (last op level)
+        // Compute VM output location (last op level).
+        // For segment proofs rely on the segment-local
+        // layout when provided.
         if (pi.feature_mask & core_pi::FM_VM) != 0 {
-            // If caller provided explicit VM_EXPECT location via
-            // vm_out_reg/vm_out_row, respect it. Otherwise, detect
             let has_explicit_loc = pi.vm_out_row != 0 || pi.vm_out_reg != 0;
             if !has_explicit_loc {
-                let (r, row) = utils::vm_output_from_trace(trace);
-                pi.vm_out_reg = r;
-                pi.vm_out_row = row;
+                if let Some(cols) = &self.segment_cols {
+                    let (r, row) = utils::vm_output_from_trace_with_layout(trace, cols);
+                    pi.vm_out_reg = r;
+                    pi.vm_out_row = row;
+                } else {
+                    let (r, row) = utils::vm_output_from_trace(trace);
+                    pi.vm_out_reg = r;
+                    pi.vm_out_row = row;
+                }
             }
         }
 
-        // Derive segment-local boundary state directly from the
-        // concrete execution trace seen by this prover instance.
-        let cols = Columns::baseline();
         let steps = STEPS_PER_LEVEL_P2;
         let n_rows = trace.length();
 
-        let pc_init = if n_rows > 0 {
-            trace.get(cols.pc, schedule::pos_map())
+        let boundaries = if let Some(b) = &self.segment_boundaries {
+            b.clone()
         } else {
-            BE::ZERO
-        };
-
-        let last = n_rows.saturating_sub(1);
-
-        let (ram_gp_unsorted_in, ram_gp_unsorted_out, ram_gp_sorted_in, ram_gp_sorted_out) =
-            if n_rows > 0 {
-                (
-                    trace.get(cols.ram_gp_unsorted, 0),
-                    trace.get(cols.ram_gp_unsorted, last),
-                    trace.get(cols.ram_gp_sorted, 0),
-                    trace.get(cols.ram_gp_sorted, last),
-                )
+            let cols = if let Some(cols) = &self.segment_cols {
+                cols.clone()
             } else {
-                (BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO)
+                Columns::baseline()
             };
 
-        // ROM boundaries at the first map row and the final row of
-        // the last level present in this trace segment.
-        let (rom_s_in, rom_s_out) = if n_rows > 0 && steps > 0 {
-            let lvl_first = 0usize;
-            let lvl_last = last / steps;
+            debug_assert_eq!(trace.width(), cols.width(0));
 
-            let row_map_first = lvl_first * steps + schedule::pos_map();
-            let row_final_last = lvl_last * steps + schedule::pos_final();
+            let pc_init = if n_rows > 0 {
+                trace.get(cols.pc, schedule::pos_map())
+            } else {
+                BE::ZERO
+            };
 
-            if row_map_first < n_rows && row_final_last < n_rows {
-                let s_in = [
-                    trace.get(cols.rom_s_index(0), row_map_first),
-                    trace.get(cols.rom_s_index(1), row_map_first),
-                    trace.get(cols.rom_s_index(2), row_map_first),
-                ];
-                let s_out = [
-                    trace.get(cols.rom_s_index(0), row_final_last),
-                    trace.get(cols.rom_s_index(1), row_final_last),
-                    trace.get(cols.rom_s_index(2), row_final_last),
-                ];
+            let last = n_rows.saturating_sub(1);
 
-                (s_in, s_out)
+            let (ram_gp_unsorted_in, ram_gp_unsorted_out, ram_gp_sorted_in, ram_gp_sorted_out) =
+                if n_rows > 0 {
+                    (
+                        trace.get(cols.ram_gp_unsorted, 0),
+                        trace.get(cols.ram_gp_unsorted, last),
+                        trace.get(cols.ram_gp_sorted, 0),
+                        trace.get(cols.ram_gp_sorted, last),
+                    )
+                } else {
+                    (BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO)
+                };
+
+            // ROM boundaries at the first map row and the final row of
+            // the last level present in this trace segment.
+            let (rom_s_in, rom_s_out) = if n_rows > 0 && steps > 0 {
+                let lvl_first = 0usize;
+                let lvl_last = last / steps;
+
+                let row_map_first = lvl_first * steps + schedule::pos_map();
+                let row_final_last = lvl_last * steps + schedule::pos_final();
+
+                if row_map_first < n_rows && row_final_last < n_rows {
+                    let s_in = [
+                        trace.get(cols.rom_s_index(0), row_map_first),
+                        trace.get(cols.rom_s_index(1), row_map_first),
+                        trace.get(cols.rom_s_index(2), row_map_first),
+                    ];
+                    let s_out = [
+                        trace.get(cols.rom_s_index(0), row_final_last),
+                        trace.get(cols.rom_s_index(1), row_final_last),
+                        trace.get(cols.rom_s_index(2), row_final_last),
+                    ];
+
+                    (s_in, s_out)
+                } else {
+                    ([BE::ZERO; 3], [BE::ZERO; 3])
+                }
             } else {
                 ([BE::ZERO; 3], [BE::ZERO; 3])
+            };
+
+            SegmentBoundariesFe {
+                pc_init,
+                ram_gp_unsorted_in,
+                ram_gp_unsorted_out,
+                ram_gp_sorted_in,
+                ram_gp_sorted_out,
+                rom_s_in,
+                rom_s_out,
             }
-        } else {
-            ([BE::ZERO; 3], [BE::ZERO; 3])
         };
 
         crate::AirPublicInputs {
             core: pi,
+            segment_feature_mask: self.segment_feature_mask,
             rom_acc: self.rom_acc,
-            pc_init,
-            ram_gp_unsorted_in,
-            ram_gp_unsorted_out,
-            ram_gp_sorted_in,
-            ram_gp_sorted_out,
-            rom_s_in,
-            rom_s_out,
+            pc_init: boundaries.pc_init,
+            ram_gp_unsorted_in: boundaries.ram_gp_unsorted_in,
+            ram_gp_unsorted_out: boundaries.ram_gp_unsorted_out,
+            ram_gp_sorted_in: boundaries.ram_gp_sorted_in,
+            ram_gp_sorted_out: boundaries.ram_gp_sorted_out,
+            rom_s_in: boundaries.rom_s_in,
+            rom_s_out: boundaries.rom_s_out,
         }
     }
 
@@ -744,6 +838,7 @@ pub fn verify_proof(
             proof,
             crate::AirPublicInputs {
                 core: pi,
+                segment_feature_mask: 0,
                 rom_acc,
                 pc_init,
                 ram_gp_unsorted_in,
@@ -826,6 +921,7 @@ pub fn verify_proof_fast(
 
     let air_pi = crate::AirPublicInputs {
         core: pi,
+        segment_feature_mask: 0,
         rom_acc,
         pc_init: utils::fe_from_bytes_fold(&boundaries.pc_init),
         ram_gp_unsorted_in: utils::fe_from_bytes_fold(&boundaries.ram_gp_unsorted_in),
@@ -900,12 +996,58 @@ pub fn prove_step(
     }
 
     let seg = segments[0];
+
+    // Build the full unified trace once and derive both the
+    // per-segment trace (with its own layout) and boundary
+    // state from it.
+    let full_trace = trace::build_trace(program, pub_inputs)?;
+    let boundary_bytes = compute_segment_boundary_bytes(&full_trace, &seg)?;
+
+    let lvl_start = seg.r_start / STEPS_PER_LEVEL_P2;
+    let lvl_end = seg.r_end / STEPS_PER_LEVEL_P2;
+    let seg_features = compute_segment_features_for_levels(program, lvl_start, lvl_end);
+
+    tracing::debug!(
+        target = "proof.step",
+        lvl_start = lvl_start,
+        lvl_end = lvl_end,
+        features = ?seg_features,
+    );
+
+    let base_mask = pub_inputs.feature_mask;
+    let seg_mask = compute_segment_feature_mask(pub_inputs, &seg_features);
+    let use_seg_mask = seg_mask != 0 && seg_mask != base_mask;
+    let eff_mask = if use_seg_mask { seg_mask } else { base_mask };
+    let features_map = zk_lisp_proof::pi::FeaturesMap::from_mask(eff_mask);
+    let rom_enabled = pub_inputs.program_commitment.iter().any(|b| *b != 0);
+
+    let layout_cfg = if use_seg_mask {
+        LayoutConfig {
+            vm: true,
+            ram: features_map.ram,
+            sponge: features_map.sponge,
+            merkle: features_map.merkle,
+            rom: rom_enabled,
+        }
+    } else {
+        LayoutConfig {
+            vm: true,
+            ram: true,
+            sponge: true,
+            merkle: true,
+            rom: rom_enabled,
+        }
+    };
+
+    let full_cols = Columns::baseline();
+    let seg_layout = trace::SegmentLayout::from_full_columns(&full_cols, &layout_cfg);
+
     let (trace, state_in_hash, state_out_hash) =
-        trace::build_segment_trace_with_state(program, pub_inputs, &seg, None)?;
-    // Use local [0, trace_len) indices for boundary bytes to match the sliced trace.
+        trace::build_segment_trace_with_state_without_full(&full_trace, &seg, &seg_layout, None)?;
+
     let trace_len = trace.length();
-    let seg_local = zk_lisp_proof::segment::Segment::new(0, trace_len)?;
-    let boundary_bytes = compute_segment_boundary_bytes(&trace, &seg_local)?;
+    let segment_feature_mask_for_air = if use_seg_mask { eff_mask } else { 0 };
+    let boundaries_fe = SegmentBoundariesFe::from(&boundary_bytes);
 
     let (num_partitions, hash_rate) = trace::select_partitions_for_trace(trace.width(), trace_len);
     let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
@@ -917,23 +1059,29 @@ pub fn prove_step(
         [BE::ZERO; 3]
     };
 
-    // Compute AIR public-input length for metadata
+    // Compute AIR public-input length for metadata using the
+    // same boundary state that will be supplied to the AIR.
     let air_pi = crate::AirPublicInputs {
         core: pub_inputs.clone(),
+        segment_feature_mask: segment_feature_mask_for_air,
         rom_acc,
-        pc_init: BE::ZERO,
-        ram_gp_unsorted_in: BE::ZERO,
-        ram_gp_unsorted_out: BE::ZERO,
-        ram_gp_sorted_in: BE::ZERO,
-        ram_gp_sorted_out: BE::ZERO,
-        rom_s_in: [BE::ZERO; 3],
-        rom_s_out: [BE::ZERO; 3],
+        pc_init: boundaries_fe.pc_init,
+        ram_gp_unsorted_in: boundaries_fe.ram_gp_unsorted_in,
+        ram_gp_unsorted_out: boundaries_fe.ram_gp_unsorted_out,
+        ram_gp_sorted_in: boundaries_fe.ram_gp_sorted_in,
+        ram_gp_sorted_out: boundaries_fe.ram_gp_sorted_out,
+        rom_s_in: boundaries_fe.rom_s_in,
+        rom_s_out: boundaries_fe.rom_s_out,
     };
     let pi_len = air_pi.to_elements().len() as u32;
     let meta = StepMeta::from_env(trace_len, &wf_opts, min_bits, pi_len);
     let suite_id = pub_inputs.program_commitment;
 
-    let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc);
+    let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc).with_segment_layout(
+        segment_feature_mask_for_air,
+        seg_layout.cols.clone(),
+        boundaries_fe,
+    );
     let proof = prover.prove(trace)?;
 
     let zl1_proof = crate::proof::format::Proof::new_single_segment(
@@ -1001,8 +1149,8 @@ pub fn prove_program_steps(
         )));
     }
 
-    // Build the full trace once
-    // and reuse slices per segment.
+    // Build the full trace once and reuse both boundary
+    // state and segment-local traces per segment.
     let full_trace = trace::build_trace(program, pub_inputs)?;
 
     let mut steps = Vec::with_capacity(segments.len());
@@ -1010,18 +1158,58 @@ pub fn prove_program_steps(
     let mut prev_state: Option<trace::PrevState> = None;
 
     for (i, seg) in segments.into_iter().enumerate() {
+        let lvl_start = seg.r_start / STEPS_PER_LEVEL_P2;
+        let lvl_end = seg.r_end / STEPS_PER_LEVEL_P2;
+        let seg_features = compute_segment_features_for_levels(program, lvl_start, lvl_end);
+
+        tracing::debug!(
+            target = "proof.steps",
+            segment_index = i,
+            lvl_start = lvl_start,
+            lvl_end = lvl_end,
+            features = ?seg_features,
+        );
+
+        let base_mask = pub_inputs.feature_mask;
+        let seg_mask = compute_segment_feature_mask(pub_inputs, &seg_features);
+        let use_seg_mask = seg_mask != 0 && seg_mask != base_mask;
+        let eff_mask = if use_seg_mask { seg_mask } else { base_mask };
+        let features_map = zk_lisp_proof::pi::FeaturesMap::from_mask(eff_mask);
+        let rom_enabled = pub_inputs.program_commitment.iter().any(|b| *b != 0);
+
+        let layout_cfg = if use_seg_mask {
+            LayoutConfig {
+                vm: true,
+                ram: features_map.ram,
+                sponge: features_map.sponge,
+                merkle: features_map.merkle,
+                rom: rom_enabled,
+            }
+        } else {
+            LayoutConfig {
+                vm: true,
+                ram: true,
+                sponge: true,
+                merkle: true,
+                rom: rom_enabled,
+            }
+        };
+
+        let full_cols = Columns::baseline();
+        let seg_layout = trace::SegmentLayout::from_full_columns(&full_cols, &layout_cfg);
+
         let (trace, state_in_hash, state_out_hash) =
             trace::build_segment_trace_with_state_without_full(
                 &full_trace,
                 &seg,
+                &seg_layout,
                 prev_state.as_ref(),
             )?;
         let trace_len = trace.length();
 
-        // Boundary bytes are derived from the segment-local trace; use a
-        // local segment [0, trace_len) rather than the global indices
-        let seg_local = zk_lisp_proof::segment::Segment::new(0, trace_len)?;
-        let boundary_bytes = compute_segment_boundary_bytes(&trace, &seg_local)?;
+        let boundary_bytes = compute_segment_boundary_bytes(&full_trace, &seg)?;
+        let boundaries_fe = SegmentBoundariesFe::from(&boundary_bytes);
+        let segment_feature_mask_for_air = if use_seg_mask { eff_mask } else { 0 };
 
         let (num_partitions, hash_rate) =
             trace::select_partitions_for_trace(trace.width(), trace_len);
@@ -1035,20 +1223,25 @@ pub fn prove_program_steps(
 
         let air_pi = crate::AirPublicInputs {
             core: pub_inputs.clone(),
+            segment_feature_mask: segment_feature_mask_for_air,
             rom_acc,
-            pc_init: BE::ZERO,
-            ram_gp_unsorted_in: BE::ZERO,
-            ram_gp_unsorted_out: BE::ZERO,
-            ram_gp_sorted_in: BE::ZERO,
-            ram_gp_sorted_out: BE::ZERO,
-            rom_s_in: [BE::ZERO; 3],
-            rom_s_out: [BE::ZERO; 3],
+            pc_init: boundaries_fe.pc_init,
+            ram_gp_unsorted_in: boundaries_fe.ram_gp_unsorted_in,
+            ram_gp_unsorted_out: boundaries_fe.ram_gp_unsorted_out,
+            ram_gp_sorted_in: boundaries_fe.ram_gp_sorted_in,
+            ram_gp_sorted_out: boundaries_fe.ram_gp_sorted_out,
+            rom_s_in: boundaries_fe.rom_s_in,
+            rom_s_out: boundaries_fe.rom_s_out,
         };
         let pi_len = air_pi.to_elements().len() as u32;
         let meta = StepMeta::from_env(trace_len, &wf_opts, min_bits, pi_len);
         let suite_id = pub_inputs.program_commitment;
 
-        let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc);
+        let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc).with_segment_layout(
+            segment_feature_mask_for_air,
+            seg_layout.cols.clone(),
+            boundaries_fe,
+        );
         let proof = prover.prove(trace)?;
 
         let zl1_proof = crate::proof::format::Proof::new_multi_segment(
@@ -1195,4 +1388,57 @@ fn compute_segment_boundary_bytes(
     );
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::segment_planner::{SegmentFeatures, compute_segment_feature_mask};
+    use zk_lisp_proof::pi::{FM_POSEIDON, FM_RAM, FM_SPONGE, FM_VM, FM_VM_EXPECT};
+
+    fn derive_seg_mask_for_air(base_mask: u64, seg_features: &SegmentFeatures) -> (u64, u64) {
+        let mut pi = PublicInputs::default();
+        pi.feature_mask = base_mask;
+
+        let seg_mask = compute_segment_feature_mask(&pi, seg_features);
+        let use_seg_mask = seg_mask != 0 && seg_mask != base_mask;
+        let eff_mask = if use_seg_mask { seg_mask } else { base_mask };
+        let seg_air = if use_seg_mask { eff_mask } else { 0 };
+
+        (seg_mask, seg_air)
+    }
+
+    #[test]
+    fn seg_air_mask_zero_when_equal_to_global() {
+        let base = FM_VM | FM_VM_EXPECT | FM_RAM;
+        let seg = SegmentFeatures {
+            vm: true,
+            ram: true,
+            sponge: false,
+            merkle: false,
+        };
+
+        let (seg_mask, seg_air) = derive_seg_mask_for_air(base, &seg);
+        assert_eq!(seg_mask, base);
+        assert_eq!(seg_air, 0);
+    }
+
+    #[test]
+    fn seg_air_mask_nonzero_when_optional_feature_dropped() {
+        let base = FM_VM | FM_VM_EXPECT | FM_RAM | FM_SPONGE | FM_POSEIDON;
+        let seg = SegmentFeatures {
+            vm: true,
+            ram: false,
+            sponge: false,
+            merkle: false,
+        };
+        let (seg_mask, seg_air) = derive_seg_mask_for_air(base, &seg);
+
+        assert_ne!(seg_mask, 0);
+        assert_ne!(seg_mask, base);
+        assert_eq!(seg_air, seg_mask);
+        assert_eq!(seg_air & !base, 0);
+        assert_eq!(seg_air & (FM_RAM | FM_SPONGE | FM_POSEIDON), 0);
+        assert_ne!(seg_air & (FM_VM | FM_VM_EXPECT), 0);
+    }
 }

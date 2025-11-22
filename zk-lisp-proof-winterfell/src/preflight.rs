@@ -96,6 +96,7 @@ pub fn run(
 
     let air_pi = AirPublicInputs {
         core: pub_inputs.clone(),
+        segment_feature_mask: 0,
         rom_acc,
         pc_init: BE::ZERO,
         ram_gp_unsorted_in: BE::ZERO,

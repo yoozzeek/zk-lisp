@@ -45,6 +45,19 @@ pub struct FeaturesMap {
     pub ram: bool,
 }
 
+impl FeaturesMap {
+    pub fn from_mask(m: u64) -> Self {
+        FeaturesMap {
+            poseidon: (m & FM_POSEIDON) != 0,
+            vm: (m & FM_VM) != 0,
+            vm_expect: (m & FM_VM_EXPECT) != 0,
+            sponge: (m & FM_SPONGE) != 0,
+            merkle: (m & FM_MERKLE) != 0,
+            ram: (m & FM_RAM) != 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct PublicInputs {
     /// Deterministic identifier
@@ -72,6 +85,66 @@ pub struct PublicInputs {
 
     pub feature_mask: u64,
     pub compiler_stats: CompilerMetrics,
+}
+
+impl PublicInputs {
+    pub fn get_features(&self) -> FeaturesMap {
+        FeaturesMap::from_mask(self.feature_mask)
+    }
+
+    pub fn validate_flags(&self) -> Result<()> {
+        if self.program_id.iter().all(|b| *b == 0) {
+            return Err(Error::InvalidInput(
+                "program_id (Blake3 over canonical bytecode) must be non-zero",
+            ));
+        }
+        if self.program_commitment.iter().all(|b| *b == 0) {
+            return Err(Error::InvalidInput(
+                "program_commitment (Blake3) must be non-zero",
+            ));
+        }
+        if (self.feature_mask & FM_VM_EXPECT) != 0 && (self.feature_mask & FM_VM) == 0 {
+            return Err(Error::InvalidInput("FM_VM_EXPECT requires FM_VM"));
+        }
+
+        Ok(())
+    }
+
+    pub fn digest(&self) -> [u8; 32] {
+        let mut h = Hasher::new();
+        h.update(b"zkl/pi/v1");
+        h.update(&self.program_id);
+        h.update(&self.program_commitment);
+        h.update(&self.merkle_root);
+        h.update(&self.feature_mask.to_le_bytes());
+
+        // Stable encoding of main_args:
+        // tag + little-endian bytes.
+        h.update(&(self.main_args.len() as u32).to_le_bytes());
+
+        for arg in &self.main_args {
+            match arg {
+                VmArg::U64(v) => {
+                    h.update(&[0u8]);
+                    h.update(&v.to_le_bytes());
+                }
+                VmArg::U128(v) => {
+                    h.update(&[1u8]);
+                    h.update(&v.to_le_bytes());
+                }
+                VmArg::Bytes32(bytes) => {
+                    h.update(&[2u8]);
+                    h.update(bytes);
+                }
+            }
+        }
+
+        let digest = h.finalize();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(digest.as_bytes());
+
+        out
+    }
 }
 
 pub struct PublicInputsBuilder {
@@ -203,73 +276,5 @@ impl PublicInputsBuilder {
         self.pi.validate_flags()?;
 
         Ok(self.pi)
-    }
-}
-
-impl PublicInputs {
-    pub fn get_features(&self) -> FeaturesMap {
-        let m = self.feature_mask;
-        FeaturesMap {
-            poseidon: (m & FM_POSEIDON) != 0,
-            vm: (m & FM_VM) != 0,
-            vm_expect: (m & FM_VM_EXPECT) != 0,
-            sponge: (m & FM_SPONGE) != 0,
-            merkle: (m & FM_MERKLE) != 0,
-            ram: (m & FM_RAM) != 0,
-        }
-    }
-
-    pub fn validate_flags(&self) -> Result<()> {
-        if self.program_id.iter().all(|b| *b == 0) {
-            return Err(Error::InvalidInput(
-                "program_id (Blake3 over canonical bytecode) must be non-zero",
-            ));
-        }
-        if self.program_commitment.iter().all(|b| *b == 0) {
-            return Err(Error::InvalidInput(
-                "program_commitment (Blake3) must be non-zero",
-            ));
-        }
-        if (self.feature_mask & FM_VM_EXPECT) != 0 && (self.feature_mask & FM_VM) == 0 {
-            return Err(Error::InvalidInput("FM_VM_EXPECT requires FM_VM"));
-        }
-
-        Ok(())
-    }
-
-    pub fn digest(&self) -> [u8; 32] {
-        let mut h = Hasher::new();
-        h.update(b"zkl/pi/v1");
-        h.update(&self.program_id);
-        h.update(&self.program_commitment);
-        h.update(&self.merkle_root);
-        h.update(&self.feature_mask.to_le_bytes());
-
-        // Stable encoding of main_args:
-        // tag + little-endian bytes.
-        h.update(&(self.main_args.len() as u32).to_le_bytes());
-
-        for arg in &self.main_args {
-            match arg {
-                VmArg::U64(v) => {
-                    h.update(&[0u8]);
-                    h.update(&v.to_le_bytes());
-                }
-                VmArg::U128(v) => {
-                    h.update(&[1u8]);
-                    h.update(&v.to_le_bytes());
-                }
-                VmArg::Bytes32(bytes) => {
-                    h.update(&[2u8]);
-                    h.update(bytes);
-                }
-            }
-        }
-
-        let digest = h.finalize();
-        let mut out = [0u8; 32];
-        out.copy_from_slice(digest.as_bytes());
-
-        out
     }
 }

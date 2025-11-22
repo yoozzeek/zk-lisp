@@ -275,8 +275,10 @@ pub fn rom_linear_encode_from_trace(
 }
 
 #[inline]
-pub fn vm_output_from_trace(trace: &TraceTable<BE>) -> (u8, u32) {
-    let cols = layout::Columns::baseline();
+pub fn vm_output_from_trace_with_layout(
+    trace: &TraceTable<BE>,
+    cols: &layout::Columns,
+) -> (u8, u32) {
     let steps = layout::STEPS_PER_LEVEL_P2;
     let lvls = trace.length() / steps;
 
@@ -299,10 +301,19 @@ pub fn vm_output_from_trace(trace: &TraceTable<BE>) -> (u8, u32) {
     (0u8, (row_fin0 + 1) as u32)
 }
 
+#[inline]
+pub fn vm_output_from_trace(trace: &TraceTable<BE>) -> (u8, u32) {
+    let cols = layout::Columns::baseline();
+    vm_output_from_trace_with_layout(trace, &cols)
+}
+
 /// Compute a 32-byte hash of the VM state at the given
 /// trace row. The state snapshot currently includes only
-pub fn vm_state_hash_row(trace: &TraceTable<BE>, row: usize) -> [u8; 32] {
-    let cols = layout::Columns::baseline();
+pub fn vm_state_hash_row_with_layout(
+    trace: &TraceTable<BE>,
+    cols: &layout::Columns,
+    row: usize,
+) -> [u8; 32] {
     let n = trace.length();
     if n == 0 {
         return [0u8; 32];
@@ -325,6 +336,11 @@ pub fn vm_state_hash_row(trace: &TraceTable<BE>, row: usize) -> [u8; 32] {
     out.copy_from_slice(digest.as_bytes());
 
     out
+}
+
+pub fn vm_state_hash_row(trace: &TraceTable<BE>, row: usize) -> [u8; 32] {
+    let cols = layout::Columns::baseline();
+    vm_state_hash_row_with_layout(trace, &cols, row)
 }
 
 pub fn be_from_le8(bytes32: &[u8; 32]) -> BE {

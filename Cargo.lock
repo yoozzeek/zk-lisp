@@ -1316,7 +1316,7 @@ checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
 
 [[package]]
 name = "zk-lisp-cli"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "assert_cmd",
  "base64",
@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "zk-lisp-compiler"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "blake3",
  "hex",
@@ -1347,7 +1347,7 @@ dependencies = [
 
 [[package]]
 name = "zk-lisp-proof"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "blake3",
  "thiserror",
@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "zk-lisp-proof-winterfell"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "arrayvec",
  "blake3",
@@ -1375,4 +1375,4 @@ dependencies = [
 
 [[package]]
 name = "zk-lisp-utils"
-version = "0.14.0"
+version = "0.15.0"

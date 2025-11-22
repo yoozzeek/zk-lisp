@@ -28,6 +28,27 @@ pub const NR: usize = 8;
 /// lane register selection (NR=8 -> 3 bits)
 pub const SPONGE_IDX_BITS: usize = 3;
 
+/// Layout configuration for unified VM trace.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LayoutConfig {
+    /// Core VM (registers, opcodes, selectors,
+    /// PC/PI, schedule gates) is always enabled.
+    pub vm: bool,
+
+    /// RAM sorted/unsorted tables and gadgets.
+    pub ram: bool,
+
+    /// Sponge selectors and Poseidon t=12 lanes
+    /// used by SAbsorbN/SSqueeze.
+    pub sponge: bool,
+
+    /// Merkle gadget columns (dir/sib/acc/etc.).
+    pub merkle: bool,
+
+    /// ROM t=3 accumulator columns (rom_op/rom_s).
+    pub rom: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Columns {
     // Poseidon lanes (t=12: r=10, c=2)
@@ -126,21 +147,44 @@ pub struct Columns {
 }
 
 impl Columns {
+    /// Baseline layout with all feature blocks enabled.
     pub fn baseline() -> Self {
+        let cfg = LayoutConfig {
+            vm: true,
+            ram: true,
+            sponge: true,
+            merkle: true,
+            rom: true,
+        };
+
+        Self::for_config(&cfg)
+    }
+
+    /// Build a concrete layout for a given feature configuration.
+    pub fn for_config(cfg: &LayoutConfig) -> Self {
         let lanes_start = 0;
         let lane_l = lanes_start;
         let lane_r = lanes_start + 1;
         let lane_c0 = lanes_start + 10;
         let lane_c1 = lanes_start + 11;
 
-        // 12 lanes occupy [0..12)
-        let g_map = lanes_start + 12;
+        let mut cur = lanes_start + 12; // after 12 lanes
+
+        // Schedule gates are always present
+        let g_map = cur;
         let g_final = g_map + 1;
         let g_r_start = g_final + 1;
-        let mask = g_r_start + POSEIDON_ROUNDS;
+        cur = g_r_start + POSEIDON_ROUNDS;
 
-        let r_start = mask + 1; // [r0..r7]
-        let op_const = r_start + NR; // op bits begin
+        let mask = cur;
+        cur += 1;
+
+        // VM register file r0..r7
+        let r_start = cur;
+        cur += NR; // [r0..r7]
+
+        // Op decode (one-hot for ALU ops)
+        let op_const = cur;
         let op_mov = op_const + 1;
         let op_add = op_mov + 1;
         let op_sub = op_add + 1;
@@ -158,23 +202,31 @@ impl Columns {
         let op_load = op_mulwide + 1;
         let op_store = op_load + 1;
 
-        let sel_dst0_start = op_store + 1; // 8 cols
+        cur = op_store + 1;
+
+        // Operand selectors
+        let sel_dst0_start = cur; // 8 cols
         let sel_a_start = sel_dst0_start + NR; // 8 cols
         let sel_b_start = sel_a_start + NR; // 8 cols
         let sel_c_start = sel_b_start + NR; // 8 cols
         let sel_dst1_start = sel_c_start + NR; // 8 cols
 
+        cur = sel_dst1_start + NR;
+
         // Sponge lane selectors
-        // bits: 10 * SPONGE_IDX_BITS;
-        let sel_s_bits_start = sel_dst1_start + NR;
+        let sel_s_bits_start = cur;
         let sel_s_active_start = sel_s_bits_start + (10 * SPONGE_IDX_BITS);
 
+        cur = sel_s_active_start + 10;
+
         // Immediate and aux
-        let imm = sel_s_active_start + 10; // after active flags
+        let imm = cur;
         let eq_inv = imm + 1; // 1 col
 
+        cur = eq_inv + 1;
+
         // RAM columns
-        let ram_sorted = eq_inv + 1;
+        let ram_sorted = cur;
         let ram_s_addr = ram_sorted + 1;
         let ram_s_clk = ram_s_addr + 1;
         let ram_s_val = ram_s_clk + 1;
@@ -182,36 +234,64 @@ impl Columns {
         let ram_s_last_write = ram_s_is_write + 1;
         let ram_gp_unsorted = ram_s_last_write + 1;
         let ram_gp_sorted = ram_gp_unsorted + 1;
+        let after_ram = ram_gp_sorted + 1;
+
+        if cfg.ram {
+            cur = after_ram;
+        }
 
         // Merkle block columns
-        let merkle_g = ram_gp_sorted + 1;
+        let merkle_g = cur;
         let merkle_dir = merkle_g + 1;
         let merkle_sib = merkle_dir + 1;
         let merkle_acc = merkle_sib + 1;
         let merkle_first = merkle_acc + 1;
         let merkle_last = merkle_first + 1;
         let merkle_leaf = merkle_last + 1;
+        let after_merkle = merkle_leaf + 1;
+
+        if cfg.merkle {
+            cur = after_merkle;
+        }
 
         // PI columns
-        let pi_prog = merkle_leaf + 1;
+        let pi_prog = cur;
+        cur += 1;
 
         // PC column
-        let pc = pi_prog + 1;
+        let pc = cur;
+        cur += 1;
 
-        // ROM op mirror (17 columns)
-        let rom_op_start = pc + 1;
+        // ROM op mirror (17 columns), only when rom is enabled.
+        let rom_op_start = cur;
+        let after_rom_op = rom_op_start + 17;
 
-        // Append pose_active followed
-        // by gadget witness columns
-        let pose_active = rom_op_start + 17;
+        if cfg.rom {
+            cur = after_rom_op;
+        }
+
+        // Append pose_active followed by gadget witness columns.
+        let pose_active = cur;
+        cur += 1;
 
         // Gadget: 32 reusable bit witnesses
-        let gadget_b_start = pose_active + 1;
+        let gadget_b_start = cur;
+        cur = gadget_b_start + 32;
 
         // ROM accumulator t=3 lanes after gadget bits
-        let rom_s_start = gadget_b_start + 32;
+        let rom_s_start = cur;
+        let after_rom_s = rom_s_start + 3;
 
-        let width = rom_s_start + 3;
+        if cfg.rom {
+            cur = after_rom_s;
+        }
+
+        // Compute effective width by trimming unused
+        // tail segments based on the feature config.
+        let mut width = cur;
+        if !cfg.rom {
+            width = pc + 1;
+        }
 
         Self {
             lane_l,
@@ -361,4 +441,71 @@ impl Columns {
 #[inline]
 pub fn fe_u32(v: u32) -> BE {
     BE::from(v as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_width_shrinks_when_disabling_blocks() {
+        let cfg_all = LayoutConfig {
+            vm: true,
+            ram: true,
+            sponge: true,
+            merkle: true,
+            rom: true,
+        };
+        let cols_all = Columns::for_config(&cfg_all);
+        let w_all = cols_all.width(0);
+
+        let cfg_no_rom = LayoutConfig {
+            vm: true,
+            ram: true,
+            sponge: true,
+            merkle: true,
+            rom: false,
+        };
+        let w_no_rom = Columns::for_config(&cfg_no_rom).width(0);
+
+        let cfg_vm_only = LayoutConfig {
+            vm: true,
+            ram: false,
+            sponge: false,
+            merkle: false,
+            rom: false,
+        };
+        let w_vm_only = Columns::for_config(&cfg_vm_only).width(0);
+
+        assert!(w_no_rom < w_all);
+        assert!(w_vm_only <= w_no_rom);
+    }
+
+    #[test]
+    fn core_indices_are_stable_across_layout_configs() {
+        let cfg_all = LayoutConfig {
+            vm: true,
+            ram: true,
+            sponge: true,
+            merkle: true,
+            rom: true,
+        };
+        let cfg_vm_only = LayoutConfig {
+            vm: true,
+            ram: false,
+            sponge: false,
+            merkle: false,
+            rom: false,
+        };
+
+        let cols_all = Columns::for_config(&cfg_all);
+        let cols_vm = Columns::for_config(&cfg_vm_only);
+
+        for i in 0..NR {
+            assert_eq!(cols_all.r_index(i), cols_vm.r_index(i));
+        }
+
+        assert_eq!(cols_all.op_const, cols_vm.op_const);
+        assert_eq!(cols_all.op_store, cols_vm.op_store);
+    }
 }
