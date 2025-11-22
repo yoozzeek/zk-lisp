@@ -565,9 +565,6 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
                 Op::SSqueeze { dst } => {
                     // Execute one permutation
                     // absorbing all pending regs (<=10).
-                    // This level is Poseidon-active and
-                    // must expose VM->lane wiring for
-                    // PoseidonAir binding constraints.
                     trace.set(ctx.cols.op_sponge, row_map, BE::ONE);
                     trace.set(ctx.cols.op_sponge, row_final, BE::ONE);
                     set_sel(trace, row_final, ctx.cols.sel_dst0_start, dst);
@@ -579,9 +576,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
                     let mut inputs: ArrayVec<BE, 10> = ArrayVec::new();
                     let lanes = pending_regs.clone();
 
-                    // Enforce the same strict rate bound as
-                    // SAbsorbN: total pending inputs <= 10.
-                    // (ArrayVec capacity already enforces this.)
+                    // Total pending inputs <= 10
                     for (i, &r) in lanes.iter().enumerate() {
                         let idx = r as usize; // 0..NR-1
                         inputs.push(regs[idx]);
@@ -606,7 +601,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
                         trace.set(ctx.cols.sel_s_active_index(i), row_final, one);
                     }
 
-                    // Clear unused lanes for this level.
+                    // Clear unused lanes for this level
                     for lane in lanes.len()..10 {
                         trace.set(ctx.cols.sel_s_active_index(lane), row_map, BE::ZERO);
                         trace.set(ctx.cols.sel_s_active_index(lane), row_final, BE::ZERO);

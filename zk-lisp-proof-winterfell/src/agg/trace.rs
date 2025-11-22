@@ -621,7 +621,8 @@ fn build_agg_trace_core(
                 if is_first { BE::ONE } else { BE::ZERO },
             );
 
-            // v_units_child: only on the first row of the segment.
+            // v_units_child:
+            // only on the first row of the segment
             if is_first {
                 trace.set(cols.v_units_child, cur_row, v_child_fe);
                 trace.set(cols.v_units_acc, cur_row, v_acc);
@@ -675,9 +676,9 @@ fn build_agg_trace_core(
                 trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
             }
 
-            // ok and composition-related columns were pre-filled with
-            // zeros for all rows; we only override them on seg_first
-            // rows or when wiring explicit aggregates.
+            // ok and composition-related columns were pre-filled
+            // with zeros for all rows; only override them on
+            // seg_first rows or when wiring explicit aggregates.
         }
 
         row += m;

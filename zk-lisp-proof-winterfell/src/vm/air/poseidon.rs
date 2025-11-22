@@ -58,12 +58,7 @@ impl AirModule for PoseidonAir {
             //   - lane 0:   base degree 4
             //   - lanes 1–2: base degree 5
             //   - lanes 3–9: base degree 3
-            //
-            // We model this explicitly so that the expected
-            // transition degrees used by Winterfell match the
-            // actual degrees observed for the composed AIR.
             let lane_bases: [usize; 10] = [4, 5, 5, 3, 3, 3, 3, 3, 3, 3];
-
             for &base in lane_bases.iter() {
                 out.push(TransitionConstraintDegree::with_cycles(
                     base,

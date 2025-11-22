@@ -27,15 +27,17 @@ pub(crate) struct MerkleAir;
 impl AirModule for MerkleAir {
     fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
         // dir boolean at map
-        out.push(TransitionConstraintDegree::new(1));
-        // lane selections at map:
-        // use two trace columns (g and lane/acc/sib)
         out.push(TransitionConstraintDegree::with_cycles(
-            2,
+            3,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+        // lane selections at map
+        out.push(TransitionConstraintDegree::with_cycles(
+            3,
             vec![STEPS_PER_LEVEL_P2],
         ));
         out.push(TransitionConstraintDegree::with_cycles(
-            2,
+            3,
             vec![STEPS_PER_LEVEL_P2],
         ));
         // carry acc across non-final rows

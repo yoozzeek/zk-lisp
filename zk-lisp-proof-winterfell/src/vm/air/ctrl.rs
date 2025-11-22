@@ -53,23 +53,17 @@ impl AirModule for VmCtrlAir {
         }
 
         if ctx.features.sponge {
-            // Sponge lane selectors booleanity for packed index bits and per-lane
-            // active flags. We align declared degrees with the actual degrees
-            // observed by Winterfell's debug validator on a 1024-row VM trace.
-            //
-            // Within the vm_ctrl sponge block, local_block_idx is computed as:
-            //   local_block_idx = lane * (SPONGE_IDX_BITS + 1) + slot,
-            // where slot 0..SPONGE_IDX_BITS-1 are packed index bits, and slot
-            // SPONGE_IDX_BITS is the active flag.
+            // Sponge lane selectors booleanity for packed
+            // index bits and per-lane active flags.
             //
             // The debug trace shows eval-degree offset 3038 (base=3) only for
             // local_block_idx in {3, 4, 7, 9, 11}; all other sponge constraints
-            // have offset 2015 (base=2). We hard-code this split here so that
+            // have offset 2015 (base=2). Hard-code this split here so that
             // expected and actual degrees coincide.
+            const SPONGE_BASE3_LOCAL: [usize; 5] = [3, 4, 7, 9, 11];
+
             let deg2 = TransitionConstraintDegree::with_cycles(2, vec![STEPS_PER_LEVEL_P2]);
             let deg3 = TransitionConstraintDegree::with_cycles(3, vec![STEPS_PER_LEVEL_P2]);
-
-            const SPONGE_BASE3_LOCAL: [usize; 5] = [3, 4, 7, 9, 11];
 
             for lane in 0..10 {
                 for b in 0..SPONGE_IDX_BITS {
