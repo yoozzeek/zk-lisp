@@ -138,7 +138,7 @@ impl ZkProver {
             grind = %self.options.grinding_factor(),
             width = %trace.width(),
             length = %trace.length(),
-            "prove start",
+            "creating proof...",
         );
 
         // Preflight timing
@@ -146,7 +146,7 @@ impl ZkProver {
             let t_pf = std::time::Instant::now();
             run_preflight(self.preflight, &self.options, &self.pub_inputs, &trace)?;
 
-            tracing::info!(
+            tracing::debug!(
                 target = "proof.prove",
                 elapsed_ms = %t_pf.elapsed().as_millis(),
                 "preflight done",
@@ -548,7 +548,7 @@ pub fn prove_agg_air(
         length = %trace.length(),
         num_partitions = num_partitions,
         hash_rate = hash_rate,
-        "agg prove start",
+        "creating agg proof...",
     );
 
     let t0 = std::time::Instant::now();

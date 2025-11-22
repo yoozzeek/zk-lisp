@@ -564,18 +564,56 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
                 }
                 Op::SSqueeze { dst } => {
                     // Execute one permutation
-                    // absorbing all pending regs (<=10)
+                    // absorbing all pending regs (<=10).
                     trace.set(ctx.cols.op_sponge, row_map, BE::ONE);
                     trace.set(ctx.cols.op_sponge, row_final, BE::ONE);
                     set_sel(trace, row_final, ctx.cols.sel_dst0_start, dst);
 
+                    // Reconstruct lane selectors for this
+                    // squeeze from the pending register
+                    // indices accumulated by prior SAbsorbN
+                    // ops. Lane i selects pending_regs[i].
                     let mut inputs: ArrayVec<BE, 10> = ArrayVec::new();
-                    for &r in &pending_regs {
-                        inputs.push(regs[r as usize]);
+                    let lanes = pending_regs.clone();
+
+                    // Total pending inputs <= 10
+                    for (i, &r) in lanes.iter().enumerate() {
+                        let idx = r as usize; // 0..NR-1
+                        inputs.push(regs[idx]);
+
+                        // Packed bits for register index
+                        let b0 = BE::from((idx & 1) as u64);
+                        let b1 = BE::from(((idx >> 1) & 1) as u64);
+                        let b2 = BE::from(((idx >> 2) & 1) as u64);
+                        let one = BE::ONE;
+
+                        // Set selectors at map row
+                        trace.set(ctx.cols.sel_s_b_index(i, 0), row_map, b0);
+                        trace.set(ctx.cols.sel_s_b_index(i, 1), row_map, b1);
+                        trace.set(ctx.cols.sel_s_b_index(i, 2), row_map, b2);
+                        trace.set(ctx.cols.sel_s_active_index(i), row_map, one);
+
+                        // And mirror them at final row to
+                        // keep ctrl/ALU constraints aligned.
+                        trace.set(ctx.cols.sel_s_b_index(i, 0), row_final, b0);
+                        trace.set(ctx.cols.sel_s_b_index(i, 1), row_final, b1);
+                        trace.set(ctx.cols.sel_s_b_index(i, 2), row_final, b2);
+                        trace.set(ctx.cols.sel_s_active_index(i), row_final, one);
                     }
 
-                    // If empty (no prior absorbs),
-                    // treat as zeros to keep semantics.
+                    // Clear unused lanes for this level
+                    for lane in lanes.len()..10 {
+                        trace.set(ctx.cols.sel_s_active_index(lane), row_map, BE::ZERO);
+                        trace.set(ctx.cols.sel_s_active_index(lane), row_final, BE::ZERO);
+
+                        for b in 0..crate::layout::SPONGE_IDX_BITS {
+                            trace.set(ctx.cols.sel_s_b_index(lane, b), row_map, BE::ZERO);
+                            trace.set(ctx.cols.sel_s_b_index(lane, b), row_final, BE::ZERO);
+                        }
+                    }
+
+                    // If empty (no prior absorbs), treat
+                    // as zeros to keep semantics.
                     pose_active = BE::ONE;
                     apply_level_absorb(trace, commitment, lvl, &inputs);
 

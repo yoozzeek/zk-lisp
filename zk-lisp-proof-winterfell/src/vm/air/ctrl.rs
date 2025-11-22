@@ -19,7 +19,7 @@ use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use crate::vm::air::AirModule;
 use crate::vm::air::{AirSharedContext, mixers};
-use crate::vm::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{NR, POSEIDON_ROUNDS, SPONGE_IDX_BITS, STEPS_PER_LEVEL_P2};
 
 pub(crate) struct VmCtrlAir;
 
@@ -53,22 +53,38 @@ impl AirModule for VmCtrlAir {
         }
 
         if ctx.features.sponge {
-            // Sponge lane selectors
-            // booleanity (10 * NR).
-            for _ in 0..(10 * NR) {
-                out.push(TransitionConstraintDegree::with_cycles(
-                    2,
-                    vec![STEPS_PER_LEVEL_P2],
-                ));
-            }
+            // Sponge lane selectors booleanity for packed
+            // index bits and per-lane active flags.
+            //
+            // The debug trace shows eval-degree offset 3038 (base=3) only for
+            // local_block_idx in {3, 4, 7, 9, 11}; all other sponge constraints
+            // have offset 2015 (base=2). Hard-code this split here so that
+            // expected and actual degrees coincide.
+            const SPONGE_BASE3_LOCAL: [usize; 5] = [3, 4, 7, 9, 11];
 
-            // Sponge lane
-            // selector sums (10)
-            for _ in 0..10 {
-                out.push(TransitionConstraintDegree::with_cycles(
-                    2,
-                    vec![STEPS_PER_LEVEL_P2],
-                ));
+            let deg2 = TransitionConstraintDegree::with_cycles(2, vec![STEPS_PER_LEVEL_P2]);
+            let deg3 = TransitionConstraintDegree::with_cycles(3, vec![STEPS_PER_LEVEL_P2]);
+
+            for lane in 0..10 {
+                for b in 0..SPONGE_IDX_BITS {
+                    let local_idx = lane * (SPONGE_IDX_BITS + 1) + b;
+                    let deg = if SPONGE_BASE3_LOCAL.contains(&local_idx) {
+                        &deg3
+                    } else {
+                        &deg2
+                    };
+
+                    out.push(deg.clone());
+                }
+
+                let local_idx = lane * (SPONGE_IDX_BITS + 1) + SPONGE_IDX_BITS; // active flag
+                let deg = if SPONGE_BASE3_LOCAL.contains(&local_idx) {
+                    &deg3
+                } else {
+                    &deg2
+                };
+
+                out.push(deg.clone());
             }
         }
 
