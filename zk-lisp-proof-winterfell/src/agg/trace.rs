@@ -408,6 +408,14 @@ fn build_agg_trace_core(
 
     let mut trace = TraceTable::new(cols.width(), n_rows);
 
+    for r in 0..n_rows {
+        trace.set(cols.ok, r, BE::ZERO);
+        trace.set(cols.comp_sum, r, BE::ZERO);
+        trace.set(cols.alpha_div_zm_sum, r, BE::ZERO);
+        trace.set(cols.map_l0_sum, r, BE::ZERO);
+        trace.set(cols.final_llast_sum, r, BE::ZERO);
+    }
+
     let mut row = 0usize;
     let mut v_acc = BE::from(0u64);
     let mut child_count_acc = BE::from(0u64);
