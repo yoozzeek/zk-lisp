@@ -45,6 +45,7 @@ Winterfell proves the trace satisfies AIR.
 
 ## Roadmap
 
+* Adaptive layout based on active features
 * Property and fuzz test coverage
 * Complex types such as vectors and structs
 * Examples, templates and better code-docs
