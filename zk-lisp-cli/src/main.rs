@@ -753,8 +753,7 @@ fn cmd_verify(
         || rc_pi.program_commitment != pi_cli.program_commitment
     {
         let err = error::Error::InvalidInput(
-            "agg proof program (program_id/program_commitment) does not match compiled program"
-                .into(),
+            "agg proof program (program_id/program_commitment) does not match compiled program",
         );
 
         return Err(CliError::Verify(prove::Error::PublicInputs(err)));
@@ -763,7 +762,7 @@ fn cmd_verify(
     let pi_digest_cli = pi_cli.digest();
     if rc_pi.pi_digest != pi_digest_cli {
         let err = error::Error::InvalidInput(
-            "agg proof public inputs (main args) do not match CLI --arg".into(),
+            "agg proof public inputs (main args) do not match CLI --arg",
         );
 
         return Err(CliError::Verify(prove::Error::PublicInputs(err)));
