@@ -69,6 +69,7 @@ impl ZkField for WinterfellField {
 #[derive(Clone, Debug)]
 pub struct AirPublicInputs {
     pub core: CorePublicInputs,
+    pub segment_feature_mask: u64,
     pub rom_acc: [BE; 3],
     pub pc_init: BE,
     pub ram_gp_unsorted_in: BE,
@@ -83,6 +84,7 @@ impl Default for AirPublicInputs {
     fn default() -> Self {
         Self {
             core: CorePublicInputs::default(),
+            segment_feature_mask: 0,
             rom_acc: [BE::ZERO; 3],
             pc_init: BE::ZERO,
             ram_gp_unsorted_in: BE::ZERO,
@@ -99,6 +101,9 @@ impl ToElements<BE> for AirPublicInputs {
     fn to_elements(&self) -> Vec<BE> {
         let mut out = Vec::with_capacity(16);
 
+        // Keep the global feature mask as the public
+        // contract; segment_feature_mask is used only
+        // internally by the backend AIR.
         out.push(BE::from(self.core.feature_mask));
         out.push(utils::be_from_le8(&self.core.program_commitment));
         out.push(utils::be_from_le8(&self.core.merkle_root));

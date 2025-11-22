@@ -10,7 +10,10 @@
 //! Winterfell-specific execution segment planner.
 
 use zk_lisp_proof::error;
-use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
+use zk_lisp_proof::pi::{
+    FM_MERKLE, FM_POSEIDON, FM_RAM, FM_SPONGE, FM_VM, FM_VM_EXPECT, FeaturesMap,
+    PublicInputs as CorePublicInputs,
+};
 use zk_lisp_proof::segment::{Segment, SegmentPlanner};
 use zk_lisp_proof::{ProverOptions, ZkBackend};
 
@@ -19,6 +22,69 @@ use crate::vm::layout::STEPS_PER_LEVEL_P2;
 
 /// Maximum number of base-trace rows per execution segment.
 const MAX_SEGMENT_ROWS: usize = 1 << 10;
+
+/// Per-segment feature summary over a contiguous
+/// level range of the compiled program.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SegmentFeatures {
+    /// Any VM activity (ALU, RAM, sponge, Merkle).
+    pub vm: bool,
+    /// Presence of RAM Load/Store ops.
+    pub ram: bool,
+    /// Presence of sponge ops (SAbsorbN/SSqueeze).
+    pub sponge: bool,
+    /// Presence of Merkle ops.
+    pub merkle: bool,
+}
+
+impl SegmentFeatures {
+    pub fn from_ops(ops: &[zk_lisp_compiler::builder::Op]) -> Self {
+        use zk_lisp_compiler::builder::Op::*;
+
+        let mut f = SegmentFeatures::default();
+
+        for op in ops {
+            match *op {
+                // ALU ops imply VM activity.
+                Const { .. }
+                | Mov { .. }
+                | Add { .. }
+                | Sub { .. }
+                | Mul { .. }
+                | Neg { .. }
+                | Eq { .. }
+                | Select { .. }
+                | Assert { .. }
+                | AssertBit { .. }
+                | AssertRange { .. }
+                | AssertRangeLo { .. }
+                | AssertRangeHi { .. }
+                | DivMod { .. }
+                | MulWide { .. }
+                | DivMod128 { .. } => {
+                    f.vm = true;
+                }
+                // RAM ops
+                Load { .. } | Store { .. } => {
+                    f.vm = true;
+                    f.ram = true;
+                }
+                // Cryptographic sponge ops
+                SAbsorbN { .. } | SSqueeze { .. } => {
+                    f.vm = true;
+                    f.sponge = true;
+                }
+                // Merkle ops
+                MerkleStepFirst { .. } | MerkleStep { .. } | MerkleStepLast { .. } => {
+                    f.merkle = true;
+                }
+                End => {}
+            }
+        }
+
+        f
+    }
+}
 
 /// Segment planner for the Winterfell backend.
 pub struct WinterfellSegmentPlanner;
@@ -210,6 +276,61 @@ impl SegmentPlanner<WinterfellBackend> for WinterfellSegmentPlanner {
 
         Ok(segments)
     }
+}
+
+/// Compute features for a level range `[lvl_start, lvl_end)`.
+/// Out-of-bounds levels are clamped to the program ops len.
+pub fn compute_segment_features_for_levels(
+    program: &zk_lisp_compiler::Program,
+    lvl_start: usize,
+    lvl_end: usize,
+) -> SegmentFeatures {
+    let base_levels = program.ops.len();
+    let start = lvl_start.min(base_levels);
+    let end = lvl_end.min(base_levels);
+
+    if start >= end {
+        SegmentFeatures::default()
+    } else {
+        SegmentFeatures::from_ops(&program.ops[start..end])
+    }
+}
+
+/// Derive a per-segment feature mask from the
+/// global program features and a local summary
+/// over the level range covered by the segment.
+pub fn compute_segment_feature_mask(
+    core_pi: &CorePublicInputs,
+    seg_features: &SegmentFeatures,
+) -> u64 {
+    let base = FeaturesMap::from_mask(core_pi.feature_mask);
+    let mut mask = 0u64;
+
+    // VM is either globally enabled or not; we avoid
+    // segment-local gating of the core VM block.
+    if base.vm {
+        mask |= FM_VM;
+    }
+    if base.vm_expect {
+        mask |= FM_VM_EXPECT;
+    }
+    if base.ram && seg_features.ram {
+        mask |= FM_RAM;
+    }
+    if base.merkle && seg_features.merkle {
+        mask |= FM_MERKLE;
+    }
+    if base.sponge && seg_features.sponge {
+        mask |= FM_SPONGE;
+    }
+
+    // Poseidon is required whenever either
+    // sponge or Merkle is active.
+    if base.poseidon && (seg_features.sponge || seg_features.merkle) {
+        mask |= FM_POSEIDON;
+    }
+
+    mask
 }
 
 #[cfg(test)]

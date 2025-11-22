@@ -380,6 +380,7 @@ impl StepProof {
         // Compute pi_len via AirPublicInputs::to_elements.
         let air_pi = AirPublicInputs {
             core: core_pi.clone(),
+            segment_feature_mask: 0,
             rom_acc: [BE::ZERO; 3],
             pc_init: BE::ZERO,
             ram_gp_unsorted_in: BE::ZERO,

@@ -24,7 +24,7 @@ mod schedule;
 
 use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
 use crate::vm::air::{merkle::MerkleAir, poseidon::PoseidonAir, schedule::ScheduleAir};
-use crate::vm::layout::{Columns, NR, POSEIDON_ROUNDS, SPONGE_IDX_BITS, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{Columns, LayoutConfig, NR, POSEIDON_ROUNDS, SPONGE_IDX_BITS, STEPS_PER_LEVEL_P2};
 use crate::vm::schedule as schedule_core;
 use crate::{poseidon as poseidon_core, utils};
 
@@ -105,6 +105,15 @@ impl Air for ZkLispAir {
         let mut degrees = Vec::new();
 
         let core = pub_inputs.core;
+
+        // Select effective feature mask
+        // for this trace instance.
+        let eff_mask = if pub_inputs.segment_feature_mask != 0 {
+            pub_inputs.segment_feature_mask
+        } else {
+            core.feature_mask
+        };
+
         let suite_id = &core.program_commitment;
         let ps = poseidon_core::get_poseidon_suite(suite_id);
 
@@ -115,6 +124,27 @@ impl Air for ZkLispAir {
 
         let mds = ps.mds;
         let dom = ps.dom;
+
+        let features = zk_lisp_proof::pi::FeaturesMap::from_mask(eff_mask);
+        let rom_enabled = core.program_commitment.iter().any(|b| *b != 0);
+        let layout_cfg = if pub_inputs.segment_feature_mask != 0 {
+            LayoutConfig {
+                vm: true,
+                ram: features.ram,
+                sponge: features.sponge,
+                merkle: features.merkle,
+                rom: rom_enabled,
+            }
+        } else {
+            // Fallback to the conservative baseline layout
+            LayoutConfig {
+                vm: true,
+                ram: true,
+                sponge: true,
+                merkle: true,
+                rom: rom_enabled,
+            }
+        };
 
         // Derive ROM t=3 params
         let rc_vec = derive_rom_round_constants_3(suite_id, POSEIDON_ROUNDS);
@@ -168,16 +198,15 @@ impl Air for ZkLispAir {
             [BaseElement::ZERO; 2]
         };
 
-        let features = core.get_features();
-
         // Flatten typed main_args into base-field
         // slots using the same encoding as PI.
         let main_args_fe: Vec<BaseElement> =
             crate::utils::encode_main_args_to_slots(&core.main_args);
 
+        let cols = Columns::for_config(&layout_cfg);
         let shared_ctx = Arc::new(AirSharedContext {
             pub_inputs: core.clone(),
-            cols: Columns::baseline(),
+            cols,
             features,
             poseidon_rc: rc_arr,
             poseidon_mds: mds,
@@ -213,7 +242,7 @@ impl Air for ZkLispAir {
 
         // ROM accumulator when program
         // commitment is provided.
-        if core.program_commitment.iter().any(|b| *b != 0) {
+        if rom_enabled {
             RomAir::push_degrees(&shared_ctx, &mut degrees);
         }
 
@@ -262,7 +291,7 @@ impl Air for ZkLispAir {
         // - initial s0(map0) = 0
         // - final lanes 0/1 at last row bound
         //   to rom_acc[0/1].
-        if core.program_commitment.iter().any(|b| *b != 0) {
+        if rom_enabled {
             // ROM now binds three lanes at both the initial map row and the final row.
             num_assertions += 6;
         }

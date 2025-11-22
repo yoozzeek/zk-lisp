@@ -42,6 +42,7 @@ pub fn replay_fs_from_step(step: &StepProof) -> error::Result<ZlFsChallenges> {
 
     let air_pi = AirPublicInputs {
         core: step.pi_core.clone(),
+        segment_feature_mask: 0,
         rom_acc: step.rom_acc,
         pc_init: crate::utils::fe_from_bytes_fold(&pi_zl1.pc_init),
         ram_gp_unsorted_in: crate::utils::fe_from_bytes_fold(&pi_zl1.ram_gp_unsorted_in),

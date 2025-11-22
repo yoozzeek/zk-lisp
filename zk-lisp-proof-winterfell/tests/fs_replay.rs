@@ -122,6 +122,7 @@ fn fs_replay_matches_reference_coin() {
     let pi_zl1 = &step.proof.pi;
     let air_pi = zk_lisp_proof_winterfell::AirPublicInputs {
         core: step.pi_core.clone(),
+        segment_feature_mask: 0,
         rom_acc: step.rom_acc,
         pc_init: zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.pc_init),
         ram_gp_unsorted_in: zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(
