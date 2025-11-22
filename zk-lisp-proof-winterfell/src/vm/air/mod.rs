@@ -578,32 +578,47 @@ fn print_evals_debug(
     let mut dbg: Vec<(&str, Vec<usize>)> = Vec::new();
 
     if features.poseidon {
-        let len = 12 * POSEIDON_ROUNDS + 12; // rounds + holds
-        dbg.push(("poseidon", evals[ofs..ofs + len].to_vec()));
-        ofs += len;
-    }
+        // Poseidon: per-round (12 lanes * R) + holds (12),
+        // plus optional VM->sponge lane bindings when
+        // both VM and sponge features are enabled.
+        let base_len = 12 * POSEIDON_ROUNDS + 12;
+        let extra = if features.vm && features.sponge {
+            10
+        } else {
+            0
+        };
+        let len = base_len + extra;
 
-    // ROM block
-    if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-        let len = 3 * POSEIDON_ROUNDS + 3 + 2;
-        dbg.push(("rom", evals[ofs..ofs + len].to_vec()));
-        ofs += len;
+        if ofs + len <= evals.len() {
+            dbg.push(("poseidon", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+        }
     }
 
     if features.vm {
         // vm_ctrl dynamic length:
         // 5*NR role booleans + 5 role sums + NR no-overlap
-        // + optional sponge: 10*NR lane booleans + 10 lane sums
+        // + optional sponge: (10 lanes * SPONGE_IDX_BITS) bit booleans
+        //   + 10 lane-active booleans
         // + 1 select-cond + 17 op booleans + 1 one-hot + 17 rom-op eq + 2 PC
-        let len =
-            5 * NR + 5 + NR + if features.sponge { 10 * NR + 10 } else { 0 } + 1 + 17 + 1 + 17 + 2;
-        dbg.push(("vm_ctrl", evals[ofs..ofs + len].to_vec()));
-        ofs += len;
+        let sponge_extra = if features.sponge {
+            10 * crate::vm::layout::SPONGE_IDX_BITS + 10
+        } else {
+            0
+        };
 
-        // vm_alu base (58)
-        let len = 58;
-        dbg.push(("vm_alu", evals[ofs..ofs + len].to_vec()));
-        ofs += len;
+        let len = 5 * NR + 5 + NR + sponge_extra + 1 + 17 + 1 + 17 + 2;
+        if ofs + len <= evals.len() {
+            dbg.push(("vm_ctrl", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+        }
+
+        // vm_alu: carry (NR) + write (NR) + 42 misc
+        let len = 2 * NR + 42;
+        if ofs + len <= evals.len() {
+            dbg.push(("vm_alu", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+        }
     }
 
     if features.ram {
@@ -613,8 +628,28 @@ fn print_evals_debug(
         // + 1 final-row GP equality
         // = 40
         let len = 40;
-        dbg.push(("ram", evals[ofs..ofs + len].to_vec()));
-        ofs += len;
+        if ofs + len <= evals.len() {
+            dbg.push(("ram", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+        }
+    }
+
+    if features.merkle {
+        // merkle block: 7 constraints
+        let len = 7;
+        if ofs + len <= evals.len() {
+            dbg.push(("merkle", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+        }
+    }
+
+    // ROM block comes last in degree construction
+    if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+        let len = 3 * POSEIDON_ROUNDS + 3 + 2;
+        if ofs + len <= evals.len() {
+            dbg.push(("rom", evals[ofs..ofs + len].to_vec()));
+            ofs += len;
+        }
     }
 
     tracing::debug!(target = "proof.air", "per_block_evals: {:?}", dbg);
@@ -646,28 +681,47 @@ fn print_degrees_debug(
     let mut ranges = Vec::new();
 
     if features.poseidon {
-        let len = 12 * POSEIDON_ROUNDS + 12; // rounds + holds
+        let base_len = 12 * POSEIDON_ROUNDS + 12;
+        let extra = if features.vm && features.sponge {
+            10
+        } else {
+            0
+        };
+        let len = base_len + extra;
         ranges.push(("poseidon", ofs, ofs + len));
         ofs += len;
     }
-    if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-        let len = 3 * POSEIDON_ROUNDS + 3 + 2;
-        ranges.push(("rom", ofs, ofs + len));
-        ofs += len;
-    }
+
     if features.vm {
-        let len =
-            5 * NR + 5 + NR + if features.sponge { 10 * NR + 10 } else { 0 } + 1 + 17 + 1 + 17 + 2;
+        let sponge_extra = if features.sponge {
+            10 * crate::vm::layout::SPONGE_IDX_BITS + 10
+        } else {
+            0
+        };
+        let len = 5 * NR + 5 + NR + sponge_extra + 1 + 17 + 1 + 17 + 2;
         ranges.push(("vm_ctrl", ofs, ofs + len));
         ofs += len;
 
-        let len2 = 58;
+        let len2 = 2 * NR + 42;
         ranges.push(("vm_alu", ofs, ofs + len2));
         ofs += len2;
     }
+
     if features.ram {
-        let len = 39;
+        let len = 40;
         ranges.push(("ram", ofs, ofs + len));
+        ofs += len;
+    }
+
+    if features.merkle {
+        let len = 7;
+        ranges.push(("merkle", ofs, ofs + len));
+        ofs += len;
+    }
+
+    if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+        let len = 3 * POSEIDON_ROUNDS + 3 + 2;
+        ranges.push(("rom", ofs, ofs + len));
         ofs += len;
     }
 

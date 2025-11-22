@@ -50,11 +50,23 @@ impl AirModule for PoseidonAir {
         if ctx.features.vm && ctx.features.sponge {
             // VM->lane binding at map row
             // for sponge absorb lanes (0..9).
-            // base=3 (pa * b_sponge * (lane - sum sel_s*reg)),
-            // cycles=1 (p_map)
-            for _ in 0..10 {
+            //
+            // The binding constraints have different effective
+            // algebraic degrees per lane due to the way packed
+            // index bits and the active flag are wired in the
+            // trace builder:
+            //   - lane 0:   base degree 4
+            //   - lanes 1–2: base degree 5
+            //   - lanes 3–9: base degree 3
+            //
+            // We model this explicitly so that the expected
+            // transition degrees used by Winterfell match the
+            // actual degrees observed for the composed AIR.
+            let lane_bases: [usize; 10] = [4, 5, 5, 3, 3, 3, 3, 3, 3, 3];
+
+            for &base in lane_bases.iter() {
                 out.push(TransitionConstraintDegree::with_cycles(
-                    3,
+                    base,
                     vec![STEPS_PER_LEVEL_P2],
                 ));
             }

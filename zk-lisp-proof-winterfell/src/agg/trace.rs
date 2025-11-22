@@ -408,12 +408,28 @@ fn build_agg_trace_core(
 
     let mut trace = TraceTable::new(cols.width(), n_rows);
 
+    // Explicitly zero-initialize all columns which
+    // are expected to be identically zero unless set.
     for r in 0..n_rows {
         trace.set(cols.ok, r, BE::ZERO);
+        trace.set(cols.v0_sum, r, BE::ZERO);
+        trace.set(cols.v1_sum, r, BE::ZERO);
+        trace.set(cols.vnext_sum, r, BE::ZERO);
+        trace.set(cols.fri_v0_child, r, BE::ZERO);
+        trace.set(cols.fri_v1_child, r, BE::ZERO);
+        trace.set(cols.fri_vnext_child, r, BE::ZERO);
+        trace.set(cols.fri_alpha_child, r, BE::ZERO);
+        trace.set(cols.fri_x0_child, r, BE::ZERO);
+        trace.set(cols.fri_x1_child, r, BE::ZERO);
+        trace.set(cols.fri_q1_child, r, BE::ZERO);
         trace.set(cols.comp_sum, r, BE::ZERO);
         trace.set(cols.alpha_div_zm_sum, r, BE::ZERO);
         trace.set(cols.map_l0_sum, r, BE::ZERO);
         trace.set(cols.final_llast_sum, r, BE::ZERO);
+        trace.set(cols.r, r, BE::ZERO);
+        trace.set(cols.alpha, r, BE::ZERO);
+        trace.set(cols.beta, r, BE::ZERO);
+        trace.set(cols.gamma, r, BE::ZERO);
     }
 
     let mut row = 0usize;
@@ -659,8 +675,9 @@ fn build_agg_trace_core(
                 trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
             }
 
-            // ok and other composition-related columns
-            // remain at their default zero values.
+            // ok and composition-related columns were pre-filled with
+            // zeros for all rows; we only override them on seg_first
+            // rows or when wiring explicit aggregates.
         }
 
         row += m;
