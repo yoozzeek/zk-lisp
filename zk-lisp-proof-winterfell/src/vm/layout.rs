@@ -293,10 +293,6 @@ impl Columns {
             width = pc + 1;
         }
 
-        if !cfg.merkle && !cfg.ram {
-            width = pc + 1;
-        }
-
         Self {
             lane_l,
             lane_r,
