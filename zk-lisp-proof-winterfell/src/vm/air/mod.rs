@@ -24,7 +24,7 @@ mod schedule;
 
 use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
 use crate::vm::air::{merkle::MerkleAir, poseidon::PoseidonAir, schedule::ScheduleAir};
-use crate::vm::layout::{Columns, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{Columns, NR, POSEIDON_ROUNDS, SPONGE_IDX_BITS, STEPS_PER_LEVEL_P2};
 use crate::vm::schedule as schedule_core;
 use crate::{poseidon as poseidon_core, utils};
 
@@ -602,7 +602,7 @@ fn print_evals_debug(
         //   + 10 lane-active booleans
         // + 1 select-cond + 17 op booleans + 1 one-hot + 17 rom-op eq + 2 PC
         let sponge_extra = if features.sponge {
-            10 * crate::vm::layout::SPONGE_IDX_BITS + 10
+            10 * SPONGE_IDX_BITS + 10
         } else {
             0
         };
@@ -694,7 +694,7 @@ fn print_degrees_debug(
 
     if features.vm {
         let sponge_extra = if features.sponge {
-            10 * crate::vm::layout::SPONGE_IDX_BITS + 10
+            10 * SPONGE_IDX_BITS + 10
         } else {
             0
         };

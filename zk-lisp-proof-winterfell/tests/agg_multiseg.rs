@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // This file is part of zk-lisp project.
 
+use winterfell::math::fields::f128::BaseElement as BE;
+use zk_lisp_compiler::Program;
 use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::agg::air::AggAirPublicInputs;
 use zk_lisp_proof_winterfell::agg::child::{ZlChildCompact, children_root_from_compact};
 use zk_lisp_proof_winterfell::agg::trace::build_agg_trace;
+use zk_lisp_proof_winterfell::poseidon::poseidon_hash_two_lanes;
+use zk_lisp_proof_winterfell::utils;
 
 fn init_tracing() {
     static INIT: std::sync::Once = std::sync::Once::new();
@@ -29,16 +33,73 @@ fn make_opts() -> ProverOptions {
     }
 }
 
-fn build_large_program_for_multiseg() -> zk_lisp_compiler::Program {
+fn merkle_root_for_multiseg(program: &Program) -> [u8; 32] {
+    // This test program uses the same non-degenerate two-step Merkle
+    // path as the positive Merkle tests in `tests/merkle.rs`:
+    //
+    //   leaf = 1
+    //   (d0, s0) = (0, 2)
+    //   (d1, s1) = (1, 3)
+    //
+    // The Merkle AIR interprets this as:
+    //   h0   = Poseidon(leaf, s0)
+    //   root = Poseidon(s1, h0)
+    // regardless of direction bits, which only affect ordering of
+    // (left, right) in the Poseidon input.
+    let leaf = BE::from(1u64);
+    let s0 = BE::from(2u64);
+    let s1 = BE::from(3u64);
+
+    let h0 = poseidon_hash_two_lanes(&program.commitment, leaf, s0);
+    let root = poseidon_hash_two_lanes(&program.commitment, s1, h0);
+
+    utils::fe_to_bytes_fold(root)
+}
+
+fn build_large_program_for_multiseg() -> Program {
     // Create a program large enough to exceed one segment
     // under the default MAX_SEGMENT_ROWS policy in the
     // WinterfellSegmentPlanner.
     let metrics = zk_lisp_compiler::CompilerMetrics::default();
     let mut b = ProgramBuilder::new();
 
-    // Construct target_levels = (MAX_SEGMENT_ROWS / STEPS_PER_LEVEL_P2) + 1
-    // using MAX_SEGMENT_ROWS = 1 << 10, matching the planner's
-    // default when no override is provided.
+    // Simple arithmetic
+    b.push(Op::Const { dst: 0, imm: 7 });
+    b.push(Op::Const { dst: 1, imm: 9 });
+    b.push(Op::Add { dst: 2, a: 0, b: 1 });
+
+    // Minimal sponge usage
+    b.push(Op::SAbsorbN {
+        regs: vec![0, 1, 2],
+    });
+    b.push(Op::SSqueeze { dst: 3 });
+
+    // Two-step Merkle path matching `merkle_root_for_multiseg`:
+    //
+    //   leaf = 1
+    //   level 0: (d0, s0) = (0, 2)
+    //   level 1: (d1, s1) = (1, 3)
+    //
+    b.push(Op::Const { dst: 4, imm: 1 }); // leaf
+    b.push(Op::Const { dst: 5, imm: 0 }); // d0
+    b.push(Op::Const { dst: 6, imm: 2 }); // s0
+    b.push(Op::MerkleStepFirst {
+        leaf_reg: 4,
+        dir_reg: 5,
+        sib_reg: 6,
+    });
+
+    // Second level: reuse dst 5/6 for (d1, s1)
+    b.push(Op::Const { dst: 5, imm: 1 }); // d1
+    b.push(Op::Const { dst: 6, imm: 3 }); // s1
+    b.push(Op::MerkleStepLast {
+        dir_reg: 5,
+        sib_reg: 6,
+    });
+
+    // Now extend the program with a long run
+    // of inexpensive CONST ops to force the planner
+    // into a multi-segment trace.
     let steps_per_level = zk_lisp_proof_winterfell::vm::layout::STEPS_PER_LEVEL_P2;
     let max_rows = 1usize << 10;
     let target_levels = (max_rows / steps_per_level) + 1;
@@ -58,9 +119,11 @@ fn agg_multiseg_positive_builds_trace() {
     init_tracing();
 
     let program = build_large_program_for_multiseg();
-    let pi = PublicInputsBuilder::from_program(&program)
+    let mut pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi build");
+    pi.merkle_root = merkle_root_for_multiseg(&program);
+
     let opts = make_opts();
 
     // Build multi-segment step proofs
@@ -130,9 +193,11 @@ fn agg_multiseg_negative_invalid_index_rejected() {
     init_tracing();
 
     let program = build_large_program_for_multiseg();
-    let pi = PublicInputsBuilder::from_program(&program)
+    let mut pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi build");
+    pi.merkle_root = merkle_root_for_multiseg(&program);
+
     let opts = make_opts();
 
     let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
@@ -189,9 +254,11 @@ fn agg_multiseg_negative_missing_segment_rejected() {
     init_tracing();
 
     let program = build_large_program_for_multiseg();
-    let pi = PublicInputsBuilder::from_program(&program)
+    let mut pi = PublicInputsBuilder::from_program(&program)
         .build()
         .expect("pi build");
+    pi.merkle_root = merkle_root_for_multiseg(&program);
+
     let opts = make_opts();
 
     let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
