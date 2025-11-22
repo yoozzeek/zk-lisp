@@ -1253,6 +1253,9 @@ fn cmd_repl() -> Result<(), CliError> {
                 println!("OK def {first}");
             }
 
+            let _ = rl.add_history_entry(s);
+            let _ = rl.save_history(&hist_path);
+
             continue;
         }
 
