@@ -3,8 +3,9 @@
 ;; - N_TXS transfers (from, to, amt, fee)
 ;; - compute new balances and hash the state
 
-(def N_ACCOUNTS 3)
-(def N_TXS      10)
+(def N_ACCOUNTS       8)
+(def N_TXS            16)
+(def HASH_BALANCES_IV 12345)
 
 ;; RAM layout:
 ;; [0 .. N_ACCOUNTS-1] = balances
@@ -53,7 +54,7 @@
 
 (def (hash_balances)
   ;; Simple Poseidon2-based hash chain over balances
-  (loop :max N_ACCOUNTS ((i 0) (h 0))
+  (loop :max N_ACCOUNTS ((i 0) (h HASH_BALANCES_IV))
     h
     (recur (+ i 1) (hash2 h (load i)))))
 

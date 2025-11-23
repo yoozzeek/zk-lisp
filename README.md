@@ -25,15 +25,6 @@ The trace builder executes VM ops into a fixed-shape
 trace. AIR is predefined, you don't write constraints.
 Winterfell proves the trace satisfies AIR.
 
-### Example
-
-```lisp
-(def (main x y)
-  (let ((s (secret-arg 0)))
-    (assert (= y (+ x s)))
-    1))
-```
-
 ## Features
 
 * Backend-agnostic Lisp DSL compiler and virtual machine
@@ -82,6 +73,60 @@ cargo run --bin zk-lisp --release -- \
 ```
 
 *If you pass another args verification will fail.*
+
+### Examples
+
+#### Simple state transition function (STF)
+
+```lisp
+(def N_ACCOUNTS       3)
+(def N_TXS            10)
+(def HASH_BALANCES_IV 12345)
+
+(def (tx_base)
+  N_ACCOUNTS)
+
+(def (tx_from i)
+  (load (+ (tx_base) (* i 4))))
+
+(def (tx_to i)
+  (load (+ (tx_base) (+ 1 (* i 4)))))
+
+(def (tx_amount i)
+  (load (+ (tx_base) (+ 2 (* i 4)))))
+
+(def (tx_fee i)
+  (load (+ (tx_base) (+ 3 (* i 4)))))
+
+(def (apply_tx i)
+  (let ((from (tx_from i))
+        (to   (tx_to i)))
+    (begin
+      (store from
+        (safe-sub (load from)
+                  (safe-add (tx_amount i) (tx_fee i))))
+      (store to
+        (safe-add (load to) (tx_amount i)))
+      (tx_fee i))))
+
+(def (apply_batch)
+  (loop :max N_TXS ((i 0) (fee_sum 0))
+    fee_sum
+    (recur (+ i 1) (safe-add fee_sum (apply_tx i)))))
+
+(def (hash_balances)
+  (loop :max N_ACCOUNTS ((i 0) (h HASH_BALANCES_IV))
+    h
+    (recur (+ i 1) (hash2 h (load i)))))
+
+(def (main expected_fee_sum expected_root)
+  (let ((fee_sum (apply_batch))
+        (root    (hash_balances)))
+    (begin
+      (assert (= fee_sum expected_fee_sum))
+      (assert (= root expected_root))
+      root)))
+```
 
 ## Testing
 
