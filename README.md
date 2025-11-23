@@ -76,6 +76,15 @@ cargo run --bin zk-lisp --release -- \
 
 ### Examples
 
+#### Hello ZKPs
+
+```lisp
+(def (main pub_x pub_y)
+  (let ((s (secret-arg 0)))
+    (assert (= pub_y (+ pub_x s)))
+    1))
+```
+
 #### Simple state transition function (STF)
 
 ```lisp
