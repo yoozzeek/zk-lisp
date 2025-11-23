@@ -57,7 +57,7 @@ struct Cli {
         long,
         global = true,
         default_value = "error",
-        value_parser = ["trace","debug","info","warn","error"],
+        value_parser = ["trace", "debug", "info", "warn", "error"],
     )]
     log_level: String,
     /// Minimum conjectured security in bits for proofs (64 or 128).
@@ -219,6 +219,12 @@ impl CliError {
             CliError::Hex(_) => 2,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DefKind {
+    Var,
+    Fn,
 }
 
 fn normalize_security_bits(bits: Option<u32>) -> Result<Option<u32>, CliError> {
@@ -558,6 +564,7 @@ fn cmd_run(
     pf: PreflightArg,
     security_bits: Option<u32>,
 ) -> Result<(), CliError> {
+    let t_start = std::time::Instant::now();
     let src = read_program(&args.path, max_bytes)?;
 
     let (public_vmargs, public_u64) = parse_public_args(&args.args)?;
@@ -565,6 +572,7 @@ fn cmd_run(
 
     let program = compiler::compile_entry(&src, &public_u64)?;
     validate_main_args_against_schema(&program, &public_vmargs)?;
+
     let pi = build_pi_for_program(&program, &public_vmargs, &secret_vmargs)?;
 
     let pf_mode = resolve_preflight_mode(pf);
@@ -581,6 +589,7 @@ fn cmd_run(
     let out_row = run_res.out_row;
     let val_u128: u128 = ZkField::to_u128(&run_res.value);
     let metrics = program.compiler_metrics;
+    let elapsed_ms = t_start.elapsed().as_millis();
 
     if json {
         println!(
@@ -592,6 +601,7 @@ fn cmd_run(
                 "out_reg": out_reg,
                 "out_row": out_row,
                 "trace_len": run_res.trace_len,
+                "time_ms": elapsed_ms,
                 "compiler_metrics": {
                     "peak_live": metrics.peak_live,
                     "reuse_dst": metrics.reuse_dst,
@@ -615,6 +625,8 @@ fn cmd_run(
             metrics.balanced_chains,
             metrics.mov_elided
         );
+
+        println!("time: {elapsed_ms} ms");
     }
 
     Ok(())
@@ -633,7 +645,9 @@ fn cmd_prove(
         ));
     }
 
+    let t_start = std::time::Instant::now();
     let src = read_program(&args.path, max_bytes)?;
+
     let (public_vmargs, public_u64) = parse_public_args(&args.args)?;
     let secret_vmargs = parse_secret_args(&args.secrets)?;
 
@@ -672,6 +686,8 @@ fn cmd_prove(
         path: out_path.clone(),
     })?;
 
+    let elapsed_ms = t_start.elapsed().as_millis();
+
     if !args.quiet {
         let b64 = base64::engine::general_purpose::STANDARD.encode(&artifact_bytes);
         let preview_core = if b64.len() <= 128 {
@@ -689,6 +705,7 @@ fn cmd_prove(
                     "agg_preview_b64": preview_core,
                     "opts": {"queries": args.queries, "blowup": args.blowup, "grind": args.grind},
                     "program_commitment": format!("0x{}", hex::encode(program.commitment)),
+                    "time_ms": elapsed_ms,
                 })
             );
         } else {
@@ -698,6 +715,7 @@ fn cmd_prove(
                 preview_core,
                 artifact_bytes.len()
             );
+            println!("time: {elapsed_ms} ms");
         }
     }
 
@@ -710,6 +728,7 @@ fn cmd_verify(
     max_bytes: usize,
     security_bits: Option<u32>,
 ) -> Result<(), CliError> {
+    let t_start = std::time::Instant::now();
     let proof_path_str = args.proof.as_str();
 
     let artifact_bytes = {
@@ -772,10 +791,13 @@ fn cmd_verify(
     frontend::recursion_verify::<WinterfellBackend>(rc_proof, &rc_pi, &opts)
         .map_err(CliError::Verify)?;
 
+    let elapsed_ms = t_start.elapsed().as_millis();
+
     if json {
-        println!("{}", serde_json::json!({"ok": true}));
+        println!("{}", serde_json::json!({"ok": true, "time_ms": elapsed_ms}));
     } else {
         println!("OK");
+        println!("time: {elapsed_ms} ms");
     }
 
     Ok(())
@@ -980,9 +1002,15 @@ fn cmd_repl() -> Result<(), CliError> {
 
         if s == ":docs" {
             let mut all = extract_def_names(&session.base_src);
+            let mut kinds = extract_def_kinds(&session.base_src);
+
             for f in &session.forms {
                 for n in extract_def_names(f) {
                     all.insert(n);
+                }
+
+                for (name, kind) in extract_def_kinds(f) {
+                    kinds.insert(name, kind);
                 }
             }
 
@@ -990,21 +1018,25 @@ fn cmd_repl() -> Result<(), CliError> {
                 println!("(none)");
             } else {
                 for n in all {
-                    if let Some(doc) = session.docs.get(&n) {
-                        let first = doc
-                            .lines()
-                            .find(|l| !l.trim().is_empty())
-                            .unwrap_or("")
-                            .trim();
+                    let kind_label = match kinds.get(&n) {
+                        Some(DefKind::Fn) => "fn",
+                        Some(DefKind::Var) => "var",
+                        None => "def",
+                    };
 
-                        if first.is_empty() {
-                            println!("{n}");
-                        } else {
-                            println!("{n} - {first}");
+                    println!("{kind_label}: {n}");
+
+                    if let Some(doc) = session.docs.get(&n) {
+                        println!("docs:");
+
+                        for line in doc.lines() {
+                            println!("{line}");
                         }
                     } else {
-                        println!("{n}");
+                        println!("docs: (none)");
                     }
+
+                    println!();
                 }
             }
 
@@ -1082,7 +1114,9 @@ fn cmd_repl() -> Result<(), CliError> {
                 }
             };
 
+            let t_start = std::time::Instant::now();
             let wrapped = session.combined_with_expr(expr);
+
             match compiler::compile_entry(&wrapped, &[]) {
                 Err(e) => println!("error: compile: {e}"),
                 Ok(program) => {
@@ -1173,6 +1207,9 @@ fn cmd_repl() -> Result<(), CliError> {
                                                 "hint: verify via CLI with `zk-lisp verify {file_name} <program.zlisp> --arg ...`"
                                             );
 
+                                            let elapsed_ms = t_start.elapsed().as_millis();
+                                            println!("time: {elapsed_ms} ms");
+
                                             // Remember last expression
                                             // for subsequent :verify
                                             session.last_expr = Some(expr.to_string());
@@ -1260,8 +1297,14 @@ fn cmd_repl() -> Result<(), CliError> {
             };
 
             let opts = proof_opts(64, 8, 0, None);
+            let t_start = std::time::Instant::now();
+
             match frontend::recursion_verify::<WinterfellBackend>(rc_proof, &rc_pi, &opts) {
-                Ok(()) => println!("OK"),
+                Ok(()) => {
+                    let elapsed_ms = t_start.elapsed().as_millis();
+                    println!("OK");
+                    println!("time: {elapsed_ms} ms");
+                }
                 Err(e) => println!("verify error: {e}"),
             }
 
@@ -1516,6 +1559,53 @@ fn extract_def_names(src: &str) -> BTreeSet<String> {
     }
 
     names
+}
+
+fn extract_def_kinds(src: &str) -> BTreeMap<String, DefKind> {
+    let mut kinds = BTreeMap::new();
+    let bytes = src.as_bytes();
+    let mut i = 0usize;
+
+    while i + 4 <= bytes.len() {
+        if &bytes[i..i + 4] == b"(def" {
+            i += 4;
+
+            // skip whitespace
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+
+            if i >= bytes.len() {
+                break;
+            }
+
+            let kind = if bytes[i] == b'(' {
+                // (def (name ...)
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                DefKind::Fn
+            } else {
+                DefKind::Var
+            };
+
+            let start = i;
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b')' {
+                i += 1;
+            }
+
+            if i > start {
+                if let Ok(n) = std::str::from_utf8(&bytes[start..i]) {
+                    kinds.insert(n.to_string(), kind);
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    kinds
 }
 
 fn extract_docs(src: &str) -> BTreeMap<String, String> {
