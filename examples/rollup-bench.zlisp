@@ -1,0 +1,67 @@
+;; Simple rollup-style benchmark for zk-lisp:
+;; - N_ACCOUNTS balances in RAM
+;; - N_TXS transfers (from, to, amt, fee)
+;; - compute new balances and hash the state
+
+(def N_ACCOUNTS 3)
+(def N_TXS      10)
+
+;; RAM layout:
+;; [0 .. N_ACCOUNTS-1] = balances
+;; [N_ACCOUNTS .. N_ACCOUNTS+4*N_TXS-1] =
+;;     tx data (from, to, amt, fee) per tx
+;; We assume initial balances + tx table are already in RAM
+;; (e.g. preloaded by host before proving).
+
+(def (tx_base)
+  N_ACCOUNTS)
+
+(def (tx_from i)
+  (load (+ (tx_base) (* i 4))))
+
+(def (tx_to i)
+  (load (+ (tx_base) (+ 1 (* i 4)))))
+
+(def (tx_amount i)
+  (load (+ (tx_base) (+ 2 (* i 4)))))
+
+(def (tx_fee i)
+  (load (+ (tx_base) (+ 3 (* i 4)))))
+
+;; Safe arithmetic helpers (wrapping into field but
+;; using safe-add/safe-sub to enforce non-negative balances).
+
+(def (apply_tx i)
+  (let ((from (tx_from i))
+        (to   (tx_to i)))
+    (begin
+      ;; Debit sender: from_bal - (amt + fee)
+      (store from
+        (safe-sub (load from)
+                  (safe-add (tx_amount i) (tx_fee i))))
+      ;; Credit receiver: to_bal + amt
+      (store to
+        (safe-add (load to) (tx_amount i)))
+      ;; Return fee
+      (tx_fee i))))
+
+(def (apply_batch)
+  ;; Loop over all N_TXS, accumulate total fee
+  (loop :max N_TXS ((i 0) (fee_sum 0))
+    fee_sum
+    (recur (+ i 1) (safe-add fee_sum (apply_tx i)))))
+
+(def (hash_balances)
+  ;; Simple Poseidon2-based hash chain over balances
+  (loop :max N_ACCOUNTS ((i 0) (h 0))
+    h
+    (recur (+ i 1) (hash2 h (load i)))))
+
+(typed-fn main ((let u64) (let u64)) -> u64)
+(def (main expected_fee_sum expected_root)
+  (let ((fee_sum (apply_batch))
+        (root    (hash_balances)))
+    (begin
+      (assert (= fee_sum expected_fee_sum))
+      (assert (= root expected_root))
+      root)))
