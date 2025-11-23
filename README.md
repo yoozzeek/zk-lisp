@@ -89,18 +89,6 @@ cargo run --bin zk-lisp --release -- \
 cargo run tests --release
 ```
 
-## Donation
-
-The most effective way to accelerate new features, bug fixes, and even partial
-security audits is to provide financial support to the author.
-
-* **Bitcoin (taproot):** bc1ptere63tyqms6erw6hl9zpxwcuvnw4434f7eshem4l98tg6vl7xpqazjma7
-* **ZCash:** t1LKxwJ64yJN7GKbp63JjUjWfgwuaVyjW88
-* **Solana:** 2hZ1f7A64vXAThiJLX8pHRBpdEKdSoEEBxree4Cd4PNK
-* **Ethereum:** 0xe22a269a1bc55036d949090c87070417e3d03431
-
-For grants and sponsorship offers text to <a href="mailto:zeek@tuta.com">zeek@tuta.com</a>.
-
 ## License
 
 This project is licensed under the GNU Affero
