@@ -39,8 +39,8 @@ Winterfell proves the trace satisfies AIR.
 * Backend-agnostic Lisp DSL compiler and virtual machine
 * Abstract traits for plugging in multiple STARK backends
 * Winterfell-based STARK implementation
-* Strict STARK-in-STARK recursion (aggregated proofs)
-* Dynamic segment layout based and feature mask
+    * Strict STARK-in-STARK recursion (aggregated proofs)
+* Dynamic segment layout and feature mask
 * zk-lisp CLI with run | prove | verify | repl commands
 * Interactive REPL with :prove and :verify built-ins
 
@@ -50,6 +50,7 @@ Winterfell proves the trace satisfies AIR.
 * Complex types such as vectors and structs
 * Examples, templates and better code-docs
 * Website, documentation and online REPL
+* Incrementally verifiable computation (IVC)
 * Program events and logs
 * Cross-program invocations
 

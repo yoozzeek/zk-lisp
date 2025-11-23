@@ -56,7 +56,7 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        default_value = "info",
+        default_value = "error",
         value_parser = ["trace","debug","info","warn","error"],
     )]
     log_level: String,
