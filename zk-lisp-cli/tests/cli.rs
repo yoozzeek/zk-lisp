@@ -42,6 +42,7 @@ fn run_add_json_ok() {
         .stdout(predicate::str::contains("\"result_dec\":\"1\""));
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn prove_and_verify_ok() {
     let tmp = tempfile::NamedTempFile::new().unwrap();

@@ -18,7 +18,7 @@
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use rustyline::{DefaultEditor, error::ReadlineError};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self};
 use std::path::PathBuf;
@@ -787,6 +787,7 @@ struct Session {
     base_src: String,   // from :load
     forms: Vec<String>, // live appended forms
     last_expr: Option<String>,
+    docs: BTreeMap<String, String>,
 }
 
 impl Session {
@@ -794,10 +795,34 @@ impl Session {
         self.base_src.clear();
         self.forms.clear();
         self.last_expr = None;
+        self.docs.clear();
     }
 
     fn add_form(&mut self, s: String) {
         self.forms.push(s);
+        self.recompute_docs();
+    }
+
+    fn recompute_docs(&mut self) {
+        let mut merged = String::new();
+
+        if !self.base_src.is_empty() {
+            merged.push_str(&self.base_src);
+
+            if !self.base_src.ends_with('\n') {
+                merged.push('\n');
+            }
+        }
+
+        for f in &self.forms {
+            merged.push_str(f);
+
+            if !f.ends_with('\n') {
+                merged.push('\n');
+            }
+        }
+
+        self.docs = extract_docs(&merged);
     }
 
     fn combined_with_expr(&self, expr: &str) -> String {
@@ -931,6 +956,8 @@ fn cmd_repl() -> Result<(), CliError> {
             match read_program(&path, REPL_MAX_BYTES) {
                 Ok(src) => {
                     session.base_src = src;
+                    session.recompute_docs();
+
                     println!("OK loaded {}", path.display());
                 }
                 Err(e) => println!("error: load failed: {e}"),
@@ -963,7 +990,21 @@ fn cmd_repl() -> Result<(), CliError> {
                 println!("(none)");
             } else {
                 for n in all {
-                    println!("{n}");
+                    if let Some(doc) = session.docs.get(&n) {
+                        let first = doc
+                            .lines()
+                            .find(|l| !l.trim().is_empty())
+                            .unwrap_or("")
+                            .trim();
+
+                        if first.is_empty() {
+                            println!("{n}");
+                        } else {
+                            println!("{n} - {first}");
+                        }
+                    } else {
+                        println!("{n}");
+                    }
                 }
             }
 
@@ -1477,6 +1518,55 @@ fn extract_def_names(src: &str) -> BTreeSet<String> {
     names
 }
 
+fn extract_docs(src: &str) -> BTreeMap<String, String> {
+    let mut docs = BTreeMap::new();
+    let mut pending: Vec<String> = Vec::new();
+
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+
+        if trimmed.starts_with(";;") {
+            // Treat any ";;" prefixed line as a doc-comment line
+            let doc_line = trimmed.trim_start_matches(';').trim_start();
+            pending.push(doc_line.to_string());
+
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            // Allow blank lines inside a doc block
+            if !pending.is_empty() {
+                pending.push(String::new());
+            }
+
+            continue;
+        }
+
+        if trimmed.starts_with("(def ") {
+            if !pending.is_empty() {
+                let names = extract_def_names(line);
+
+                if let Some(name) = names.into_iter().next() {
+                    let joined = pending.join("\n");
+                    let text = joined.trim().to_string();
+
+                    if !text.is_empty() {
+                        docs.insert(name, text);
+                    }
+                }
+
+                pending.clear();
+            }
+        } else {
+            // Any other non-empty, non-comment
+            // line breaks the doc block.
+            pending.clear();
+        }
+    }
+
+    docs
+}
+
 #[derive(Default, Debug)]
 struct Cost {
     ops: usize,
@@ -1760,5 +1850,22 @@ mod tests {
         let err = parse_vm_arg("foo:1").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("invalid arg type"), "msg={msg}");
+    }
+
+    #[test]
+    fn extract_docs_simple_def() {
+        let src = ";; add two numbers\n(def (add2 x y) (+ x y))\n";
+        let docs = extract_docs(src);
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs.get("add2").unwrap(), "add two numbers");
+    }
+
+    #[test]
+    fn extract_docs_multiple_lines_and_blank() {
+        let src = ";; first line\n;; second line\n;;\n(def foo 42)\n";
+        let docs = extract_docs(src);
+        let doc = docs.get("foo").unwrap();
+        assert!(doc.contains("first line"));
+        assert!(doc.contains("second line"));
     }
 }

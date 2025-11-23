@@ -247,6 +247,20 @@ pub fn lex(src: &str) -> Result<Vec<Tok>, Error> {
                 it.next();
                 i += 1;
             }
+            ';' => {
+                // Line comment; skip until end of line.
+                it.next();
+                i += 1;
+
+                while let Some(&c2) = it.peek() {
+                    if c2 == '\n' {
+                        break;
+                    }
+
+                    it.next();
+                    i += 1;
+                }
+            }
             '"' => {
                 it.next(); // consume opening quote
                 i += 1;
@@ -448,6 +462,17 @@ fn parse_one_limited(q: &mut VecDeque<Tok>, depth: usize) -> Result<Ast, Error> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lex_ignores_line_comments() {
+        let s = "(def (x) 1)\n;; comment here\n(def (y) 2)";
+        let s_no = "(def (x) 1)(def (y) 2)";
+
+        let toks = lex(s).unwrap();
+        let toks_no = lex(s_no).unwrap();
+
+        assert_eq!(toks, toks_no);
+    }
 
     #[test]
     fn parse_atoms_lists() {
