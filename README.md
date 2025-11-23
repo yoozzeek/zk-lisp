@@ -76,7 +76,7 @@ cargo run --bin zk-lisp --release -- \
 
 ### Examples
 
-#### Hello zkSTRAKs
+#### Hello zkSTARKs
 
 ```lisp
 (def (main pub_x pub_y)

@@ -46,14 +46,14 @@
       ;; Return fee
       (tx_fee i))))
 
+;; Loop over all N_TXS, accumulate total fee
 (def (apply_batch)
-  ;; Loop over all N_TXS, accumulate total fee
   (loop :max N_TXS ((i 0) (fee_sum 0))
     fee_sum
     (recur (+ i 1) (safe-add fee_sum (apply_tx i)))))
 
+;; Simple Poseidon2-based hash chain over balances
 (def (hash_balances)
-  ;; Simple Poseidon2-based hash chain over balances
   (loop :max N_ACCOUNTS ((i 0) (h HASH_BALANCES_IV))
     h
     (recur (+ i 1) (hash2 h (load i)))))
