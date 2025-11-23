@@ -21,7 +21,7 @@ use crate::WinterfellBackend;
 use crate::vm::layout::STEPS_PER_LEVEL_P2;
 
 /// Maximum number of base-trace rows per execution segment.
-const MAX_SEGMENT_ROWS: usize = 1 << 10;
+const MAX_SEGMENT_ROWS: usize = 1 << 12;
 
 /// Per-segment feature summary over a contiguous
 /// level range of the compiled program.
@@ -414,8 +414,10 @@ mod tests {
 
     #[test]
     fn segment_feature_mask_is_subset_of_global_mask() {
-        let mut core_pi = CorePublicInputs::default();
-        core_pi.feature_mask = FM_VM | FM_VM_EXPECT | FM_RAM | FM_MERKLE | FM_SPONGE | FM_POSEIDON;
+        let core_pi = CorePublicInputs {
+            feature_mask: FM_VM | FM_VM_EXPECT | FM_RAM | FM_MERKLE | FM_SPONGE | FM_POSEIDON,
+            ..Default::default()
+        };
 
         let seg_features = SegmentFeatures {
             vm: true,
@@ -439,8 +441,10 @@ mod tests {
 
     #[test]
     fn segment_feature_mask_drops_optional_features_on_empty_segment() {
-        let mut core_pi = CorePublicInputs::default();
-        core_pi.feature_mask = FM_VM | FM_VM_EXPECT | FM_RAM | FM_MERKLE | FM_SPONGE | FM_POSEIDON;
+        let core_pi = CorePublicInputs {
+            feature_mask: FM_VM | FM_VM_EXPECT | FM_RAM | FM_MERKLE | FM_SPONGE | FM_POSEIDON,
+            ..Default::default()
+        };
 
         let seg_features = SegmentFeatures::default(); // vm=false, ram=false, sponge=false, merkle=false
         let seg_mask = compute_segment_feature_mask(&core_pi, &seg_features);
@@ -453,8 +457,10 @@ mod tests {
 
     #[test]
     fn segment_feature_mask_keeps_core_vm_flags_only() {
-        let mut core_pi = CorePublicInputs::default();
-        core_pi.feature_mask = FM_VM | FM_VM_EXPECT;
+        let core_pi = CorePublicInputs {
+            feature_mask: FM_VM | FM_VM_EXPECT,
+            ..Default::default()
+        };
 
         let seg_features = SegmentFeatures {
             vm: true,

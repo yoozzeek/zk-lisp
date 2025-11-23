@@ -51,13 +51,6 @@ impl AirModule for RamAir {
             vec![STEPS_PER_LEVEL_P2],
         ));
 
-        // forbid new-addr read:
-        // (1 - same) * (1 - is_write) == 0
-        out.push(TransitionConstraintDegree::with_cycles(
-            3,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
-
         // same_addr boolean via inv trick:
         // s = 1 - d * inv
         out.push(TransitionConstraintDegree::with_cycles(
@@ -186,22 +179,6 @@ impl AirModule for RamAir {
         result[*ix] = s_on * (E::ONE - s_w) * (s_val - last);
         *ix += 1;
 
-        // Forbid read as FIRST event
-        // of an address group;
-        // apply at edge (cur -> next):
-        // if next is sorted and next_addr != cur_addr,
-        // then next must be a write (seed).
-        // Uses next.eq_inv for inv(next_addr - cur_addr).
-        let s_on_c = cur[ctx.cols.ram_sorted];
-        let s_on_n = next[ctx.cols.ram_sorted];
-        let d_prev_n = next[ctx.cols.ram_s_addr] - cur[ctx.cols.ram_s_addr];
-        let inv_n = next[ctx.cols.eq_inv];
-        let same_prev_n = E::ONE - d_prev_n * inv_n;
-        let w_n = next[ctx.cols.ram_s_is_write];
-
-        result[*ix] = s_on_c * s_on_n * (E::ONE - same_prev_n) * (E::ONE - w_n);
-        *ix += 1;
-
         // same boolean check:
         // same = 1 - d*inv,
         // enforce consistency.
@@ -209,7 +186,7 @@ impl AirModule for RamAir {
         *ix += 1;
 
         // delta_clk 32-bit
-        // range when same_addr
+        // range when same_addr.
         let d_clk = s_clk_n - s_clk;
         let mut sum = E::ZERO;
         let mut pow2 = E::ONE;
@@ -225,7 +202,8 @@ impl AirModule for RamAir {
         }
 
         // equality
-        result[*ix] = s_on * same * (d_clk - sum);
+        let s_on_n = next[ctx.cols.ram_sorted];
+        result[*ix] = s_on * s_on_n * same * (d_clk - sum);
         *ix += 1;
 
         // Final-row equality of GP

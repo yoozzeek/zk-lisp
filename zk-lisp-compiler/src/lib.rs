@@ -45,8 +45,12 @@ pub enum Error {
     Unmatched,
     #[error("lower: unknown symbol '{0}'")]
     UnknownSymbol(String),
-    #[error("lower: regs exhausted (need {need}, have {have})")]
-    RegOverflow { need: usize, have: usize },
+    #[error("lower: regs exhausted (need {need}, have {have}) in {context}")]
+    RegOverflow {
+        need: usize,
+        have: usize,
+        context: String,
+    },
     #[error("lower: invalid form '{0}'")]
     InvalidForm(String),
     #[error("lower: recursion detected in call '{0}'")]

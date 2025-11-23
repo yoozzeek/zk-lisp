@@ -19,12 +19,38 @@ fn recur_outside_loop_errors() {
 }
 
 #[test]
-fn loop_max_must_be_literal_int() {
+fn loop_max_must_be_literal_int_or_constant() {
     let src = "(loop :max x ((i 0)) i)";
     let err = compile_str(src).expect_err("compile must fail");
     let msg = err.to_string();
 
-    assert!(msg.contains(":max must be integer literal"));
+    assert!(msg.contains(":max must be integer literal or constant"));
+}
+
+#[test]
+fn loop_max_from_top_level_def_ok() {
+    let src = "
+(def N 3)
+(def (main)
+  (loop :max N ((i 0)) i))
+(main)
+    ";
+
+    let p = compile_str(src).expect("compile must succeed");
+    assert!(!p.ops.is_empty());
+}
+
+#[test]
+fn loop_max_from_let_binding_ok() {
+    let src = "
+(def (main)
+(let ((n 2))
+  (loop :max n ((i 0)) i)))
+(main)
+    ";
+
+    let p = compile_str(src).expect("compile must succeed");
+    assert!(!p.ops.is_empty());
 }
 
 #[test]
@@ -39,11 +65,11 @@ fn loop_empty_binding_list_errors() {
 #[test]
 fn loop_recur_arity_mismatch_errors() {
     let src = "
-        (def (main)
-          (loop :max 2 ((x 0))
-            x
-            (recur 1 2)))
-        (main)
+(def (main)
+  (loop :max 2 ((x 0))
+    x
+    (recur 1 2)))
+(main)
     ";
 
     let err = compile_str(src).expect_err("compile must fail");
@@ -55,11 +81,11 @@ fn loop_recur_arity_mismatch_errors() {
 #[test]
 fn loop_recur_must_be_tail_only() {
     let src = "
-        (def (main)
-          (loop :max 2 ((x 0))
-            (recur 1)
-            (recur 2)))
-        (main)
+(def (main)
+  (loop :max 2 ((x 0))
+    (recur 1)
+    (recur 2)))
+(main)
     ";
 
     let err = compile_str(src).expect_err("compile must fail");

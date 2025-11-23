@@ -228,14 +228,14 @@ impl SegmentLayout {
 
 /// Initialize trace builder
 /// from program and public inputs.
-#[tracing::instrument(level = "info", skip(pi))]
+#[tracing::instrument(level = "info", skip(prog, pi))]
 pub fn build_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<TraceTable<BE>> {
     build_full_trace(prog, pi)
 }
 
 /// Build an execution trace for a specific row segment
 /// `[segment.r_start, segment.r_end)`.
-#[tracing::instrument(level = "info", skip(pi, segment))]
+#[tracing::instrument(level = "info", skip(prog, pi, segment))]
 pub fn build_segment_trace(
     prog: &Program,
     pi: &pi::PublicInputs,
@@ -275,7 +275,7 @@ pub fn build_segment_trace(
 /// Build a segment trace together with VM state hashes at
 /// the segment boundaries. This is the primary entrypoint
 /// for step-level proof construction.
-#[tracing::instrument(level = "info", skip(pi, layout, prev_state, segment))]
+#[tracing::instrument(level = "info", skip(prog, pi, layout, prev_state, segment))]
 pub fn build_segment_trace_with_state(
     prog: &Program,
     pi: &pi::PublicInputs,

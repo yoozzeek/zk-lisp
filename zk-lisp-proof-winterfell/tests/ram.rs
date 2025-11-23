@@ -181,6 +181,26 @@ fn ram_perm_double_store_then_load_preflight_ok() {
 }
 
 #[test]
+fn ram_addr_zero_cross_level_preflight_ok() {
+    // Regression test for delta_clk range gadget:
+    // multiple RAM events at address 0 must not
+    // trigger false violations at the boundary
+    // between levels when the next row is a
+    // non-sorted (map) row.
+    let src = r"
+(def (main)
+  (begin (store 0 1)
+         (store 0 2)
+         (load 0)))";
+    let p = compile_entry(src, &[]).expect("compile");
+    let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
+    let trace = build_trace(&p, &pi).expect("trace");
+    let opts = proof_opts();
+
+    run_preflight(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
+}
+
+#[test]
 fn computed_addr_and_value_ok() {
     let src = r"
 (def (main)

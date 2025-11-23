@@ -951,6 +951,7 @@ pub fn verify_proof_fast(
 
 /// Produce a step-level proof wrapper
 /// zk-lisp execution segment. This helper mirrors
+#[deprecated(note = "Use prove_program_steps")]
 #[tracing::instrument(
     level = "info",
     skip(program, pub_inputs, opts),
@@ -1237,12 +1238,15 @@ pub fn prove_program_steps(
         let meta = StepMeta::from_env(trace_len, &wf_opts, min_bits, pi_len);
         let suite_id = pub_inputs.program_commitment;
 
+        // TODO: THIS PART SHOULD RUN IN LIMITED PARALLEL
+        // ==============================================
         let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc).with_segment_layout(
             segment_feature_mask_for_air,
             seg_layout.cols.clone(),
             boundaries_fe,
         );
         let proof = prover.prove(trace)?;
+        // ==============================================
 
         let zl1_proof = crate::proof::format::Proof::new_multi_segment(
             suite_id,
@@ -1397,8 +1401,10 @@ mod tests {
     use zk_lisp_proof::pi::{FM_POSEIDON, FM_RAM, FM_SPONGE, FM_VM, FM_VM_EXPECT};
 
     fn derive_seg_mask_for_air(base_mask: u64, seg_features: &SegmentFeatures) -> (u64, u64) {
-        let mut pi = PublicInputs::default();
-        pi.feature_mask = base_mask;
+        let pi = PublicInputs {
+            feature_mask: base_mask,
+            ..Default::default()
+        };
 
         let seg_mask = compute_segment_feature_mask(&pi, seg_features);
         let use_seg_mask = seg_mask != 0 && seg_mask != base_mask;

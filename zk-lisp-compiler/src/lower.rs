@@ -78,6 +78,12 @@ struct Env {
     funs: BTreeMap<String, (Vec<String>, Ast)>,
 }
 
+struct LoopVarState {
+    name: String,
+    prior: Option<Binding>,
+    reg: u8,
+}
+
 #[derive(Debug)]
 pub struct LowerCtx<'a> {
     builder: &'a mut ProgramBuilder,
@@ -87,6 +93,8 @@ pub struct LowerCtx<'a> {
     free: Vec<u8>,
     call_stack: Vec<String>,
     sp_reg: Option<u8>,
+    const_ints: BTreeMap<String, u64>,
+    ctx_stack: Vec<&'static str>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -102,6 +110,8 @@ impl<'a> LowerCtx<'a> {
             env: Env::default(),
             call_stack: Vec::new(),
             sp_reg: None,
+            const_ints: BTreeMap::new(),
+            ctx_stack: Vec::new(),
         }
     }
 
@@ -135,7 +145,11 @@ impl<'a> LowerCtx<'a> {
 
                 Ok(r)
             }
-            None => Err(Error::RegOverflow { need: 1, have: 0 }),
+            None => Err(Error::RegOverflow {
+                need: 1,
+                have: 0,
+                context: self.format_ctx(),
+            }),
         }
     }
 
@@ -150,6 +164,26 @@ impl<'a> LowerCtx<'a> {
 
     fn map_var(&mut self, name: &str, b: Binding) {
         self.env.vars.insert(name.to_string(), b);
+    }
+
+    fn with_ctx<F, T>(&mut self, label: &'static str, f: F) -> T
+    where
+        F: FnOnce(&mut LowerCtx<'a>) -> T,
+    {
+        self.ctx_stack.push(label);
+
+        let res = f(self);
+        self.ctx_stack.pop();
+
+        res
+    }
+
+    fn format_ctx(&self) -> String {
+        if self.ctx_stack.is_empty() {
+            "(root)".to_string()
+        } else {
+            self.ctx_stack.join(" -> ")
+        }
     }
 
     fn get_binding(&self, name: &str) -> Result<Binding, Error> {
@@ -366,6 +400,14 @@ fn lower_def(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
 
             collect_let_names(&body, cx.builder);
             collect_typed_lets(s, &body, cx.builder)?;
+
+            // Treat `(def NAME INT)` as a compile-time
+            // integer constant and also make it available
+            // as a global immutable binding.
+            if let Ast::Atom(Atom::Int(v)) = &body {
+                cx.const_ints.insert(s.clone(), *v);
+                cx.map_var(s, Binding::Imm(*v));
+            }
 
             (s.clone(), Vec::new(), body)
         }
@@ -840,81 +882,83 @@ fn lower_hash2(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 }
 
 fn lower_call(cx: &mut LowerCtx, name: &str, args: &[Ast]) -> Result<RVal, Error> {
-    let (params, body) = cx
-        .get_fun(name)
-        .cloned()
-        .ok_or_else(|| Error::UnknownSymbol(name.to_string()))?;
+    cx.with_ctx("call", |cx| {
+        let (params, body) = cx
+            .get_fun(name)
+            .cloned()
+            .ok_or_else(|| Error::UnknownSymbol(name.to_string()))?;
 
-    // Recursion/DAG guard detects re-entry
-    if cx.call_stack.iter().any(|s| s == name) {
-        return Err(Error::Recursion(name.to_string()));
-    }
-
-    cx.call_stack.push(name.to_string());
-
-    if params.len() != args.len() {
-        return Err(Error::InvalidForm(format!(
-            "call: {} expects {} args",
-            name,
-            params.len()
-        )));
-    }
-
-    // evaluate args
-    let mut argv: Vec<RVal> = Vec::with_capacity(args.len());
-    for a in args {
-        argv.push(lower_expr(cx, a.clone())?);
-    }
-
-    // Create new bindings for params
-    // Track ownership of argument registers
-    let mut saved: Vec<(String, Option<Binding>, Option<u8>, bool)> = Vec::new();
-
-    for (p, v) in params.iter().cloned().zip(argv.into_iter()) {
-        match v {
-            RVal::Imm(k) => {
-                let prev = cx.env.vars.get(&p).cloned();
-                saved.push((p.clone(), prev, None, false));
-                cx.map_var(&p, Binding::Imm(k));
-            }
-            RVal::Borrowed(r) => {
-                let prev = cx.env.vars.get(&p).cloned();
-                saved.push((p.clone(), prev, Some(r), false));
-                cx.map_var(&p, Binding::Reg(r));
-            }
-            RVal::Owned(r) => {
-                let prev = cx.env.vars.get(&p).cloned();
-                saved.push((p.clone(), prev, Some(r), true));
-                cx.map_var(&p, Binding::Reg(r));
-            }
+        // Recursion/DAG guard detects re-entry
+        if cx.call_stack.iter().any(|s| s == name) {
+            return Err(Error::Recursion(name.to_string()));
         }
-    }
 
-    let res_v = lower_expr(cx, body.clone())?;
-    let res_reg_opt: Option<u8> = match res_v {
-        RVal::Owned(r) | RVal::Borrowed(r) => Some(r),
-        RVal::Imm(_) => None,
-    };
+        cx.call_stack.push(name.to_string());
 
-    // cleanup param bindings: do not free res reg;
-    // free only Owned args without prior mapping
-    for (p, prior, reg_opt, owned) in saved.into_iter().rev() {
-        let _ = cx.env.vars.remove(&p);
+        if params.len() != args.len() {
+            return Err(Error::InvalidForm(format!(
+                "call: {} expects {} args",
+                name,
+                params.len()
+            )));
+        }
 
-        if let Some(pr) = prior {
-            cx.env.vars.insert(p, pr);
-        } else if owned {
-            if let Some(reg) = reg_opt {
-                if res_reg_opt != Some(reg) {
-                    cx.free_reg(reg);
+        // evaluate args
+        let mut argv: Vec<RVal> = Vec::with_capacity(args.len());
+        for a in args {
+            argv.push(lower_expr(cx, a.clone())?);
+        }
+
+        // Create new bindings for params
+        // Track ownership of argument registers
+        let mut saved: Vec<(String, Option<Binding>, Option<u8>, bool)> = Vec::new();
+
+        for (p, v) in params.iter().cloned().zip(argv.into_iter()) {
+            match v {
+                RVal::Imm(k) => {
+                    let prev = cx.env.vars.get(&p).cloned();
+                    saved.push((p.clone(), prev, None, false));
+                    cx.map_var(&p, Binding::Imm(k));
+                }
+                RVal::Borrowed(r) => {
+                    let prev = cx.env.vars.get(&p).cloned();
+                    saved.push((p.clone(), prev, Some(r), false));
+                    cx.map_var(&p, Binding::Reg(r));
+                }
+                RVal::Owned(r) => {
+                    let prev = cx.env.vars.get(&p).cloned();
+                    saved.push((p.clone(), prev, Some(r), true));
+                    cx.map_var(&p, Binding::Reg(r));
                 }
             }
         }
-    }
 
-    cx.call_stack.pop();
+        let res_v = lower_expr(cx, body.clone())?;
+        let res_reg_opt: Option<u8> = match res_v {
+            RVal::Owned(r) | RVal::Borrowed(r) => Some(r),
+            RVal::Imm(_) => None,
+        };
 
-    Ok(res_v)
+        // cleanup param bindings: do not free res reg;
+        // free only Owned args without prior mapping
+        for (p, prior, reg_opt, owned) in saved.into_iter().rev() {
+            let _ = cx.env.vars.remove(&p);
+
+            if let Some(pr) = prior {
+                cx.env.vars.insert(p, pr);
+            } else if owned {
+                if let Some(reg) = reg_opt {
+                    if res_reg_opt != Some(reg) {
+                        cx.free_reg(reg);
+                    }
+                }
+            }
+        }
+
+        cx.call_stack.pop();
+
+        Ok(res_v)
+    })
 }
 
 fn lower_deftype(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
@@ -1513,588 +1557,605 @@ fn lower_assert_range(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 }
 
 fn lower_safe_add(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("safe-add".into()));
-    }
-
-    let av = lower_expr(cx, rest[0].clone())?;
-    let bv = lower_expr(cx, rest[1].clone())?;
-
-    if let (Some(ai), Some(bi)) = (av.as_imm(), bv.as_imm()) {
-        let sum = ai as u128 + bi as u128;
-        if sum <= u64::MAX as u128 {
-            return Ok(RVal::Imm(sum as u64));
+    cx.with_ctx("safe-add", |cx| {
+        if rest.len() != 2 {
+            return Err(Error::InvalidForm("safe-add".into()));
         }
-    }
 
-    let a = av.into_owned(cx)?;
-    let b = bv.into_owned(cx)?;
+        let av = lower_expr(cx, rest[0].clone())?;
+        let bv = lower_expr(cx, rest[1].clone())?;
 
-    // inputs in u64
-    let a_r = cx.val_reg(&a)?;
-    let b_r = cx.val_reg(&b)?;
+        if let (Some(ai), Some(bi)) = (av.as_imm(), bv.as_imm()) {
+            let sum = ai as u128 + bi as u128;
+            if sum <= u64::MAX as u128 {
+                return Ok(RVal::Imm(sum as u64));
+            }
+        }
 
-    assert_range_bits_for_reg(cx, a_r, 64)?;
-    assert_range_bits_for_reg(cx, b_r, 64)?;
+        let a = av.into_owned(cx)?;
+        let b = bv.into_owned(cx)?;
 
-    let dst = cx.alloc()?;
-    cx.builder.push(Op::Add {
-        dst,
-        a: a_r,
-        b: b_r,
-    });
+        // inputs in u64
+        let a_r = cx.val_reg(&a)?;
+        let b_r = cx.val_reg(&b)?;
 
-    // result in u64
-    assert_range_bits_for_reg(cx, dst, 64)?;
+        assert_range_bits_for_reg(cx, a_r, 64)?;
+        assert_range_bits_for_reg(cx, b_r, 64)?;
 
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
+        // Reuse the left operand register as destination
+        let dst = a_r;
+        cx.builder.push(Op::Add {
+            dst,
+            a: a_r,
+            b: b_r,
+        });
 
-    Ok(RVal::Owned(dst))
+        // result in u64
+        assert_range_bits_for_reg(cx, dst, 64)?;
+
+        // The destination register is `a_r`;
+        // only free `b`.
+        free_if_owned(cx, b);
+
+        Ok(RVal::Owned(dst))
+    })
 }
 
 fn lower_safe_sub(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("safe-sub".into()));
-    }
-
-    let av = lower_expr(cx, rest[0].clone())?;
-    let bv = lower_expr(cx, rest[1].clone())?;
-
-    if let (Some(ai), Some(bi)) = (av.as_imm(), bv.as_imm()) {
-        if ai >= bi {
-            return Ok(RVal::Imm(ai - bi));
+    cx.with_ctx("safe-sub", |cx| {
+        if rest.len() != 2 {
+            return Err(Error::InvalidForm("safe-sub".into()));
         }
-    }
 
-    let a = av.into_owned(cx)?;
-    let b = bv.into_owned(cx)?;
+        let av = lower_expr(cx, rest[0].clone())?;
+        let bv = lower_expr(cx, rest[1].clone())?;
 
-    // inputs in u64
-    let a_r = cx.val_reg(&a)?;
-    let b_r = cx.val_reg(&b)?;
+        if let (Some(ai), Some(bi)) = (av.as_imm(), bv.as_imm()) {
+            if ai >= bi {
+                return Ok(RVal::Imm(ai - bi));
+            }
+        }
 
-    assert_range_bits_for_reg(cx, a_r, 64)?;
-    assert_range_bits_for_reg(cx, b_r, 64)?;
+        let a = av.into_owned(cx)?;
+        let b = bv.into_owned(cx)?;
 
-    let dst = cx.alloc()?;
-    cx.builder.push(Op::Sub {
-        dst,
-        a: a_r,
-        b: b_r,
-    });
+        // inputs in u64
+        let a_r = cx.val_reg(&a)?;
+        let b_r = cx.val_reg(&b)?;
 
-    // no wrap-around:
-    // enforce result in u64
-    assert_range_bits_for_reg(cx, dst, 64)?;
+        assert_range_bits_for_reg(cx, a_r, 64)?;
+        assert_range_bits_for_reg(cx, b_r, 64)?;
 
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
+        let dst = a_r;
+        cx.builder.push(Op::Sub {
+            dst,
+            a: a_r,
+            b: b_r,
+        });
 
-    Ok(RVal::Owned(dst))
+        // no wrap-around:
+        // enforce result in u64
+        assert_range_bits_for_reg(cx, dst, 64)?;
+
+        // Only free the non-destination temp
+        free_if_owned(cx, b);
+
+        Ok(RVal::Owned(dst))
+    })
 }
 
 fn lower_safe_mul(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("safe-mul".into()));
-    }
-
-    let av = lower_expr(cx, rest[0].clone())?;
-    let bv = lower_expr(cx, rest[1].clone())?;
-
-    if let (Some(ai), Some(bi)) = (av.as_imm(), bv.as_imm()) {
-        let prod = (ai as u128) * (bi as u128);
-        if prod <= u64::MAX as u128 {
-            return Ok(RVal::Imm(prod as u64));
+    cx.with_ctx("safe-mul", |cx| {
+        if rest.len() != 2 {
+            return Err(Error::InvalidForm("safe-mul".into()));
         }
-    }
 
-    let a = av.into_owned(cx)?;
-    let b = bv.into_owned(cx)?;
+        let av = lower_expr(cx, rest[0].clone())?;
+        let bv = lower_expr(cx, rest[1].clone())?;
 
-    // Use 32x32->64 safe policy
-    let a_r = cx.val_reg(&a)?;
-    let b_r = cx.val_reg(&b)?;
+        if let (Some(ai), Some(bi)) = (av.as_imm(), bv.as_imm()) {
+            let prod = (ai as u128) * (bi as u128);
+            if prod <= u64::MAX as u128 {
+                return Ok(RVal::Imm(prod as u64));
+            }
+        }
 
-    assert_range_bits_for_reg(cx, a_r, 32)?;
-    assert_range_bits_for_reg(cx, b_r, 32)?;
+        let a = av.into_owned(cx)?;
+        let b = bv.into_owned(cx)?;
 
-    let dst = cx.alloc()?;
-    cx.builder.push(Op::Mul {
-        dst,
-        a: a_r,
-        b: b_r,
-    });
+        // Use 32x32->64 safe policy
+        let a_r = cx.val_reg(&a)?;
+        let b_r = cx.val_reg(&b)?;
 
-    assert_range_bits_for_reg(cx, dst, 64)?;
+        assert_range_bits_for_reg(cx, a_r, 32)?;
+        assert_range_bits_for_reg(cx, b_r, 32)?;
 
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
+        let dst = a_r;
+        cx.builder.push(Op::Mul {
+            dst,
+            a: a_r,
+            b: b_r,
+        });
 
-    Ok(RVal::Owned(dst))
+        assert_range_bits_for_reg(cx, dst, 64)?;
+
+        free_if_owned(cx, b);
+
+        Ok(RVal::Owned(dst))
+    })
 }
 
 // (divmod-q a b) -> floor(a/b)
 fn lower_divmod_q(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("divmod-q".into()));
-    }
+    cx.with_ctx("divmod-q", |cx| {
+        if rest.len() != 2 {
+            return Err(Error::InvalidForm("divmod-q".into()));
+        }
 
-    let av = lower_expr(cx, rest[0].clone())?;
-    let bv = lower_expr(cx, rest[1].clone())?;
+        let av = lower_expr(cx, rest[0].clone())?;
+        let bv = lower_expr(cx, rest[1].clone())?;
 
-    let a = av.into_owned(cx)?;
-    let b = bv.into_owned(cx)?;
+        let a = av.into_owned(cx)?;
+        let b = bv.into_owned(cx)?;
 
-    // Enforce inputs in u64
-    let a_r = cx.val_reg(&a)?;
-    let b_r = cx.val_reg(&b)?;
+        // Enforce inputs in u64
+        let a_r = cx.val_reg(&a)?;
+        let b_r = cx.val_reg(&b)?;
 
-    assert_range_bits_for_reg(cx, a_r, 64)?;
-    assert_range_bits_for_reg(cx, b_r, 64)?;
+        assert_range_bits_for_reg(cx, a_r, 64)?;
+        assert_range_bits_for_reg(cx, b_r, 64)?;
 
-    // Enforce b != 0
-    let zero_b = cx.alloc()?;
-    cx.builder.push(Op::Const {
-        dst: zero_b,
-        imm: 0,
-    });
+        // Enforce b != 0
+        let zero_b = cx.alloc()?;
+        cx.builder.push(Op::Const {
+            dst: zero_b,
+            imm: 0,
+        });
 
-    let eq_b0 = cx.alloc()?;
-    cx.builder.push(Op::Eq {
-        dst: eq_b0,
-        a: b_r,
-        b: zero_b,
-    });
+        let eq_b0 = cx.alloc()?;
+        cx.builder.push(Op::Eq {
+            dst: eq_b0,
+            a: b_r,
+            b: zero_b,
+        });
 
-    cx.free_reg(zero_b);
+        cx.free_reg(zero_b);
 
-    let one_b = cx.alloc()?;
-    cx.builder.push(Op::Const { dst: one_b, imm: 1 });
+        let one_b = cx.alloc()?;
+        cx.builder.push(Op::Const { dst: one_b, imm: 1 });
 
-    let cond_b = cx.alloc()?;
-    cx.builder.push(Op::Sub {
-        dst: cond_b,
-        a: one_b,
-        b: eq_b0,
-    });
+        let cond_b = cx.alloc()?;
+        cx.builder.push(Op::Sub {
+            dst: cond_b,
+            a: one_b,
+            b: eq_b0,
+        });
 
-    cx.free_reg(one_b);
+        cx.free_reg(one_b);
 
-    let assert_b_nz = cx.alloc()?;
-    cx.builder.push(Op::Assert {
-        dst: assert_b_nz,
-        c: cond_b,
-    });
+        let assert_b_nz = cx.alloc()?;
+        cx.builder.push(Op::Assert {
+            dst: assert_b_nz,
+            c: cond_b,
+        });
 
-    cx.free_reg(eq_b0);
-    cx.free_reg(cond_b);
-    cx.free_reg(assert_b_nz);
+        cx.free_reg(eq_b0);
+        cx.free_reg(cond_b);
+        cx.free_reg(assert_b_nz);
 
-    // produce q,r in two regs
-    let rq = cx.alloc()?;
-    let rr = cx.alloc()?;
-    cx.builder.push(Op::DivMod {
-        dst_q: rq,
-        dst_r: rr,
-        a: a_r,
-        b: b_r,
-    });
+        // produce q,r in two regs
+        let rq = cx.alloc()?;
+        let rr = cx.alloc()?;
+        cx.builder.push(Op::DivMod {
+            dst_q: rq,
+            dst_r: rr,
+            a: a_r,
+            b: b_r,
+        });
 
-    // r = a - q*b
-    let qmulb = cx.alloc()?;
-    cx.builder.push(Op::Mul {
-        dst: qmulb,
-        a: rq,
-        b: b_r,
-    });
+        // r = a - q*b
+        let qmulb = cx.alloc()?;
+        cx.builder.push(Op::Mul {
+            dst: qmulb,
+            a: rq,
+            b: b_r,
+        });
 
-    // Range constraints on remainder
-    assert_range_bits_for_reg(cx, rr, 64)?;
+        // Range constraints on remainder
+        assert_range_bits_for_reg(cx, rr, 64)?;
 
-    // Enforce a = b*q + r first,
-    // while qmulb is alive.
-    let sum1 = cx.alloc()?;
-    cx.builder.push(Op::Add {
-        dst: sum1,
-        a: qmulb,
-        b: rr,
-    });
+        // Enforce a = b*q + r first,
+        // while qmulb is alive.
+        let sum1 = cx.alloc()?;
+        cx.builder.push(Op::Add {
+            dst: sum1,
+            a: qmulb,
+            b: rr,
+        });
 
-    let eq = cx.alloc()?;
-    cx.builder.push(Op::Eq {
-        dst: eq,
-        a: sum1,
-        b: a_r,
-    });
+        let eq = cx.alloc()?;
+        cx.builder.push(Op::Eq {
+            dst: eq,
+            a: sum1,
+            b: a_r,
+        });
 
-    let assert_eq = cx.alloc()?;
-    cx.builder.push(Op::Assert {
-        dst: assert_eq,
-        c: eq,
-    });
+        let assert_eq = cx.alloc()?;
+        cx.builder.push(Op::Assert {
+            dst: assert_eq,
+            c: eq,
+        });
 
-    // Free equality temps and qmulb
-    cx.free_reg(sum1);
-    cx.free_reg(eq);
-    cx.free_reg(assert_eq);
-    cx.free_reg(qmulb);
+        // Free equality temps and qmulb
+        cx.free_reg(sum1);
+        cx.free_reg(eq);
+        cx.free_reg(assert_eq);
+        cx.free_reg(qmulb);
 
-    // Enforce r < b via t = b - r;
-    // t in u64 and t != 0
-    let t = cx.alloc()?;
-    cx.builder.push(Op::Sub {
-        dst: t,
-        a: b_r,
-        b: rr,
-    });
+        // Enforce r < b via t = b - r;
+        // t in u64 and t != 0
+        let t = cx.alloc()?;
+        cx.builder.push(Op::Sub {
+            dst: t,
+            a: b_r,
+            b: rr,
+        });
 
-    assert_range_bits_for_reg(cx, t, 64)?;
+        assert_range_bits_for_reg(cx, t, 64)?;
 
-    // Assert t != 0 with minimal live regs
-    let zero = cx.alloc()?;
-    cx.builder.push(Op::Const { dst: zero, imm: 0 });
+        // Assert t != 0 with minimal live regs
+        let zero = cx.alloc()?;
+        cx.builder.push(Op::Const { dst: zero, imm: 0 });
 
-    let eq_t0 = cx.alloc()?;
-    cx.builder.push(Op::Eq {
-        dst: eq_t0,
-        a: t,
-        b: zero,
-    });
+        let eq_t0 = cx.alloc()?;
+        cx.builder.push(Op::Eq {
+            dst: eq_t0,
+            a: t,
+            b: zero,
+        });
 
-    cx.free_reg(zero);
+        cx.free_reg(zero);
 
-    let one = cx.alloc()?;
-    cx.builder.push(Op::Const { dst: one, imm: 1 });
+        let one = cx.alloc()?;
+        cx.builder.push(Op::Const { dst: one, imm: 1 });
 
-    let cond = cx.alloc()?;
-    cx.builder.push(Op::Sub {
-        dst: cond,
-        a: one,
-        b: eq_t0,
-    });
+        let cond = cx.alloc()?;
+        cx.builder.push(Op::Sub {
+            dst: cond,
+            a: one,
+            b: eq_t0,
+        });
 
-    cx.free_reg(one);
+        cx.free_reg(one);
 
-    let assert_ok = cx.alloc()?;
-    cx.builder.push(Op::Assert {
-        dst: assert_ok,
-        c: cond,
-    });
+        let assert_ok = cx.alloc()?;
+        cx.builder.push(Op::Assert {
+            dst: assert_ok,
+            c: cond,
+        });
 
-    // Free temps (keep rq; drop rr)
-    cx.free_reg(eq_t0);
-    cx.free_reg(cond);
-    cx.free_reg(assert_ok);
-    cx.free_reg(rr);
-    cx.free_reg(t);
+        // Free temps (keep rq; drop rr)
+        cx.free_reg(eq_t0);
+        cx.free_reg(cond);
+        cx.free_reg(assert_ok);
+        cx.free_reg(rr);
+        cx.free_reg(t);
 
-    // Free inputs if owned locally
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
+        // Free inputs if owned locally
+        free_if_owned(cx, a);
+        free_if_owned(cx, b);
 
-    Ok(RVal::Owned(rq))
+        Ok(RVal::Owned(rq))
+    })
 }
 
 // (divmod-r a b) -> a % b
 fn lower_divmod_r(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("divmod-r".into()));
-    }
+    cx.with_ctx("divmod-r", |cx| {
+        if rest.len() != 2 {
+            return Err(Error::InvalidForm("divmod-r".into()));
+        }
 
-    let av = lower_expr(cx, rest[0].clone())?;
-    let bv = lower_expr(cx, rest[1].clone())?;
+        let av = lower_expr(cx, rest[0].clone())?;
+        let bv = lower_expr(cx, rest[1].clone())?;
 
-    let a = av.into_owned(cx)?;
-    let b = bv.into_owned(cx)?;
+        let a = av.into_owned(cx)?;
+        let b = bv.into_owned(cx)?;
 
-    // Enforce inputs in u64
-    let a_r = cx.val_reg(&a)?;
-    let b_r = cx.val_reg(&b)?;
+        // Enforce inputs in u64
+        let a_r = cx.val_reg(&a)?;
+        let b_r = cx.val_reg(&b)?;
 
-    assert_range_bits_for_reg(cx, a_r, 64)?;
-    assert_range_bits_for_reg(cx, b_r, 64)?;
+        assert_range_bits_for_reg(cx, a_r, 64)?;
+        assert_range_bits_for_reg(cx, b_r, 64)?;
 
-    // Enforce b != 0
-    let zero_b = cx.alloc()?;
-    cx.builder.push(Op::Const {
-        dst: zero_b,
-        imm: 0,
-    });
+        // Enforce b != 0
+        let zero_b = cx.alloc()?;
+        cx.builder.push(Op::Const {
+            dst: zero_b,
+            imm: 0,
+        });
 
-    let eq_b0 = cx.alloc()?;
-    cx.builder.push(Op::Eq {
-        dst: eq_b0,
-        a: b_r,
-        b: zero_b,
-    });
+        let eq_b0 = cx.alloc()?;
+        cx.builder.push(Op::Eq {
+            dst: eq_b0,
+            a: b_r,
+            b: zero_b,
+        });
 
-    cx.free_reg(zero_b);
+        cx.free_reg(zero_b);
 
-    let one_b = cx.alloc()?;
-    cx.builder.push(Op::Const { dst: one_b, imm: 1 });
+        let one_b = cx.alloc()?;
+        cx.builder.push(Op::Const { dst: one_b, imm: 1 });
 
-    let cond_b = cx.alloc()?;
-    cx.builder.push(Op::Sub {
-        dst: cond_b,
-        a: one_b,
-        b: eq_b0,
-    });
+        let cond_b = cx.alloc()?;
+        cx.builder.push(Op::Sub {
+            dst: cond_b,
+            a: one_b,
+            b: eq_b0,
+        });
 
-    cx.free_reg(one_b);
+        cx.free_reg(one_b);
 
-    let assert_b_nz = cx.alloc()?;
-    cx.builder.push(Op::Assert {
-        dst: assert_b_nz,
-        c: cond_b,
-    });
+        let assert_b_nz = cx.alloc()?;
+        cx.builder.push(Op::Assert {
+            dst: assert_b_nz,
+            c: cond_b,
+        });
 
-    cx.free_reg(eq_b0);
-    cx.free_reg(cond_b);
-    cx.free_reg(assert_b_nz);
+        cx.free_reg(eq_b0);
+        cx.free_reg(cond_b);
+        cx.free_reg(assert_b_nz);
 
-    // produce q,r in two regs
-    let rq = cx.alloc()?;
-    let rr = cx.alloc()?;
-    cx.builder.push(Op::DivMod {
-        dst_q: rq,
-        dst_r: rr,
-        a: a_r,
-        b: b_r,
-    });
+        // produce q,r in two regs
+        let rq = cx.alloc()?;
+        let rr = cx.alloc()?;
+        cx.builder.push(Op::DivMod {
+            dst_q: rq,
+            dst_r: rr,
+            a: a_r,
+            b: b_r,
+        });
 
-    let qmulb = cx.alloc()?;
-    cx.builder.push(Op::Mul {
-        dst: qmulb,
-        a: rq,
-        b: b_r,
-    });
+        let qmulb = cx.alloc()?;
+        cx.builder.push(Op::Mul {
+            dst: qmulb,
+            a: rq,
+            b: b_r,
+        });
 
-    // Range constraints and r < b
-    assert_range_bits_for_reg(cx, rr, 64)?;
+        // Range constraints and r < b
+        assert_range_bits_for_reg(cx, rr, 64)?;
 
-    // Enforce a = b*q + r first (mulb is alive)
-    let sum1 = cx.alloc()?;
-    cx.builder.push(Op::Add {
-        dst: sum1,
-        a: qmulb,
-        b: rr,
-    });
+        // Enforce a = b*q + r first (mulb is alive)
+        let sum1 = cx.alloc()?;
+        cx.builder.push(Op::Add {
+            dst: sum1,
+            a: qmulb,
+            b: rr,
+        });
 
-    let eq = cx.alloc()?;
-    cx.builder.push(Op::Eq {
-        dst: eq,
-        a: sum1,
-        b: a_r,
-    });
+        let eq = cx.alloc()?;
+        cx.builder.push(Op::Eq {
+            dst: eq,
+            a: sum1,
+            b: a_r,
+        });
 
-    let assert_eq = cx.alloc()?;
-    cx.builder.push(Op::Assert {
-        dst: assert_eq,
-        c: eq,
-    });
+        let assert_eq = cx.alloc()?;
+        cx.builder.push(Op::Assert {
+            dst: assert_eq,
+            c: eq,
+        });
 
-    cx.free_reg(sum1);
-    cx.free_reg(eq);
-    cx.free_reg(assert_eq);
-    cx.free_reg(qmulb);
+        cx.free_reg(sum1);
+        cx.free_reg(eq);
+        cx.free_reg(assert_eq);
+        cx.free_reg(qmulb);
 
-    let t = cx.alloc()?;
-    cx.builder.push(Op::Sub {
-        dst: t,
-        a: b_r,
-        b: rr,
-    });
+        let t = cx.alloc()?;
+        cx.builder.push(Op::Sub {
+            dst: t,
+            a: b_r,
+            b: rr,
+        });
 
-    assert_range_bits_for_reg(cx, t, 64)?;
+        assert_range_bits_for_reg(cx, t, 64)?;
 
-    let zero = cx.alloc()?;
-    cx.builder.push(Op::Const { dst: zero, imm: 0 });
+        let zero = cx.alloc()?;
+        cx.builder.push(Op::Const { dst: zero, imm: 0 });
 
-    let eq_t0 = cx.alloc()?;
-    cx.builder.push(Op::Eq {
-        dst: eq_t0,
-        a: t,
-        b: zero,
-    });
+        let eq_t0 = cx.alloc()?;
+        cx.builder.push(Op::Eq {
+            dst: eq_t0,
+            a: t,
+            b: zero,
+        });
 
-    cx.free_reg(zero);
+        cx.free_reg(zero);
 
-    let one = cx.alloc()?;
-    cx.builder.push(Op::Const { dst: one, imm: 1 });
+        let one = cx.alloc()?;
+        cx.builder.push(Op::Const { dst: one, imm: 1 });
 
-    let cond = cx.alloc()?;
-    cx.builder.push(Op::Sub {
-        dst: cond,
-        a: one,
-        b: eq_t0,
-    });
+        let cond = cx.alloc()?;
+        cx.builder.push(Op::Sub {
+            dst: cond,
+            a: one,
+            b: eq_t0,
+        });
 
-    cx.free_reg(one);
+        cx.free_reg(one);
 
-    let assert_ok = cx.alloc()?;
-    cx.builder.push(Op::Assert {
-        dst: assert_ok,
-        c: cond,
-    });
+        let assert_ok = cx.alloc()?;
+        cx.builder.push(Op::Assert {
+            dst: assert_ok,
+            c: cond,
+        });
 
-    // Free temps (keep rr)
-    cx.free_reg(eq_t0);
-    cx.free_reg(cond);
-    cx.free_reg(assert_ok);
-    cx.free_reg(t);
+        // Free temps (keep rr)
+        cx.free_reg(eq_t0);
+        cx.free_reg(cond);
+        cx.free_reg(assert_ok);
+        cx.free_reg(t);
 
-    // Free inputs and q
-    cx.free_reg(rq);
+        // Free inputs and q
+        cx.free_reg(rq);
 
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
+        free_if_owned(cx, a);
+        free_if_owned(cx, b);
 
-    Ok(RVal::Owned(rr))
+        Ok(RVal::Owned(rr))
+    })
 }
 
 // (mulwide-hi a b) -> upper 64 bits of a*b
 fn lower_mulwide_hi(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("mulwide-hi".into()));
-    }
+    cx.with_ctx("mulwide-hi", |cx| {
+        if rest.len() != 2 {
+            return Err(Error::InvalidForm("mulwide-hi".into()));
+        }
 
-    let av = lower_expr(cx, rest[0].clone())?;
-    let bv = lower_expr(cx, rest[1].clone())?;
+        let av = lower_expr(cx, rest[0].clone())?;
+        let bv = lower_expr(cx, rest[1].clone())?;
 
-    let a = av.into_owned(cx)?;
-    let b = bv.into_owned(cx)?;
+        let a = av.into_owned(cx)?;
+        let b = bv.into_owned(cx)?;
 
-    // inputs in u64
-    let a_r = cx.val_reg(&a)?;
-    let b_r = cx.val_reg(&b)?;
+        // inputs in u64
+        let a_r = cx.val_reg(&a)?;
+        let b_r = cx.val_reg(&b)?;
 
-    assert_range_bits_for_reg(cx, a_r, 64)?;
-    assert_range_bits_for_reg(cx, b_r, 64)?;
+        assert_range_bits_for_reg(cx, a_r, 64)?;
+        assert_range_bits_for_reg(cx, b_r, 64)?;
 
-    // produce hi/lo in two regs
-    let rhi = cx.alloc()?;
-    let rlo = cx.alloc()?;
+        // produce hi/lo in two regs
+        let rhi = cx.alloc()?;
+        let rlo = cx.alloc()?;
 
-    cx.builder.push(Op::MulWide {
-        dst_hi: rhi,
-        dst_lo: rlo,
-        a: a_r,
-        b: b_r,
-    });
+        cx.builder.push(Op::MulWide {
+            dst_hi: rhi,
+            dst_lo: rlo,
+            a: a_r,
+            b: b_r,
+        });
 
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
+        free_if_owned(cx, a);
+        free_if_owned(cx, b);
 
-    // outputs in u64
-    assert_range_bits_for_reg(cx, rhi, 64)?;
-    assert_range_bits_for_reg(cx, rlo, 64)?;
+        // outputs in u64
+        assert_range_bits_for_reg(cx, rhi, 64)?;
+        assert_range_bits_for_reg(cx, rlo, 64)?;
 
-    cx.free_reg(rlo);
+        cx.free_reg(rlo);
 
-    Ok(RVal::Owned(rhi))
+        Ok(RVal::Owned(rhi))
+    })
 }
 
 // (mulwide-lo a b) -> lower 64 bits of a*b
 fn lower_mulwide_lo(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    if rest.len() != 2 {
-        return Err(Error::InvalidForm("mulwide-lo".into()));
-    }
+    cx.with_ctx("mulwide-lo", |cx| {
+        if rest.len() != 2 {
+            return Err(Error::InvalidForm("mulwide-lo".into()));
+        }
 
-    let av = lower_expr(cx, rest[0].clone())?;
-    let bv = lower_expr(cx, rest[1].clone())?;
+        let av = lower_expr(cx, rest[0].clone())?;
+        let bv = lower_expr(cx, rest[1].clone())?;
 
-    let a = av.into_owned(cx)?;
-    let b = bv.into_owned(cx)?;
+        let a = av.into_owned(cx)?;
+        let b = bv.into_owned(cx)?;
 
-    // inputs in u64
-    let a_r = cx.val_reg(&a)?;
-    let b_r = cx.val_reg(&b)?;
+        // inputs in u64
+        let a_r = cx.val_reg(&a)?;
+        let b_r = cx.val_reg(&b)?;
 
-    assert_range_bits_for_reg(cx, a_r, 64)?;
-    assert_range_bits_for_reg(cx, b_r, 64)?;
+        assert_range_bits_for_reg(cx, a_r, 64)?;
+        assert_range_bits_for_reg(cx, b_r, 64)?;
 
-    // produce hi/lo in two regs
-    let rhi = cx.alloc()?;
-    let rlo = cx.alloc()?;
+        // produce hi/lo in two regs
+        let rhi = cx.alloc()?;
+        let rlo = cx.alloc()?;
 
-    cx.builder.push(Op::MulWide {
-        dst_hi: rhi,
-        dst_lo: rlo,
-        a: a_r,
-        b: b_r,
-    });
+        cx.builder.push(Op::MulWide {
+            dst_hi: rhi,
+            dst_lo: rlo,
+            a: a_r,
+            b: b_r,
+        });
 
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
+        free_if_owned(cx, a);
+        free_if_owned(cx, b);
 
-    // outputs in u64
-    assert_range_bits_for_reg(cx, rhi, 64)?;
-    assert_range_bits_for_reg(cx, rlo, 64)?;
+        // outputs in u64
+        assert_range_bits_for_reg(cx, rhi, 64)?;
+        assert_range_bits_for_reg(cx, rlo, 64)?;
 
-    cx.free_reg(rhi);
+        cx.free_reg(rhi);
 
-    Ok(RVal::Owned(rlo))
+        Ok(RVal::Owned(rlo))
+    })
 }
 
 // (muldiv a b c) -> floor((a*b)/c)
 fn lower_muldiv_floor(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    if rest.len() != 3 {
-        return Err(Error::InvalidForm("muldiv".into()));
-    }
+    cx.with_ctx("muldiv", |cx| {
+        if rest.len() != 3 {
+            return Err(Error::InvalidForm("muldiv".into()));
+        }
 
-    let av = lower_expr(cx, rest[0].clone())?;
-    let bv = lower_expr(cx, rest[1].clone())?;
-    let cv = lower_expr(cx, rest[2].clone())?;
+        let av = lower_expr(cx, rest[0].clone())?;
+        let bv = lower_expr(cx, rest[1].clone())?;
+        let cv = lower_expr(cx, rest[2].clone())?;
 
-    let a = av.into_owned(cx)?;
-    let b = bv.into_owned(cx)?;
-    let c = cv.into_owned(cx)?;
+        let a = av.into_owned(cx)?;
+        let b = bv.into_owned(cx)?;
+        let c = cv.into_owned(cx)?;
 
-    // Enforce inputs in u64
-    let a_r = cx.val_reg(&a)?;
-    let b_r = cx.val_reg(&b)?;
-    let c_r = cx.val_reg(&c)?;
+        // Enforce inputs in u64
+        let a_r = cx.val_reg(&a)?;
+        let b_r = cx.val_reg(&b)?;
+        let c_r = cx.val_reg(&c)?;
 
-    assert_range_bits_for_reg(cx, a_r, 64)?;
-    assert_range_bits_for_reg(cx, b_r, 64)?;
-    assert_range_bits_for_reg(cx, c_r, 64)?;
+        assert_range_bits_for_reg(cx, a_r, 64)?;
+        assert_range_bits_for_reg(cx, b_r, 64)?;
+        assert_range_bits_for_reg(cx, c_r, 64)?;
 
-    // Wide multiply
-    let rhi = cx.alloc()?;
-    let rlo = cx.alloc()?;
-    cx.builder.push(Op::MulWide {
-        dst_hi: rhi,
-        dst_lo: rlo,
-        a: a_r,
-        b: b_r,
-    });
+        // Wide multiply
+        let rhi = cx.alloc()?;
+        let rlo = cx.alloc()?;
+        cx.builder.push(Op::MulWide {
+            dst_hi: rhi,
+            dst_lo: rlo,
+            a: a_r,
+            b: b_r,
+        });
 
-    free_if_owned(cx, a);
-    free_if_owned(cx, b);
+        free_if_owned(cx, a);
+        free_if_owned(cx, b);
 
-    // 128/64 division -> q,r
-    let rq = cx.alloc()?;
-    let rr = cx.alloc()?;
-    cx.builder.push(Op::DivMod128 {
-        a_hi: rhi,
-        a_lo: rlo,
-        b: c_r,
-        dst_q: rq,
-        dst_r: rr,
-    });
+        // 128/64 division -> q,r
+        let rq = cx.alloc()?;
+        let rr = cx.alloc()?;
+        cx.builder.push(Op::DivMod128 {
+            a_hi: rhi,
+            a_lo: rlo,
+            b: c_r,
+            dst_q: rq,
+            dst_r: rr,
+        });
 
-    // Outputs in u64
-    assert_range_bits_for_reg(cx, rq, 64)?;
-    assert_range_bits_for_reg(cx, rr, 64)?;
+        // Outputs in u64
+        assert_range_bits_for_reg(cx, rq, 64)?;
+        assert_range_bits_for_reg(cx, rr, 64)?;
 
-    free_if_owned(cx, c);
+        free_if_owned(cx, c);
 
-    cx.free_reg(rhi);
-    cx.free_reg(rlo);
-    cx.free_reg(rr);
+        cx.free_reg(rhi);
+        cx.free_reg(rlo);
+        cx.free_reg(rr);
 
-    Ok(RVal::Owned(rq))
+        Ok(RVal::Owned(rq))
+    })
 }
 
 fn lower_begin(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
@@ -2138,19 +2199,31 @@ fn lower_store(cx: &mut LowerCtx, rest: &[Ast]) -> Result<(), Error> {
         return Err(Error::InvalidForm("store".into()));
     }
 
-    let addr = lower_expr(cx, rest[0].clone())?;
-    let val = lower_expr(cx, rest[1].clone())?;
+    let addr_v = lower_expr(cx, rest[0].clone())?;
+    let val_v = lower_expr(cx, rest[1].clone())?;
 
-    let addr = addr.into_owned(cx)?;
-    let val = val.into_owned(cx)?;
+    // Materialize immediates only
+    let addr_v = match addr_v {
+        RVal::Imm(_) => addr_v.into_owned(cx)?,
+        other => other,
+    };
+    let val_v = match val_v {
+        RVal::Imm(_) => val_v.into_owned(cx)?,
+        other => other,
+    };
+
+    let addr_reg = cx.val_reg(&addr_v)?;
+    let val_reg = cx.val_reg(&val_v)?;
 
     cx.builder.push(Op::Store {
-        addr: cx.val_reg(&addr)?,
-        src: cx.val_reg(&val)?,
+        addr: addr_reg,
+        src: val_reg,
     });
 
-    free_if_owned(cx, addr);
-    free_if_owned(cx, val);
+    // Free only Owned temps;
+    // borrowed regs stay live for their callers.
+    free_if_owned(cx, addr_v);
+    free_if_owned(cx, val_v);
 
     Ok(())
 }
@@ -2521,73 +2594,84 @@ fn lower_block(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
 }
 
 fn lower_loop(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
-    // (loop :max N ((v1 init1) ... (vk initk)) body...)
-    // Bounded, unconditional tail-recursive loop.
-    if rest.len() < 3 {
-        return Err(Error::InvalidForm("loop".into()));
-    }
-
-    // Expect :max keyword
-    let max_kw = match &rest[0] {
-        Ast::Atom(Atom::Sym(s)) => s,
-        _ => return Err(Error::InvalidForm("loop: expected :max".into())),
-    };
-
-    if max_kw != ":max" {
-        return Err(Error::InvalidForm("loop: expected :max keyword".into()));
-    }
-
-    // Static bound N
-    let max_n = match &rest[1] {
-        Ast::Atom(Atom::Int(n)) => *n as usize,
-        _ => {
-            return Err(Error::InvalidForm(
-                "loop: :max must be integer literal".into(),
-            ));
+    cx.with_ctx("loop", |cx| {
+        // (loop :max N ((v1 init1) ... (vk initk)) body... (recur ...))
+        if rest.len() < 3 {
+            return Err(Error::InvalidForm("loop".into()));
         }
-    };
 
-    if max_n == 0 {
-        return Err(Error::InvalidForm("loop: :max must be >= 1".into()));
-    }
+        // Expect :max keyword
+        let max_kw = match &rest[0] {
+            Ast::Atom(Atom::Sym(s)) => s,
+            _ => return Err(Error::InvalidForm("loop: expected :max".into())),
+        };
 
-    let binds_ast = match &rest[2] {
-        Ast::List(items) => items,
-        _ => return Err(Error::InvalidForm("loop: expected binding list".into())),
-    };
+        if max_kw != ":max" {
+            return Err(Error::InvalidForm("loop: expected :max keyword".into()));
+        }
 
-    if binds_ast.is_empty() {
-        return Err(Error::InvalidForm("loop: empty binding list".into()));
-    }
-
-    let mut bind_names: Vec<String> = Vec::with_capacity(binds_ast.len());
-    let mut bind_inits: Vec<Ast> = Vec::with_capacity(binds_ast.len());
-
-    for b in binds_ast {
-        match b {
-            Ast::List(kv) if kv.len() == 2 => {
-                let name = match &kv[0] {
-                    Ast::Atom(Atom::Sym(s)) => s.clone(),
-                    _ => return Err(Error::InvalidForm("loop: binding name".into())),
-                };
-
-                bind_names.push(name);
-                bind_inits.push(kv[1].clone());
+        // Static bound N
+        let max_n = match &rest[1] {
+            Ast::Atom(Atom::Int(n)) => *n as usize,
+            Ast::Atom(Atom::Sym(name)) => {
+                // Prefer local bindings first
+                if let Ok(Binding::Imm(k)) = cx.get_binding(name) {
+                    k as usize
+                } else if let Some(k) = cx.const_ints.get(name) {
+                    (*k) as usize
+                } else {
+                    return Err(Error::InvalidForm(
+                        "loop: :max must be integer literal or constant".into(),
+                    ));
+                }
             }
-            _ => return Err(Error::InvalidForm("loop: binding pair".into())),
+            _ => {
+                return Err(Error::InvalidForm(
+                    "loop: :max must be integer literal or constant".into(),
+                ));
+            }
+        };
+
+        if max_n == 0 {
+            return Err(Error::InvalidForm("loop: :max must be >= 1".into()));
         }
-    }
 
-    if rest.len() < 4 {
-        return Err(Error::InvalidForm("loop: missing body".into()));
-    }
+        let binds_ast = match &rest[2] {
+            Ast::List(items) => items,
+            _ => return Err(Error::InvalidForm("loop: expected binding list".into())),
+        };
 
-    let body_forms: &[Ast] = &rest[3..];
+        if binds_ast.is_empty() {
+            return Err(Error::InvalidForm("loop: empty binding list".into()));
+        }
 
-    // Check for tail recur
-    let (has_recur, recur_args) = match body_forms.last() {
-        Some(Ast::List(items)) if !items.is_empty() => {
-            match &items[0] {
+        let mut bind_names: Vec<String> = Vec::with_capacity(binds_ast.len());
+        let mut bind_inits: Vec<Ast> = Vec::with_capacity(binds_ast.len());
+
+        for b in binds_ast {
+            match b {
+                Ast::List(kv) if kv.len() == 2 => {
+                    let name = match &kv[0] {
+                        Ast::Atom(Atom::Sym(s)) => s.clone(),
+                        _ => return Err(Error::InvalidForm("loop: binding name".into())),
+                    };
+
+                    bind_names.push(name);
+                    bind_inits.push(kv[1].clone());
+                }
+                _ => return Err(Error::InvalidForm("loop: binding pair".into())),
+            }
+        }
+
+        if rest.len() < 4 {
+            return Err(Error::InvalidForm("loop: missing body".into()));
+        }
+
+        let body_forms: &[Ast] = &rest[3..];
+
+        // Check for tail recur
+        let (has_recur, recur_args) = match body_forms.last() {
+            Some(Ast::List(items)) if !items.is_empty() => match &items[0] {
                 Ast::Atom(Atom::Sym(h)) if h == "recur" => {
                     let args = &items[1..];
                     if args.len() != bind_names.len() {
@@ -2608,47 +2692,137 @@ fn lower_loop(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
                     (true, Some(args.to_vec()))
                 }
                 _ => (false, None),
+            },
+            _ => (false, None),
+        };
+
+        if !has_recur {
+            let mut bind_pairs: Vec<Ast> = Vec::with_capacity(bind_names.len());
+            for (name, init) in bind_names.into_iter().zip(bind_inits.into_iter()) {
+                bind_pairs.push(Ast::List(vec![Ast::Atom(Atom::Sym(name)), init]));
+            }
+
+            let binds_ast = Ast::List(bind_pairs);
+            let body_ast = implicit_begin(body_forms);
+
+            let expanded = Ast::List(vec![
+                Ast::Atom(Atom::Sym("block".to_string())),
+                Ast::List(vec![
+                    Ast::Atom(Atom::Sym("let".to_string())),
+                    binds_ast,
+                    body_ast,
+                ]),
+            ]);
+
+            return lower_expr(cx, expanded);
+        }
+
+        // With recur
+        let recur_args = recur_args.unwrap();
+        let prefix: &[Ast] = &body_forms[..body_forms.len() - 1];
+
+        // Record start of loop block for segmentation.
+        let lvl_start = cx.builder.current_level();
+
+        let mut states: Vec<LoopVarState> = Vec::with_capacity(bind_names.len());
+
+        // Initialize loop variables
+        for (name, init_ast) in bind_names.iter().zip(bind_inits.iter()) {
+            let v = lower_expr(cx, init_ast.clone())?;
+            let owned = v.into_owned(cx)?;
+            let r = match owned {
+                RVal::Owned(r) => r,
+                _ => unreachable!("into_owned must return Owned"),
+            };
+
+            let prior = cx.env.vars.get(name).cloned();
+            cx.map_var(name, Binding::Reg(r));
+
+            states.push(LoopVarState {
+                name: name.clone(),
+                prior,
+                reg: r,
+            });
+        }
+
+        let mut loop_result: Option<RVal> = None;
+
+        // Unroll up to max_n iterations in a flat manner
+        for iter in 0..max_n {
+            let mut last_val: Option<RVal> = None;
+            if !prefix.is_empty() {
+                for (idx, form) in prefix.iter().enumerate() {
+                    let v = lower_expr(cx, form.clone())?;
+                    if idx + 1 < prefix.len() {
+                        free_if_owned(cx, v);
+                    } else {
+                        last_val = Some(v);
+                    }
+                }
+            }
+
+            let last_val = last_val.unwrap_or(RVal::Imm(0));
+            let is_last_iter = iter + 1 == max_n;
+
+            if is_last_iter {
+                // Last iteration:
+                // the last prefix value becomes the loop result.
+                loop_result = Some(last_val);
+                break;
+            } else {
+                // Intermediate iterations:
+                // prefix result is not returned from loop.
+                free_if_owned(cx, last_val);
+            }
+
+            // Compute next state values sequentially from
+            // the current state using recur args.
+            for (idx, expr) in recur_args.iter().enumerate() {
+                let v = lower_expr(cx, expr.clone())?;
+                let owned = v.into_owned(cx)?;
+                let new_r = match owned {
+                    RVal::Owned(r) => r,
+                    _ => unreachable!("into_owned must return Owned"),
+                };
+
+                let st = &mut states[idx];
+                let old_r = st.reg;
+
+                // Rebind variable name to the new register
+                cx.map_var(&st.name, Binding::Reg(new_r));
+                st.reg = new_r;
+
+                if old_r != new_r {
+                    cx.free_reg(old_r);
+                }
             }
         }
-        _ => (false, None),
-    };
 
-    // Build an expanded AST without loop/recur
-    let expanded = if has_recur {
-        let prefix: Vec<Ast> = body_forms[..body_forms.len() - 1].to_vec();
-        let iter0 = build_loop_iter(
-            0,
-            max_n,
-            &bind_names,
-            &bind_inits,
-            &prefix,
-            &recur_args.unwrap(),
-        );
+        let res = loop_result.unwrap_or(RVal::Imm(0));
+        let res_reg_opt = match res {
+            RVal::Owned(r) | RVal::Borrowed(r) => Some(r),
+            RVal::Imm(_) => None,
+        };
 
-        // Wrap whole loop body into a block
-        Ast::List(vec![Ast::Atom(Atom::Sym("block".to_string())), iter0])
-    } else {
-        // No recur:
-        // single iteration in a block with a single let
-        let mut bind_pairs: Vec<Ast> = Vec::with_capacity(bind_names.len());
-        for (name, init) in bind_names.into_iter().zip(bind_inits.into_iter()) {
-            bind_pairs.push(Ast::List(vec![Ast::Atom(Atom::Sym(name)), init]));
+        // Restore outer environment and free loop state registers
+        for st in states.into_iter().rev() {
+            cx.env.vars.remove(&st.name);
+
+            if let Some(pr) = st.prior {
+                cx.env.vars.insert(st.name, pr);
+            } else if Some(st.reg) != res_reg_opt {
+                cx.free_reg(st.reg);
+            }
         }
 
-        let binds_ast = Ast::List(bind_pairs);
-        let body_ast = implicit_begin(body_forms);
+        // Close the loop block
+        let lvl_end = cx.builder.current_level();
+        if lvl_end > lvl_start {
+            cx.builder.push_block(lvl_start, lvl_end)?;
+        }
 
-        Ast::List(vec![
-            Ast::Atom(Atom::Sym("block".to_string())),
-            Ast::List(vec![
-                Ast::Atom(Atom::Sym("let".to_string())),
-                binds_ast,
-                body_ast,
-            ]),
-        ])
-    };
-
-    lower_expr(cx, expanded)
+        Ok(res)
+    })
 }
 
 fn parse_typed_let(owner: Option<&str>, rest: &[Ast]) -> Result<LetTypeSchema, Error> {
@@ -2844,28 +3018,30 @@ fn free_if_owned(cx: &mut LowerCtx, v: RVal) {
 }
 
 fn assert_range_bits_for_reg(cx: &mut LowerCtx, r: u8, bits: u8) -> Result<(), Error> {
-    match bits {
-        32 => {
-            let dst = cx.alloc()?;
-            cx.builder.push(Op::AssertRange { dst, r, bits: 32 });
+    cx.with_ctx("assert-range-bits", |cx| {
+        match bits {
+            32 => {
+                let dst = cx.alloc()?;
+                cx.builder.push(Op::AssertRange { dst, r, bits: 32 });
 
-            cx.free_reg(dst);
-        }
-        64 => {
-            let dst = cx.alloc()?;
-            cx.builder.push(Op::AssertRangeLo { dst, r });
-            cx.builder.push(Op::AssertRangeHi { dst, r });
+                cx.free_reg(dst);
+            }
+            64 => {
+                let dst = cx.alloc()?;
+                cx.builder.push(Op::AssertRangeLo { dst, r });
+                cx.builder.push(Op::AssertRangeHi { dst, r });
 
-            cx.free_reg(dst);
+                cx.free_reg(dst);
+            }
+            _ => {
+                return Err(Error::InvalidForm(
+                    "assert-range: bits must be 32 or 64".into(),
+                ));
+            }
         }
-        _ => {
-            return Err(Error::InvalidForm(
-                "assert-range: bits must be 32 or 64".into(),
-            ));
-        }
-    }
 
-    Ok(())
+        Ok(())
+    })
 }
 
 fn parse_dir_sib_pair(cx: &mut LowerCtx, pair: &Ast) -> Result<(u8, u8), Error> {
@@ -3021,37 +3197,4 @@ fn contains_symbol(ast: &Ast, name: &str) -> bool {
         Ast::List(items) => items.iter().any(|a| contains_symbol(a, name)),
         _ => false,
     }
-}
-
-fn build_loop_iter(
-    iter: usize,
-    max_n: usize,
-    names: &[String],
-    inits: &[Ast],
-    prefix: &[Ast],
-    recur_args: &[Ast],
-) -> Ast {
-    // (let ((vi init_i) ...) body...)
-    let mut bind_pairs: Vec<Ast> = Vec::with_capacity(names.len());
-    for (name, init) in names.iter().cloned().zip(inits.iter().cloned()) {
-        bind_pairs.push(Ast::List(vec![Ast::Atom(Atom::Sym(name)), init]));
-    }
-
-    let binds_ast = Ast::List(bind_pairs);
-
-    let mut body_vec: Vec<Ast> = prefix.to_vec();
-
-    if iter + 1 < max_n {
-        // Next iteration: bindings = recur_args
-        let next_inits: Vec<Ast> = recur_args.to_vec();
-        let next = build_loop_iter(iter + 1, max_n, names, &next_inits, prefix, recur_args);
-        body_vec.push(next);
-    }
-
-    Ast::List(vec![
-        Ast::Atom(Atom::Sym("let".to_string())),
-        binds_ast,
-        // body_vec as implicit begin
-        implicit_begin(&body_vec),
-    ])
 }
