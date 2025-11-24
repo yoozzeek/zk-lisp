@@ -308,6 +308,7 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     }
                     "=" => lower_eq(cx, tail),
                     "if" => lower_if(cx, tail),
+                    "when" => lower_when(cx, tail),
                     "let" => lower_let(cx, tail),
                     "neg" => lower_neg(cx, tail),
                     "hash2" => lower_hash2(cx, tail),
@@ -812,6 +813,28 @@ fn lower_if(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
     free_if_owned(cx, e);
 
     Ok(RVal::Owned(dst))
+}
+
+fn lower_when(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {
+    // (when cond body1 body2 ...)
+    cx.with_ctx("when", |cx| {
+        if rest.len() < 2 {
+            return Err(Error::InvalidForm("when: expected cond and body".into()));
+        }
+
+        let cond_ast = rest[0].clone();
+        let body_forms = &rest[1..];
+        let body_ast = implicit_begin(body_forms);
+
+        let expanded = Ast::List(vec![
+            Ast::Atom(Atom::Sym("if".to_string())),
+            cond_ast,
+            body_ast,
+            Ast::Atom(Atom::Int(0)),
+        ]);
+
+        lower_expr(cx, expanded)
+    })
 }
 
 fn lower_eq(cx: &mut LowerCtx, rest: &[Ast]) -> Result<RVal, Error> {

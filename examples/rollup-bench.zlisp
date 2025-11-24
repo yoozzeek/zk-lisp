@@ -11,8 +11,22 @@
 ;; [0 .. N_ACCOUNTS-1] = balances
 ;; [N_ACCOUNTS .. N_ACCOUNTS+4*N_TXS-1] =
 ;;     tx data (from, to, amt, fee) per tx
-;; We assume initial balances + tx table are already in RAM
-;; (e.g. preloaded by host before proving).
+(def (init_state)
+  ;; Initialize account balances [0 .. N_ACCOUNTS-1].
+  (loop :max N_ACCOUNTS ((i 0))
+    (begin
+      (store i 0))
+    (recur (+ i 1)))
+
+  ;; Initialize tx table [tx_base .. tx_base + 4*N_TXS-1].
+  (loop :max N_TXS ((i 0))
+    (let ((base (+ (tx_base) (* i 4))))
+      (begin
+        (store base       0)   ;; from
+        (store (+ base 1) 1)   ;; to
+        (store (+ base 2) 1)   ;; amount
+        (store (+ base 3) 0))) ;; fee
+    (recur (+ i 1))))
 
 (def (tx_base)
   N_ACCOUNTS)
@@ -60,9 +74,11 @@
 
 (typed-fn main ((let u64) (let u64)) -> u64)
 (def (main expected_fee_sum expected_root)
-  (let ((fee_sum (apply_batch))
-        (root    (hash_balances)))
-    (begin
-      (assert (= fee_sum expected_fee_sum))
-      (assert (= root expected_root))
-      root)))
+  (begin
+    (init_state)
+    (let ((fee_sum (apply_batch))
+          (root    (hash_balances)))
+      (begin
+        (assert (= fee_sum expected_fee_sum))
+        (assert (= root expected_root))
+        root))))
