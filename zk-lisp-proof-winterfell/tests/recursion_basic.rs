@@ -55,10 +55,10 @@ fn recursion_single_step_roundtrip() {
 
     // Build a real step proof and derive aggregation public inputs
     // via the backend helper.
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let agg_pi = build_agg_pi_for_single_step(&step);
+    let agg_pi = build_agg_pi_for_single_step(&steps[0]);
 
     // Expected recursion digest from the effective aggregation
     // public inputs used by ZlAggAir. We intentionally mirror
@@ -99,7 +99,7 @@ fn recursion_single_step_roundtrip() {
     // Prove recursion aggregation over a single step proof
     // using the generic RecursionBackend interface.
     let (rc_proof, rc_digest) =
-        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step), &agg_pi, &opts)
+        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&steps[0]), &agg_pi, &opts)
             .expect("recursion_prove must succeed for a single honest step");
 
     assert_eq!(
@@ -118,13 +118,13 @@ fn recursion_rejects_tampered_v_units_total_at_verify() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let agg_pi = build_agg_pi_for_single_step(&step);
+    let agg_pi = build_agg_pi_for_single_step(&steps[0]);
 
     let (rc_proof, _rc_digest) =
-        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step), &agg_pi, &opts)
+        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&steps[0]), &agg_pi, &opts)
             .expect("recursion_prove must succeed for a single honest step");
 
     // Tamper with v_units_total in the public inputs: ZlAggAir
@@ -144,14 +144,14 @@ fn recursion_prove_rejects_wrong_children_root() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     // Use an incorrect children_root to trigger builder error inside recursion_prove.
-    let mut agg_pi = build_agg_pi_for_single_step(&step);
+    let mut agg_pi = build_agg_pi_for_single_step(&steps[0]);
     agg_pi.children_root = [1u8; 32];
 
-    let err = recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step), &agg_pi, &opts)
+    let err = recursion_prove::<WinterfellBackend>(std::slice::from_ref(&steps[0]), &agg_pi, &opts)
         .expect_err("recursion_prove must fail when children_root is inconsistent");
 
     let msg = format!("{err}");
@@ -167,13 +167,13 @@ fn recursion_prove_rejects_wrong_v_units_total() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let mut agg_pi = build_agg_pi_for_single_step(&step);
+    let mut agg_pi = build_agg_pi_for_single_step(&steps[0]);
     agg_pi.v_units_total = agg_pi.v_units_total.saturating_add(1); // mismatch
 
-    let err = recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step), &agg_pi, &opts)
+    let err = recursion_prove::<WinterfellBackend>(std::slice::from_ref(&steps[0]), &agg_pi, &opts)
         .expect_err("recursion_prove must fail when v_units_total mismatches transcripts");
 
     let msg = format!("{err}");

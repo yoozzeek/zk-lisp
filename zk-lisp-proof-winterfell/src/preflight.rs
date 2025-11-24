@@ -210,7 +210,7 @@ pub fn run(
             let pose_constraints = 12 * layout::POSEIDON_ROUNDS;
             let lanes_exp = if i < pose_constraints {
                 let j = i / 12;
-                let ps = poseidon::get_poseidon_suite(&pub_inputs.program_commitment);
+                let ps = poseidon::get_poseidon_suite(&pub_inputs.program_id);
                 let mm = ps.mds;
                 let rc = ps.rc;
 

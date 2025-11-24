@@ -61,10 +61,10 @@ fn agg_child_merkle_paths_match_roots() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let child = ZlChildCompact::from_step(&step).expect("compact child must build");
+    let child = ZlChildCompact::from_step(&steps[0]).expect("compact child must build");
 
     let fs = child
         .fs_challenges

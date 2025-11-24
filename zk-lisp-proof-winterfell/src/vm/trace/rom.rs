@@ -39,8 +39,8 @@ impl TraceModule for RomTraceBuilder {
         trace: &mut TraceTable<BE>,
     ) -> error::Result<()> {
         let total_levels = ctx.levels.next_power_of_two();
-        let rc3 = derive_rom_round_constants_3(&ctx.prog.commitment, POSEIDON_ROUNDS);
-        let mds3 = derive_rom_mds_cauchy_3x3(&ctx.prog.commitment);
+        let rc3 = derive_rom_round_constants_3(&ctx.prog.program_id, POSEIDON_ROUNDS);
+        let mds3 = derive_rom_mds_cauchy_3x3(&ctx.prog.program_id);
 
         // Precompute weights
         let w_enc0 = utils::rom_weights_for_seed(utils::ROM_W_SEED_0);

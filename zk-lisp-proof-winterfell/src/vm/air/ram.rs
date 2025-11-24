@@ -51,6 +51,12 @@ impl AirModule for RamAir {
             vec![STEPS_PER_LEVEL_P2],
         ));
 
+        // forbid new-addr read
+        out.push(TransitionConstraintDegree::with_cycles(
+            3,
+            vec![STEPS_PER_LEVEL_P2],
+        ));
+
         // same_addr boolean via inv trick:
         // s = 1 - d * inv
         out.push(TransitionConstraintDegree::with_cycles(
@@ -177,6 +183,13 @@ impl AirModule for RamAir {
         // read equals last_write on
         // sorted rows when is_write==0
         result[*ix] = s_on * (E::ONE - s_w) * (s_val - last);
+        *ix += 1;
+
+        // Forbid read as FIRST event of an address group
+        let s_on_n = next[ctx.cols.ram_sorted];
+        let s_w_n = next[ctx.cols.ram_s_is_write];
+
+        result[*ix] = s_on * s_on_n * (E::ONE - same) * (E::ONE - s_w_n);
         *ix += 1;
 
         // same boolean check:

@@ -106,7 +106,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
         // levels until SSqueeze up to 10.
         let mut pending_regs: ArrayVec<u8, 10> = ArrayVec::new();
 
-        let commitment = &ctx.prog.commitment;
+        let suite_id = &ctx.prog.program_id;
         let total_lvls = ctx.prog.ops.len();
 
         tracing::debug!(
@@ -123,7 +123,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
             if lvl == 0 {
                 // bind program commitment at first map row
                 let row0_map = schedule::pos_map();
-                let pc = utils::be_from_le8(commitment);
+                let pc = utils::be_from_le8(suite_id);
                 trace.set(ctx.cols.pi_prog, row0_map, pc);
             }
 
@@ -133,7 +133,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
 
             // set Poseidon domain tags
             // at map row for all levels
-            let suite = get_poseidon_suite(commitment);
+            let suite = get_poseidon_suite(suite_id);
             trace.set(ctx.cols.lane_c0, row_map, suite.dom[0]);
             trace.set(ctx.cols.lane_c1, row_map, suite.dom[1]);
 
@@ -615,7 +615,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
                     // If empty (no prior absorbs), treat
                     // as zeros to keep semantics.
                     pose_active = BE::ONE;
-                    apply_level_absorb(trace, commitment, lvl, &inputs);
+                    apply_level_absorb(trace, suite_id, lvl, &inputs);
 
                     let out = trace.get(ctx.cols.lane_index(0), row_final);
                     next_regs[dst as usize] = out;
@@ -706,7 +706,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
                     // lanes and apply poseidon
                     let left = (BE::ONE - d) * leaf + d * s;
                     let right = (BE::ONE - d) * s + d * leaf;
-                    apply_level_absorb(trace, commitment, lvl, &[left, right]);
+                    apply_level_absorb(trace, suite_id, lvl, &[left, right]);
 
                     // acc at/after final = lane_l(final)
                     let out = trace.get(ctx.cols.lane_l, row_final);
@@ -750,7 +750,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
 
                     let left = (BE::ONE - d) * acc_prev + d * s;
                     let right = (BE::ONE - d) * s + d * acc_prev;
-                    apply_level_absorb(trace, commitment, lvl, &[left, right]);
+                    apply_level_absorb(trace, suite_id, lvl, &[left, right]);
 
                     let out = trace.get(ctx.cols.lane_l, row_final);
                     for r in row_final..(base + ctx.steps) {
@@ -791,7 +791,7 @@ impl<'a> TraceModule for VmTraceBuilder<'a> {
 
                     let left = (BE::ONE - d) * acc_prev + d * s;
                     let right = (BE::ONE - d) * s + d * acc_prev;
-                    apply_level_absorb(trace, commitment, lvl, &[left, right]);
+                    apply_level_absorb(trace, suite_id, lvl, &[left, right]);
 
                     trace.set(ctx.cols.merkle_last, row_final, BE::ONE);
 

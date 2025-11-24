@@ -46,6 +46,7 @@ use winterfell::{
 use zk_lisp_proof::pi::{FeaturesMap, PublicInputs as CorePublicInputs};
 
 use crate::AirPublicInputs;
+use crate::commit::program_field_commitment;
 
 trait AirModule {
     fn push_degrees(ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>);
@@ -116,7 +117,7 @@ impl Air for ZkLispAir {
             core.feature_mask
         };
 
-        let suite_id = &core.program_commitment;
+        let suite_id = &core.program_id;
         let ps = poseidon_core::get_poseidon_suite(suite_id);
 
         let mut rc_arr = [[BaseElement::ZERO; 12]; POSEIDON_ROUNDS];
@@ -127,8 +128,8 @@ impl Air for ZkLispAir {
         let mds = ps.mds;
         let dom = ps.dom;
 
-        let features = zk_lisp_proof::pi::FeaturesMap::from_mask(eff_mask);
-        let rom_enabled = core.program_commitment.iter().any(|b| *b != 0);
+        let features = FeaturesMap::from_mask(eff_mask);
+        let rom_enabled = core.program_id.iter().any(|b| *b != 0);
         let layout_cfg = if pub_inputs.segment_feature_mask != 0 {
             LayoutConfig {
                 vm: true,
@@ -194,16 +195,15 @@ impl Air for ZkLispAir {
 
         // Derive field-level
         // program commitment once.
-        let program_fe = if core.program_commitment.iter().any(|b| *b != 0) {
-            crate::commit::program_field_commitment(&core.program_commitment)
+        let program_fe = if core.program_id.iter().any(|b| *b != 0) {
+            program_field_commitment(&core.program_id)
         } else {
             [BaseElement::ZERO; 2]
         };
 
         // Flatten typed main_args into base-field
         // slots using the same encoding as PI.
-        let main_args_fe: Vec<BaseElement> =
-            crate::utils::encode_main_args_to_slots(&core.main_args);
+        let main_args_fe: Vec<BaseElement> = utils::encode_main_args_to_slots(&core.main_args);
 
         let cols = Columns::for_config(&layout_cfg);
         let shared_ctx = Arc::new(AirSharedContext {

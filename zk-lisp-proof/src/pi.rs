@@ -155,8 +155,7 @@ impl PublicInputsBuilder {
     pub fn from_program(program: &Program) -> Self {
         // The compiler exposes a single Blake3
         // commitment over the canonical bytecode
-        let program_id = program.commitment;
-
+        let program_id = program.program_id;
         let mut builder = Self {
             pi: PublicInputs {
                 program_id,

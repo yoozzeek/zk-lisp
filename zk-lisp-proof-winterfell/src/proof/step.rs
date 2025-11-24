@@ -204,7 +204,6 @@ impl StepProof {
 
             let mut out = [0u8; 32];
             out.copy_from_slice(&bytes[*cursor..*cursor + 32]);
-
             *cursor += 32;
 
             Ok(out)
@@ -226,7 +225,6 @@ impl StepProof {
         buf8.copy_from_slice(&bytes[cursor..cursor + 8]);
 
         let feature_mask = u64::from_le_bytes(buf8);
-
         cursor += 8;
 
         // main_args length
@@ -264,7 +262,6 @@ impl StepProof {
 
                     let mut vbuf = [0u8; 8];
                     vbuf.copy_from_slice(&bytes[cursor..cursor + 8]);
-
                     cursor += 8;
 
                     main_args.push(VmArg::U64(u64::from_le_bytes(vbuf)));
@@ -278,7 +275,6 @@ impl StepProof {
 
                     let mut vbuf = [0u8; 16];
                     vbuf.copy_from_slice(&bytes[cursor..cursor + 16]);
-
                     cursor += 16;
 
                     main_args.push(VmArg::U128(u128::from_le_bytes(vbuf)));
@@ -292,7 +288,6 @@ impl StepProof {
 
                     let mut barr = [0u8; 32];
                     barr.copy_from_slice(&bytes[cursor..cursor + 32]);
-
                     cursor += 32;
 
                     main_args.push(VmArg::Bytes32(barr));
@@ -311,8 +306,10 @@ impl StepProof {
                 "step proof truncated before segment_index",
             ));
         }
+
         let mut u32buf = [0u8; 4];
         u32buf.copy_from_slice(&bytes[cursor..cursor + 4]);
+
         let segment_index = u32::from_le_bytes(u32buf);
         cursor += 4;
 
@@ -321,8 +318,10 @@ impl StepProof {
                 "step proof truncated before segments_total",
             ));
         }
+
         let mut u32buf2 = [0u8; 4];
         u32buf2.copy_from_slice(&bytes[cursor..cursor + 4]);
+
         let segments_total = u32::from_le_bytes(u32buf2);
         cursor += 4;
 

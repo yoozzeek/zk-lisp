@@ -14,7 +14,7 @@ use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::error;
 use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::proof::step::StepProof;
-use zk_lisp_proof_winterfell::prove::{prove_program_steps, prove_step};
+use zk_lisp_proof_winterfell::prove::prove_program_steps;
 
 fn make_step_opts() -> ProverOptions {
     ProverOptions {
@@ -60,7 +60,8 @@ fn step_proof_roundtrip_to_from_bytes_preserves_digest_and_meta() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = prove_step(&program, &pi, &opts).expect("step proof must succeed");
+    let steps = prove_program_steps(&program, &pi, &opts).expect("step proof must succeed");
+    let step = &steps[0];
 
     // Ensure prove_program_steps agrees with prove_step.
     assert_eq!(step_from_vec.digest(), step.digest());
@@ -110,8 +111,8 @@ fn step_proof_decode_rejects_invalid_magic() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = prove_step(&program, &pi, &opts).expect("step proof must succeed");
-    let mut bytes = step
+    let steps = prove_program_steps(&program, &pi, &opts).expect("step proof must succeed");
+    let mut bytes = steps[0]
         .to_bytes()
         .expect("step proof serialization must succeed");
 
@@ -132,8 +133,8 @@ fn step_proof_decode_rejects_truncated_prefix() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = prove_step(&program, &pi, &opts).expect("step proof must succeed");
-    let bytes = step
+    let steps = prove_program_steps(&program, &pi, &opts).expect("step proof must succeed");
+    let bytes = steps[0]
         .to_bytes()
         .expect("step proof serialization must succeed");
 
@@ -153,8 +154,8 @@ fn step_proof_decode_rejects_truncated_inner_proof() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = prove_step(&program, &pi, &opts).expect("step proof must succeed");
-    let bytes = step
+    let steps = prove_program_steps(&program, &pi, &opts).expect("step proof must succeed");
+    let bytes = steps[0]
         .to_bytes()
         .expect("step proof serialization must succeed");
 

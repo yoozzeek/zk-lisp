@@ -27,14 +27,14 @@ use zk_lisp_proof::error;
 pub(crate) type RamEvent = (BE, BE, BE, BE);
 
 pub(crate) struct RamTraceBuilder<'a> {
-    commitment: &'a [u8; 32],
+    suite_id: &'a [u8; 32],
     ram_events: &'a mut [RamEvent],
 }
 
 impl<'a> RamTraceBuilder<'a> {
-    pub fn new(commitment: &'a [u8; 32], ram_events: &'a mut [RamEvent]) -> Self {
+    pub fn new(suite_id: &'a [u8; 32], ram_events: &'a mut [RamEvent]) -> Self {
         Self {
-            commitment,
+            suite_id,
             ram_events,
         }
     }
@@ -79,7 +79,7 @@ impl<'a> TraceModule for RamTraceBuilder<'a> {
 
         // Randomized compressor
         // coefficients (match AIR).
-        let fc = program_field_commitment(self.commitment);
+        let fc = program_field_commitment(self.suite_id);
         let pi_be = fc[0];
         let pi2 = pi_be * pi_be;
         let pi3 = pi2 * pi_be;

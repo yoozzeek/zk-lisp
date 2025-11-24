@@ -582,6 +582,8 @@ fn cmd_run(
             .map_err(CliError::Prover)?;
     }
 
+    let commitment_hex = format!("0x{}", hex::encode(program.program_id));
+
     // Compute VM output position
     // and value via backend.
     let run_res = frontend::run_vm::<WinterfellBackend>(&program, &pi).map_err(CliError::Prover)?;
@@ -596,6 +598,7 @@ fn cmd_run(
             "{}",
             serde_json::json!({
                 "ok": true,
+                "program_commitment": commitment_hex,
                 "result_dec": val_u128.to_string(),
                 "result_hex": format!("0x{:032x}", val_u128),
                 "out_reg": out_reg,
@@ -613,12 +616,15 @@ fn cmd_run(
         );
     } else {
         let rows = run_res.trace_len;
+
+        println!("Program commitment: {commitment_hex}");
+
         println!(
-            "result: {val_u128} (0x{val_u128:032x}), out_reg={out_reg}, out_row={out_row}, rows={rows}"
+            "Result: {val_u128} (0x{val_u128:032x}), out_reg={out_reg}, out_row={out_row}, rows={rows}"
         );
 
         println!(
-            "metrics: peak_live={} reuse_dst={} su_reorders={} balanced_chains={} mov_elided={}",
+            "Compiler metrics: peak_live={} reuse_dst={} su_reorders={} balanced_chains={} mov_elided={}",
             metrics.peak_live,
             metrics.reuse_dst,
             metrics.su_reorders,
@@ -626,7 +632,7 @@ fn cmd_run(
             metrics.mov_elided
         );
 
-        println!("time: {elapsed_ms} ms");
+        println!("Time: {elapsed_ms} ms");
     }
 
     Ok(())
@@ -686,6 +692,7 @@ fn cmd_prove(
         path: out_path.clone(),
     })?;
 
+    let commitment_hex = format!("0x{}", hex::encode(program.program_id));
     let elapsed_ms = t_start.elapsed().as_millis();
 
     if !args.quiet {
@@ -701,21 +708,22 @@ fn cmd_prove(
                 "{}",
                 serde_json::json!({
                     "ok": true,
+                    "program_commitment": commitment_hex,
                     "agg_proof_path": out_path.to_string_lossy(),
                     "agg_preview_b64": preview_core,
                     "opts": {"queries": args.queries, "blowup": args.blowup, "grind": args.grind},
-                    "program_commitment": format!("0x{}", hex::encode(program.commitment)),
                     "time_ms": elapsed_ms,
                 })
             );
         } else {
-            println!("agg proof saved to {}", out_path.display());
+            println!("Agg proof saved to {}", out_path.display());
+            println!("Program commitment: {commitment_hex}");
             println!(
-                "preview: {} (len={} bytes)",
+                "Preview: {} (len={} bytes)",
                 preview_core,
                 artifact_bytes.len()
             );
-            println!("time: {elapsed_ms} ms");
+            println!("Time: {elapsed_ms} ms");
         }
     }
 

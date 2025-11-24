@@ -67,6 +67,7 @@ pub struct BlockMeta {
 
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub program_id: [u8; 32],
     pub commitment: [u8; 32],
     pub ops: Vec<Op>,
     pub reg_count: u8,
@@ -87,6 +88,14 @@ impl Program {
         blocks: Vec<BlockMeta>,
     ) -> Self {
         Self {
+            // By default, derive `program_id` from the canonical
+            // bytecode commitment so that programs constructed
+            // directly via `ProgramBuilder::finalize` have a
+            // stable, non-zero identifier. Frontends such as
+            // `compile_str` / `compile_entry` are free to
+            // override this with a semantic hash of the source
+            // text to decouple `program_id` from runtime args.
+            program_id: commitment,
             ops,
             reg_count,
             commitment,
@@ -119,7 +128,16 @@ pub fn compile_str(src: &str) -> Result<Program, Error> {
 
     builder.push(Op::End);
 
-    let program = builder.finalize(metrics)?;
+    let mut program = builder.finalize(metrics)?;
+
+    // program_id = Blake3(src)
+    let mut h = blake3::Hasher::new();
+    h.update(src.as_bytes());
+
+    let mut pid = [0u8; 32];
+    pid.copy_from_slice(h.finalize().as_bytes());
+
+    program.program_id = pid;
 
     debug!(
         ops = program.ops.len(),
@@ -215,7 +233,15 @@ pub fn compile_entry(src: &str, args: &[u64]) -> Result<Program, Error> {
     builder.push(Op::End);
 
     // Finalize program
-    let program = builder.finalize(metrics)?;
+    let mut program = builder.finalize(metrics)?;
+
+    let mut h = blake3::Hasher::new();
+    h.update(src.as_bytes());
+
+    let mut pid = [0u8; 32];
+    pid.copy_from_slice(h.finalize().as_bytes());
+
+    program.program_id = pid;
 
     debug!(
         ops = program.ops.len(),

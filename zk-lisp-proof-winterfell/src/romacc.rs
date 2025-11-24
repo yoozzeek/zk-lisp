@@ -10,7 +10,7 @@
 
 use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
 use crate::utils::{self, ROM_W_SEED_0, ROM_W_SEED_1};
-use crate::vm::layout::Columns;
+use crate::vm::layout::{Columns, NR, POSEIDON_ROUNDS};
 
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
@@ -22,8 +22,8 @@ use zk_lisp_compiler::builder::Op;
 pub fn rom_acc_from_program(program: &Program) -> [BE; 3] {
     let cols = Columns::baseline();
 
-    let rc3 = derive_rom_round_constants_3(&program.commitment, crate::layout::POSEIDON_ROUNDS);
-    let mds3 = derive_rom_mds_cauchy_3x3(&program.commitment);
+    let rc3 = derive_rom_round_constants_3(&program.program_id, POSEIDON_ROUNDS);
+    let mds3 = derive_rom_mds_cauchy_3x3(&program.program_id);
 
     let w_enc0 = utils::rom_weights_for_seed(ROM_W_SEED_0);
     let w_enc1 = utils::rom_weights_for_seed(ROM_W_SEED_1);
@@ -56,7 +56,7 @@ pub fn rom_acc_from_program(program: &Program) -> [BE; 3] {
         // Poseidon-like t=3 permutation
         let mut s = [s0_prev, enc0, enc1];
 
-        for rc_row in rc3.iter().take(crate::layout::POSEIDON_ROUNDS) {
+        for rc_row in rc3.iter().take(POSEIDON_ROUNDS) {
             let s3 = [s[0] * s[0] * s[0], s[1] * s[1] * s[1], s[2] * s[2] * s[2]];
 
             let y0 = mds3[0][0] * s3[0] + mds3[0][1] * s3[1] + mds3[0][2] * s3[2] + rc_row[0];
@@ -80,7 +80,7 @@ fn encode_map_row_for_op(row: &mut [BE], cols: &Columns, op: &Op) {
     // Helper to zero selectors
     // before setting.
     let clear_selectors = |row: &mut [BE], cols: &Columns| {
-        for i in 0..crate::layout::NR {
+        for i in 0..NR {
             row[cols.sel_dst0_index(i)] = BE::ZERO;
             row[cols.sel_dst1_index(i)] = BE::ZERO;
             row[cols.sel_a_index(i)] = BE::ZERO;

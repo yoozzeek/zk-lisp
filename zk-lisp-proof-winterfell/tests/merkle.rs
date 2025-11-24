@@ -125,8 +125,8 @@ fn merkle_two_steps_positive_prove_verify() {
 
     // Expected root computed
     // with program commitment.
-    let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
-    let root = poseidon_hash_two_lanes(&program.commitment, BE::from(s1), h0);
+    let h0 = poseidon_hash_two_lanes(&program.program_id, BE::from(leaf), BE::from(s0));
+    let root = poseidon_hash_two_lanes(&program.program_id, BE::from(s1), h0);
 
     // PI: bind root only (Merkle)
     let mut pi = PublicInputsBuilder::from_program(&program)
@@ -202,8 +202,8 @@ fn load_ca_positive_prove_verify() {
 
     // Expected root computed
     // with program commitment
-    let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
-    let root = poseidon_hash_two_lanes(&program.commitment, BE::from(s1), h0);
+    let h0 = poseidon_hash_two_lanes(&program.program_id, BE::from(leaf), BE::from(s0));
+    let root = poseidon_hash_two_lanes(&program.program_id, BE::from(s1), h0);
 
     let mut pi = PublicInputsBuilder::from_program(&program)
         .build()
@@ -253,8 +253,8 @@ fn store_ca_new_root_overlay() {
     let lvl_last = last_lvl.expect("merkle level present");
 
     // expected root from new leaf
-    let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf_new), BE::from(s0));
-    let expected = poseidon_hash_two_lanes(&program.commitment, BE::from(s1), h0);
+    let h0 = poseidon_hash_two_lanes(&program.program_id, BE::from(leaf_new), BE::from(s0));
+    let expected = poseidon_hash_two_lanes(&program.program_id, BE::from(s1), h0);
 
     let acc_fin = ov.acc_at_final(lvl_last);
     assert_eq!(acc_fin, expected);
@@ -334,8 +334,8 @@ fn merkle_wrong_sibling_verify_fails() {
 
     // Compute root as if s1=3 (correct),
     // but we pass s1=999 into program.
-    let h0 = poseidon_hash_two_lanes(&program.commitment, BE::from(leaf), BE::from(s0));
-    let correct_root = poseidon_hash_two_lanes(&program.commitment, BE::from(3u64), h0);
+    let h0 = poseidon_hash_two_lanes(&program.program_id, BE::from(leaf), BE::from(s0));
+    let correct_root = poseidon_hash_two_lanes(&program.program_id, BE::from(3u64), h0);
 
     let mut pi = PublicInputsBuilder::from_program(&program)
         .build()

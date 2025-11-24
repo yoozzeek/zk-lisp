@@ -574,10 +574,10 @@ fn agg_merkle_binding_accepts_honest_child() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let child = ZlChildCompact::from_step(&step).expect("compact child must build");
+    let child = ZlChildCompact::from_step(&steps[0]).expect("compact child must build");
     let children = vec![child.clone()];
 
     let children_root = children_root_from_compact(&child.suite_id, &children);
@@ -662,10 +662,10 @@ fn agg_merkle_binding_rejects_tampered_trace_root() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let mut child = ZlChildCompact::from_step(&step).expect("compact child must build");
+    let mut child = ZlChildCompact::from_step(&steps[0]).expect("compact child must build");
 
     // Corrupt the first trace root while keeping the aggregate
     // Blake3 root unchanged. This must be detected by Merkle
@@ -738,11 +738,11 @@ fn agg_fri_binding_accepts_honest_child_transcript() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let transcript =
-        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
+        ZlChildTranscript::from_step(&steps[0]).expect("child transcript extraction must succeed");
 
     let child = transcript.compact.clone();
     let children = vec![child.clone()];
@@ -823,11 +823,11 @@ fn agg_fri_binding_rejects_tampered_fri_final() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let mut transcript =
-        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
+        ZlChildTranscript::from_step(&steps[0]).expect("child transcript extraction must succeed");
 
     // Corrupt the FRI remainder polynomial so that
     // it no longer matches the recorded FRI layers.
@@ -926,11 +926,11 @@ fn agg_fri_binding_rejects_tampered_fri_layer_value() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let mut transcript =
-        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
+        ZlChildTranscript::from_step(&steps[0]).expect("child transcript extraction must succeed");
 
     // Corrupt a single FRI layer-0 value while keeping the overall
     // transcript shape consistent. This should break DEEP vs FRI
@@ -1026,11 +1026,11 @@ fn agg_builder_rejects_inconsistent_query_count() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let mut transcript =
-        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
+        ZlChildTranscript::from_step(&steps[0]).expect("child transcript extraction must succeed");
 
     // Make transcript.num_queries inconsistent with FS query_positions
     // length so that aggregation helpers detect the mismatch.
@@ -1099,11 +1099,11 @@ fn agg_merkle_binding_rejects_tampered_trace_path() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let mut transcript =
-        ZlChildTranscript::from_step(&step).expect("child transcript extraction must succeed");
+        ZlChildTranscript::from_step(&steps[0]).expect("child transcript extraction must succeed");
 
     // Corrupt a single trace Merkle leaf so that Merkle binding
     // constraints detect an inconsistency with the trace root.

@@ -146,7 +146,7 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
         BE::from(9u64),
         BE::from(10u64),
     ];
-    let expected = sponge12_ref(&expected_inputs, &program.commitment);
+    let expected = sponge12_ref(&expected_inputs, &program.program_id);
 
     // Row = level_of_SSqueeze * steps + pos_final + 1
     let steps = STEPS_PER_LEVEL_P2;
@@ -291,7 +291,7 @@ fn negative_vm_expected_mismatch() {
 
     // Compute correct expected to locate row/reg
     let expected_inputs = vec![BE::from(1u64), BE::from(2u64)];
-    let correct = sponge12_ref(&expected_inputs, &program.commitment);
+    let correct = sponge12_ref(&expected_inputs, &program.program_id);
     let steps = STEPS_PER_LEVEL_P2;
     let lvl_ssq = 3; // const, const, absorb, SSqueeze
     let out_row =

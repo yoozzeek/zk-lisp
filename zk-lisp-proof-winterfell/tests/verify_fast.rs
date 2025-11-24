@@ -38,13 +38,13 @@ fn verify_fast_matches_normal_verify() {
     let opts = make_opts();
 
     // Build a step proof and boundaries from it.
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("prove_step must succeed");
 
-    let proof = step.proof.inner.clone();
-    let pi_core = step.pi_core.clone();
+    let proof = steps[0].proof.inner.clone();
+    let pi_core = steps[0].pi_core.clone();
 
-    let side = VerifyBoundaries::from_step(&step);
+    let side = VerifyBoundaries::from_step(&steps[0]);
 
     // Fast verify (no trace rebuild)
     verify_proof_fast(

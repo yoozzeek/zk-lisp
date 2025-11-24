@@ -523,8 +523,9 @@ fn build_full_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trac
 
     // Ensure Poseidon domain tags are
     // present on map rows for all levels.
-    let dom_all = get_poseidon_suite(&prog.commitment).dom;
+    let dom_all = get_poseidon_suite(&prog.program_id).dom;
     let t_tags = std::time::Instant::now();
+
     for lvl in 0..total_levels {
         let base = lvl * steps;
         let row_map = base + schedule::pos_map();
@@ -560,7 +561,7 @@ fn build_full_trace(prog: &Program, pi: &pi::PublicInputs) -> error::Result<Trac
 
     // Populate sorted RAM table across pad rows
     let t_ram = std::time::Instant::now();
-    RamTraceBuilder::new(&ctx.prog.commitment, ram_events.as_mut_slice())
+    RamTraceBuilder::new(&ctx.prog.program_id, ram_events.as_mut_slice())
         .fill_table(ctx, &mut trace)?;
 
     tracing::debug!(

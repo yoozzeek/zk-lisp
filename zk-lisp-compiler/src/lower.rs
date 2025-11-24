@@ -288,7 +288,6 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "+" => {
                         if tail.len() != 2 {
                             let balanced = balance_chain("+", tail);
-
                             cx.metrics.inc_balanced_chains();
 
                             return lower_expr(cx, balanced);
@@ -300,7 +299,6 @@ pub fn lower_expr(cx: &mut LowerCtx, ast: Ast) -> Result<RVal, Error> {
                     "*" => {
                         if tail.len() != 2 {
                             let balanced = balance_chain("*", tail);
-
                             cx.metrics.inc_balanced_chains();
 
                             return lower_expr(cx, balanced);

@@ -653,7 +653,7 @@ impl RecursionArtifactCodec for WinterfellBackend {
         let proof = Proof::from_bytes(&bytes[i..i + plen])
             .map_err(|e| prove::Error::BackendSource(Box::new(e)))?;
 
-        let rc_pi = agg::air::AggAirPublicInputs {
+        let rc_pi = AggAirPublicInputs {
             program_id,
             program_commitment,
             pi_digest,

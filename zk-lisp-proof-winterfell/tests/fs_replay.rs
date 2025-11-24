@@ -59,12 +59,12 @@ fn fs_replay_smoke_invariants() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let fs = replay_fs_from_step(&step).expect("FS replay must succeed");
+    let fs = replay_fs_from_step(&steps[0]).expect("FS replay must succeed");
 
-    let wf_proof = &step.proof.inner;
+    let wf_proof = &steps[0].proof.inner;
     let options = wf_proof.options();
 
     // Query positions must match
@@ -110,20 +110,20 @@ fn fs_replay_matches_reference_coin() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let step = zk_lisp_proof_winterfell::prove::prove_step(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
         .expect("step proof must succeed");
 
-    let fs = replay_fs_from_step(&step).expect("FS replay must succeed");
+    let fs = replay_fs_from_step(&steps[0]).expect("FS replay must succeed");
 
-    let wf_proof = &step.proof.inner;
+    let wf_proof = &steps[0].proof.inner;
 
     // Rebuild AIR public inputs and
     // seed the public coin the same
-    let pi_zl1 = &step.proof.pi;
+    let pi_zl1 = &steps[0].proof.pi;
     let air_pi = zk_lisp_proof_winterfell::AirPublicInputs {
-        core: step.pi_core.clone(),
+        core: steps[0].pi_core.clone(),
         segment_feature_mask: 0,
-        rom_acc: step.rom_acc,
+        rom_acc: steps[0].rom_acc,
         pc_init: zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.pc_init),
         ram_gp_unsorted_in: zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(
             &pi_zl1.ram_gp_unsorted_in,
