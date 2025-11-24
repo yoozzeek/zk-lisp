@@ -260,6 +260,7 @@ fn proof_opts(queries: u8, blowup: u8, grind: u32, security_bits: Option<u32>) -
         grind,
         min_security_bits,
         max_segment_rows: None,
+        max_concurrent_segments: Some(4),
     }
 }
 
@@ -696,13 +697,6 @@ fn cmd_prove(
     let elapsed_ms = t_start.elapsed().as_millis();
 
     if !args.quiet {
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&artifact_bytes);
-        let preview_core = if b64.len() <= 128 {
-            b64
-        } else {
-            format!("{}...{}", &b64[..64], &b64[b64.len() - 64..])
-        };
-
         if json {
             println!(
                 "{}",
@@ -710,17 +704,16 @@ fn cmd_prove(
                     "ok": true,
                     "program_commitment": commitment_hex,
                     "agg_proof_path": out_path.to_string_lossy(),
-                    "agg_preview_b64": preview_core,
+                    "agg_proof_bytes": artifact_bytes.len(),
                     "opts": {"queries": args.queries, "blowup": args.blowup, "grind": args.grind},
                     "time_ms": elapsed_ms,
                 })
             );
         } else {
-            println!("Agg proof saved to {}", out_path.display());
             println!("Program commitment: {commitment_hex}");
             println!(
-                "Preview: {} (len={} bytes)",
-                preview_core,
+                "Agg proof saved to {} (len={} bytes)",
+                out_path.display(),
                 artifact_bytes.len()
             );
             println!("Time: {elapsed_ms} ms");
