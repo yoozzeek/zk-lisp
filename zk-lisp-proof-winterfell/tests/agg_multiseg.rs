@@ -30,6 +30,7 @@ fn make_opts() -> ProverOptions {
         grind: 8,
         queries: 8,
         max_segment_rows: Some(1 << 10),
+        max_concurrent_segments: Some(2),
     }
 }
 
@@ -127,7 +128,7 @@ fn agg_multiseg_positive_builds_trace() {
     let opts = make_opts();
 
     // Build multi-segment step proofs
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("prove_program_steps must succeed and produce multiple segments");
     assert!(steps.len() > 1, "expected multi-segment output");
 
@@ -200,7 +201,7 @@ fn agg_multiseg_negative_invalid_index_rejected() {
 
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("prove_program_steps must succeed");
     assert!(steps.len() > 1);
 
@@ -261,7 +262,7 @@ fn agg_multiseg_negative_missing_segment_rejected() {
 
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("prove_program_steps must succeed");
 
     let mut children: Vec<ZlChildCompact> = steps

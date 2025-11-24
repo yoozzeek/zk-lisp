@@ -388,3 +388,22 @@ pub fn fe_from_bytes_fold(bytes32: &[u8; 32]) -> BE {
     lo16.copy_from_slice(&bytes32[0..16]);
     be_from_le_bytes16(&lo16)
 }
+
+/// Select partitioning parameters for
+/// a trace of given width and length.
+pub fn select_partitions_for_trace(trace_width: usize, trace_length: usize) -> (usize, usize) {
+    let hash_rate = if trace_width <= 32 { 8 } else { 16 };
+    let num_partitions = if trace_length >= (1 << 20) {
+        16
+    } else if trace_length >= (1 << 18) {
+        8
+    } else if trace_length >= (1 << 16) {
+        4
+    } else if trace_length >= (1 << 14) {
+        2
+    } else {
+        1
+    };
+
+    (num_partitions, hash_rate)
+}

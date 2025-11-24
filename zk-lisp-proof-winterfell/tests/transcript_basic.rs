@@ -25,6 +25,7 @@ fn make_opts() -> ProverOptions {
         grind: 8,
         queries: 8,
         max_segment_rows: None,
+        max_concurrent_segments: None,
     }
 }
 
@@ -49,7 +50,7 @@ fn transcript_commitments_match_zl1_root_trace() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let transcript =

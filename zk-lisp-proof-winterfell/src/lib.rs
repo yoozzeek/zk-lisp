@@ -32,7 +32,7 @@ use agg::child::{
     ZlChildCompact, ZlChildTranscript, children_root_from_compact, verify_child_transcript,
 };
 use proof::step;
-use vm::{layout, trace};
+use vm::layout;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField, ToElements};
 use winterfell::{BatchingMethod, FieldExtension, Proof, ProofOptions, Trace};
@@ -192,7 +192,7 @@ impl PreflightBackend for WinterfellBackend {
         let trace = build_trace(program, pub_inputs)?;
 
         let (num_partitions, hash_rate) =
-            trace::select_partitions_for_trace(trace.width(), trace.length());
+            utils::select_partitions_for_trace(trace.width(), trace.length());
         let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
 
         preflight::run(mode, &wf_opts, pub_inputs, &trace)
@@ -250,7 +250,7 @@ impl RecursionBackend for WinterfellBackend {
         agg_pi.children_count = steps.len() as u32;
         agg_pi.children_ms = steps.iter().map(|s| s.proof.meta.m).collect();
 
-        let proof = prove::prove_agg_air(&agg_pi, &transcripts, opts)?;
+        let proof = prove::prove_agg_proof(&agg_pi, &transcripts, opts)?;
         let digest = prove::recursion_digest_from_agg_pi(&agg_pi);
 
         Ok((proof, digest))
@@ -291,7 +291,7 @@ impl RecursionStepProver for WinterfellBackend {
         pub_inputs: &Self::PublicInputs,
         opts: &Self::ProverOptions,
     ) -> Result<Vec<Self::StepProof>, Self::Error> {
-        prove::prove_program_steps(program, pub_inputs, opts)
+        prove::prove_program(program, pub_inputs, opts)
     }
 }
 

@@ -211,6 +211,7 @@ fn make_step_opts() -> ProverOptions {
         grind: 8,
         queries: 8,
         max_segment_rows: None,
+        max_concurrent_segments: None,
     }
 }
 
@@ -574,7 +575,7 @@ fn agg_merkle_binding_accepts_honest_child() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let child = ZlChildCompact::from_step(&steps[0]).expect("compact child must build");
@@ -662,7 +663,7 @@ fn agg_merkle_binding_rejects_tampered_trace_root() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let mut child = ZlChildCompact::from_step(&steps[0]).expect("compact child must build");
@@ -738,7 +739,7 @@ fn agg_fri_binding_accepts_honest_child_transcript() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let transcript =
@@ -823,7 +824,7 @@ fn agg_fri_binding_rejects_tampered_fri_final() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let mut transcript =
@@ -926,7 +927,7 @@ fn agg_fri_binding_rejects_tampered_fri_layer_value() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let mut transcript =
@@ -1026,7 +1027,7 @@ fn agg_builder_rejects_inconsistent_query_count() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let mut transcript =
@@ -1099,7 +1100,7 @@ fn agg_merkle_binding_rejects_tampered_trace_path() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let mut transcript =

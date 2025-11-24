@@ -35,6 +35,7 @@ fn make_opts() -> ProverOptions {
         grind: 8,
         queries: 20,
         max_segment_rows: None,
+        max_concurrent_segments: None,
     }
 }
 
@@ -59,7 +60,7 @@ fn fs_replay_smoke_invariants() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let fs = replay_fs_from_step(&steps[0]).expect("FS replay must succeed");
@@ -110,7 +111,7 @@ fn fs_replay_matches_reference_coin() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let fs = replay_fs_from_step(&steps[0]).expect("FS replay must succeed");

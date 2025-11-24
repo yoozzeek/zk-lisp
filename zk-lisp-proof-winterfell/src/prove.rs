@@ -14,8 +14,10 @@
 //! Winterfell prover, mapping errors into a small enum.
 
 use blake3::Hasher;
+use rayon::{ThreadPoolBuilder, prelude::*};
 use std::error::Error as StdError;
 use thiserror::Error;
+use winterfell::math::fields::f128::BaseElement;
 use winterfell::{
     Air, CompositionPoly, CompositionPolyTrace, DefaultConstraintCommitment,
     DefaultConstraintEvaluator, DefaultTraceLde, PartitionOptions, Proof, ProofOptions,
@@ -573,7 +575,7 @@ pub(crate) fn recursion_digest_from_agg_pi(agg_pi: &AggAirPublicInputs) -> [u8; 
         grind = %opts.grind,
     )
 )]
-pub fn prove_agg_air(
+pub fn prove_agg_proof(
     agg_pi: &AggAirPublicInputs,
     transcripts: &[ZlChildTranscript],
     opts: &zk_lisp_proof::ProverOptions,
@@ -587,7 +589,7 @@ pub fn prove_agg_air(
     let trace_width = trace.width();
     let trace_length = trace.length();
 
-    let (num_partitions, hash_rate) = trace::select_partitions_for_trace(trace_width, trace_length);
+    let (num_partitions, hash_rate) = utils::select_partitions_for_trace(trace_width, trace_length);
 
     let agg_queries = opts.queries.max(16) as usize;
 
@@ -893,7 +895,7 @@ pub fn verify_proof(
         grind = %opts.grind,
     )
 )]
-pub fn prove_program_steps(
+pub fn prove_program(
     program: &Program,
     pub_inputs: &PublicInputs,
     opts: &zk_lisp_proof::ProverOptions,
@@ -923,133 +925,199 @@ pub fn prove_program_steps(
     // Build the full trace once and reuse both boundary
     // state and segment-local traces per segment.
     let full_trace = trace::build_trace(program, pub_inputs)?;
+    let segments_len = segments.len();
+    let suite_id = pub_inputs.program_id;
+    let rom_acc = if pub_inputs.program_id.iter().any(|b| *b != 0) {
+        crate::romacc::rom_acc_from_program(program)
+    } else {
+        [BE::ZERO; 3]
+    };
+
+    let max_parallel = opts.max_concurrent_segments.unwrap_or(1);
+    let max_parallel = max_parallel.max(1);
 
     let mut steps = Vec::with_capacity(segments.len());
-    let segments_len = segments.len();
     let mut prev_state: Option<trace::PrevState> = None;
 
-    for (i, seg) in segments.into_iter().enumerate() {
-        let lvl_start = seg.r_start / STEPS_PER_LEVEL_P2;
-        let lvl_end = seg.r_end / STEPS_PER_LEVEL_P2;
-        let seg_features = compute_segment_features_for_levels(program, lvl_start, lvl_end);
-
-        tracing::debug!(
-            target = "proof.steps",
-            segment_index = i,
-            lvl_start = lvl_start,
-            lvl_end = lvl_end,
-            features = ?seg_features,
-        );
-
-        let base_mask = pub_inputs.feature_mask;
-        let seg_mask = compute_segment_feature_mask(pub_inputs, &seg_features);
-        let use_seg_mask = seg_mask != 0 && seg_mask != base_mask;
-        let eff_mask = if use_seg_mask { seg_mask } else { base_mask };
-        let features_map = zk_lisp_proof::pi::FeaturesMap::from_mask(eff_mask);
-        let rom_enabled = pub_inputs.program_commitment.iter().any(|b| *b != 0);
-
-        let layout_cfg = if use_seg_mask {
-            LayoutConfig {
-                vm: true,
-                ram: features_map.ram,
-                sponge: features_map.sponge,
-                merkle: features_map.merkle,
-                rom: rom_enabled,
-            }
-        } else {
-            LayoutConfig {
-                vm: true,
-                ram: true,
-                sponge: true,
-                merkle: true,
-                rom: rom_enabled,
-            }
-        };
-
-        let full_cols = Columns::baseline();
-        let seg_layout = trace::SegmentLayout::from_full_columns(&full_cols, &layout_cfg);
-
-        let (trace, state_in_hash, state_out_hash) =
-            trace::build_segment_trace_with_state_without_full(
+    if max_parallel == 1 || segments_len == 1 {
+        for (i, seg) in segments.iter().enumerate() {
+            let (step, state_out_hash) = prove_segment(
+                suite_id,
+                rom_acc,
+                i,
+                segments_len,
+                seg,
                 &full_trace,
-                &seg,
-                &seg_layout,
+                program,
+                pub_inputs,
+                &base_opts,
+                min_bits,
                 prev_state.as_ref(),
             )?;
-        let trace_len = trace.length();
 
-        let boundary_bytes = compute_segment_boundary_bytes(&full_trace, &seg)?;
-        let boundaries_fe = SegmentBoundariesFe::from(&boundary_bytes);
-        let segment_feature_mask_for_air = if use_seg_mask { eff_mask } else { 0 };
+            steps.push(step);
+            prev_state = Some(trace::PrevState { state_out_hash });
+        }
+    } else {
+        // Build a local rayon thread pool to bound the
+        // number of worker threads used for child proofs.
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(max_parallel)
+            .build()
+            .map_err(|e| Error::Backend(format!("failed to build rayon thread pool: {e}")))?;
 
-        let (num_partitions, hash_rate) =
-            trace::select_partitions_for_trace(trace.width(), trace_len);
-        let wf_opts = base_opts.clone().with_partitions(num_partitions, hash_rate);
+        // Run all segments in parallel
+        let results: Result<Vec<StepProof>, Error> = pool.install(|| {
+            segments
+                .par_iter()
+                .enumerate()
+                .map(|(i, seg)| {
+                    let (step, _state_out_hash) = prove_segment(
+                        suite_id,
+                        rom_acc,
+                        i,
+                        segments_len,
+                        seg,
+                        &full_trace,
+                        program,
+                        pub_inputs,
+                        &base_opts,
+                        min_bits,
+                        None, // disable prev_state chain check in parallel mode
+                    )?;
 
-        let rom_acc = if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-            crate::romacc::rom_acc_from_program(program)
-        } else {
-            [BE::ZERO; 3]
-        };
-
-        let air_pi = crate::AirPublicInputs {
-            core: pub_inputs.clone(),
-            segment_feature_mask: segment_feature_mask_for_air,
-            rom_acc,
-            pc_init: boundaries_fe.pc_init,
-            ram_gp_unsorted_in: boundaries_fe.ram_gp_unsorted_in,
-            ram_gp_unsorted_out: boundaries_fe.ram_gp_unsorted_out,
-            ram_gp_sorted_in: boundaries_fe.ram_gp_sorted_in,
-            ram_gp_sorted_out: boundaries_fe.ram_gp_sorted_out,
-            rom_s_in: boundaries_fe.rom_s_in,
-            rom_s_out: boundaries_fe.rom_s_out,
-        };
-        let pi_len = air_pi.to_elements().len() as u32;
-        let meta = StepMeta::from_env(trace_len, &wf_opts, min_bits, pi_len);
-        let suite_id = pub_inputs.program_commitment;
-
-        // TODO: THIS PART SHOULD RUN IN LIMITED PARALLEL
-        // ==============================================
-        let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc).with_segment_layout(
-            segment_feature_mask_for_air,
-            seg_layout.cols.clone(),
-            boundaries_fe,
-        );
-        let proof = prover.prove(trace)?;
-        // ==============================================
-
-        let zl1_proof = crate::proof::format::Proof::new_multi_segment(
-            suite_id,
-            meta,
-            pub_inputs,
-            i as u32,
-            segments_len as u32,
-            boundary_bytes.pc_init,
-            state_in_hash,
-            state_out_hash,
-            boundary_bytes.ram_gp_unsorted_in,
-            boundary_bytes.ram_gp_unsorted_out,
-            boundary_bytes.ram_gp_sorted_in,
-            boundary_bytes.ram_gp_sorted_out,
-            boundary_bytes.rom_s_in_0,
-            boundary_bytes.rom_s_in_1,
-            boundary_bytes.rom_s_in_2,
-            boundary_bytes.rom_s_out_0,
-            boundary_bytes.rom_s_out_1,
-            boundary_bytes.rom_s_out_2,
-            proof,
-        )?;
-
-        steps.push(StepProof {
-            proof: zl1_proof,
-            pi_core: pub_inputs.clone(),
-            rom_acc,
+                    Ok(step)
+                })
+                .collect()
         });
 
-        prev_state = Some(trace::PrevState { state_out_hash });
+        steps = results?;
     }
 
     Ok(steps)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prove_segment(
+    suite_id: [u8; 32],
+    rom_acc: [BaseElement; 3],
+    segment_index: usize,
+    segments_total: usize,
+    seg: &zk_lisp_proof::segment::Segment,
+    full_trace: &TraceTable<BE>,
+    program: &Program,
+    pub_inputs: &PublicInputs,
+    base_opts: &ProofOptions,
+    min_bits: u32,
+    prev_state: Option<&trace::PrevState>,
+) -> Result<(StepProof, [u8; 32]), Error> {
+    let lvl_start = seg.r_start / STEPS_PER_LEVEL_P2;
+    let lvl_end = seg.r_end / STEPS_PER_LEVEL_P2;
+    let seg_features = compute_segment_features_for_levels(program, lvl_start, lvl_end);
+
+    tracing::debug!(
+        target = "proof.steps",
+        segment_index = segment_index,
+        lvl_start = lvl_start,
+        lvl_end = lvl_end,
+        features = ?seg_features,
+    );
+
+    let base_mask = pub_inputs.feature_mask;
+    let seg_mask = compute_segment_feature_mask(pub_inputs, &seg_features);
+    let use_seg_mask = seg_mask != 0 && seg_mask != base_mask;
+    let eff_mask = if use_seg_mask { seg_mask } else { base_mask };
+    let features_map = zk_lisp_proof::pi::FeaturesMap::from_mask(eff_mask);
+    let rom_enabled = pub_inputs.program_id.iter().any(|b| *b != 0);
+
+    let layout_cfg = if use_seg_mask {
+        LayoutConfig {
+            vm: true,
+            ram: features_map.ram,
+            sponge: features_map.sponge,
+            merkle: features_map.merkle,
+            rom: rom_enabled,
+        }
+    } else {
+        LayoutConfig {
+            vm: true,
+            ram: true,
+            sponge: true,
+            merkle: true,
+            rom: rom_enabled,
+        }
+    };
+
+    let full_cols = Columns::baseline();
+    let seg_layout = trace::SegmentLayout::from_full_columns(&full_cols, &layout_cfg);
+
+    let (trace, state_in_hash, state_out_hash) =
+        trace::build_segment_trace_with_state_without_full(
+            &full_trace,
+            &seg,
+            &seg_layout,
+            prev_state,
+        )?;
+    let trace_len = trace.length();
+
+    let boundary_bytes = compute_segment_boundary_bytes(&full_trace, &seg)?;
+    let boundaries_fe = SegmentBoundariesFe::from(&boundary_bytes);
+    let segment_feature_mask_for_air = if use_seg_mask { eff_mask } else { 0 };
+
+    let (num_partitions, hash_rate) = utils::select_partitions_for_trace(trace.width(), trace_len);
+    let wf_opts = base_opts.clone().with_partitions(num_partitions, hash_rate);
+
+    let air_pi = crate::AirPublicInputs {
+        core: pub_inputs.clone(),
+        segment_feature_mask: segment_feature_mask_for_air,
+        rom_acc,
+        pc_init: boundaries_fe.pc_init,
+        ram_gp_unsorted_in: boundaries_fe.ram_gp_unsorted_in,
+        ram_gp_unsorted_out: boundaries_fe.ram_gp_unsorted_out,
+        ram_gp_sorted_in: boundaries_fe.ram_gp_sorted_in,
+        ram_gp_sorted_out: boundaries_fe.ram_gp_sorted_out,
+        rom_s_in: boundaries_fe.rom_s_in,
+        rom_s_out: boundaries_fe.rom_s_out,
+    };
+    let pi_len = air_pi.to_elements().len() as u32;
+    let meta = StepMeta::from_env(trace_len, &wf_opts, min_bits, pi_len);
+
+    let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc).with_segment_layout(
+        segment_feature_mask_for_air,
+        seg_layout.cols.clone(),
+        boundaries_fe,
+    );
+    let proof = prover.prove(trace)?;
+
+    let zl1_proof = crate::proof::format::Proof::new_multi_segment(
+        suite_id,
+        meta,
+        pub_inputs,
+        segment_index as u32,
+        segments_total as u32,
+        boundary_bytes.pc_init,
+        state_in_hash,
+        state_out_hash,
+        boundary_bytes.ram_gp_unsorted_in,
+        boundary_bytes.ram_gp_unsorted_out,
+        boundary_bytes.ram_gp_sorted_in,
+        boundary_bytes.ram_gp_sorted_out,
+        boundary_bytes.rom_s_in_0,
+        boundary_bytes.rom_s_in_1,
+        boundary_bytes.rom_s_in_2,
+        boundary_bytes.rom_s_out_0,
+        boundary_bytes.rom_s_out_1,
+        boundary_bytes.rom_s_out_2,
+        proof,
+    )?;
+
+    let step_proof = StepProof {
+        proof: zl1_proof,
+        pi_core: pub_inputs.clone(),
+        rom_acc,
+    };
+
+    Ok((step_proof, state_out_hash))
 }
 
 fn estimate_conjectured_security_bits(opts: &ProofOptions) -> u32 {

@@ -47,6 +47,11 @@ pub struct ProverOptions {
     /// rows per execution segment. When `None`, the backend's
     /// default policy is used.
     pub max_segment_rows: Option<usize>,
+
+    /// Optional upper bound on the number of child proofs
+    /// (segments) that may be constructed in parallel.
+    /// None means no parallelism.
+    pub max_concurrent_segments: Option<usize>,
 }
 
 impl Default for ProverOptions {
@@ -58,6 +63,7 @@ impl Default for ProverOptions {
             grind: 0,
             min_security_bits,
             max_segment_rows: None,
+            max_concurrent_segments: None,
         }
     }
 }

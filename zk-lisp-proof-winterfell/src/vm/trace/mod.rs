@@ -462,27 +462,6 @@ pub(crate) fn build_empty_trace(total_levels: usize) -> TraceTable<BE> {
     trace
 }
 
-/// Select partitioning parameters for
-/// a trace of given width and length.
-pub fn select_partitions_for_trace(trace_width: usize, trace_length: usize) -> (usize, usize) {
-    let hash_rate = if trace_width <= 32 { 8 } else { 16 };
-    if trace_length <= (1 << 14) || trace_width <= 16 {
-        return (1, hash_rate);
-    }
-
-    let num_partitions = if trace_length >= (1 << 20) {
-        16
-    } else if trace_length >= (1 << 18) {
-        8
-    } else if trace_length >= (1 << 16) {
-        4
-    } else {
-        1
-    };
-
-    (num_partitions, hash_rate)
-}
-
 #[inline]
 pub(crate) fn set_sel(trace: &mut TraceTable<BE>, row: usize, sel_start: usize, idx: u8) {
     for i in 0..NR {

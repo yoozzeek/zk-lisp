@@ -26,6 +26,7 @@ fn make_opts() -> ProverOptions {
         grind: 8,
         queries: 8,
         max_segment_rows: None,
+        max_concurrent_segments: None,
     }
 }
 
@@ -83,9 +84,9 @@ fn recursion_two_step_chain_prev_digest_tamper_rejected() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let steps1 = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps1 = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step1 proof must succeed");
-    let steps2 = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps2 = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step2 proof must succeed");
 
     let step1 = &steps1[0];
@@ -161,9 +162,9 @@ fn recursion_two_step_chain_aggregates_tamper_rejected() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let steps1 = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps1 = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step1 proof must succeed");
-    let steps2 = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps2 = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step2 proof must succeed");
 
     let step1 = &steps1[0];

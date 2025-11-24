@@ -14,7 +14,7 @@ use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::error;
 use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::proof::step::StepProof;
-use zk_lisp_proof_winterfell::prove::prove_program_steps;
+use zk_lisp_proof_winterfell::prove::prove_program;
 
 fn make_step_opts() -> ProverOptions {
     ProverOptions {
@@ -23,6 +23,7 @@ fn make_step_opts() -> ProverOptions {
         grind: 8,
         queries: 8,
         max_segment_rows: None,
+        max_concurrent_segments: None,
     }
 }
 
@@ -51,8 +52,7 @@ fn step_proof_roundtrip_to_from_bytes_preserves_digest_and_meta() {
 
     // Multi-step API must be consistent with single-step
     // API for the current single-segment planner.
-    let steps =
-        prove_program_steps(&program, &pi, &opts).expect("prove_program_steps must succeed");
+    let steps = prove_program(&program, &pi, &opts).expect("prove_program_steps must succeed");
     assert_eq!(steps.len(), 1);
 
     let step_from_vec = &steps[0];
@@ -60,7 +60,7 @@ fn step_proof_roundtrip_to_from_bytes_preserves_digest_and_meta() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = prove_program_steps(&program, &pi, &opts).expect("step proof must succeed");
+    let steps = prove_program(&program, &pi, &opts).expect("step proof must succeed");
     let step = &steps[0];
 
     // Ensure prove_program_steps agrees with prove_step.
@@ -111,7 +111,7 @@ fn step_proof_decode_rejects_invalid_magic() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = prove_program_steps(&program, &pi, &opts).expect("step proof must succeed");
+    let steps = prove_program(&program, &pi, &opts).expect("step proof must succeed");
     let mut bytes = steps[0]
         .to_bytes()
         .expect("step proof serialization must succeed");
@@ -133,7 +133,7 @@ fn step_proof_decode_rejects_truncated_prefix() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = prove_program_steps(&program, &pi, &opts).expect("step proof must succeed");
+    let steps = prove_program(&program, &pi, &opts).expect("step proof must succeed");
     let bytes = steps[0]
         .to_bytes()
         .expect("step proof serialization must succeed");
@@ -154,7 +154,7 @@ fn step_proof_decode_rejects_truncated_inner_proof() {
     let pi = build_step_public_inputs(&program);
     let opts = make_step_opts();
 
-    let steps = prove_program_steps(&program, &pi, &opts).expect("step proof must succeed");
+    let steps = prove_program(&program, &pi, &opts).expect("step proof must succeed");
     let bytes = steps[0]
         .to_bytes()
         .expect("step proof serialization must succeed");

@@ -22,6 +22,7 @@ fn make_opts() -> ProverOptions {
         grind: 8,
         queries: 8,
         max_segment_rows: None,
+        max_concurrent_segments: None,
     }
 }
 
@@ -55,7 +56,7 @@ fn recursion_single_step_roundtrip() {
 
     // Build a real step proof and derive aggregation public inputs
     // via the backend helper.
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let agg_pi = build_agg_pi_for_single_step(&steps[0]);
@@ -118,7 +119,7 @@ fn recursion_rejects_tampered_v_units_total_at_verify() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let agg_pi = build_agg_pi_for_single_step(&steps[0]);
@@ -144,7 +145,7 @@ fn recursion_prove_rejects_wrong_children_root() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     // Use an incorrect children_root to trigger builder error inside recursion_prove.
@@ -167,7 +168,7 @@ fn recursion_prove_rejects_wrong_v_units_total() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
         .expect("step proof must succeed");
 
     let mut agg_pi = build_agg_pi_for_single_step(&steps[0]);
