@@ -32,6 +32,8 @@ use winterfell::math::ToElements;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_proof::error;
 
+const MIN_AGG_TRACE_ROWS: usize = 8;
+
 #[derive(Debug)]
 pub struct AggTrace {
     pub trace: TraceTable<BE>,
@@ -361,7 +363,6 @@ fn build_agg_trace_core(
     }
 
     // Enforce per-child m and aggregate v_units
-    let mut base_rows: usize = 0;
     let mut v_units_sum: u64 = 0;
 
     for (i, child) in children.iter().enumerate() {
@@ -378,12 +379,6 @@ fn build_agg_trace_core(
             ));
         }
 
-        base_rows = base_rows
-            .checked_add(m as usize)
-            .ok_or(error::Error::InvalidInput(
-                "AggTrace length overflow when summing children_ms",
-            ))?;
-
         v_units_sum =
             v_units_sum
                 .checked_add(child.meta.v_units)
@@ -398,13 +393,16 @@ fn build_agg_trace_core(
         ));
     }
 
+    // One row per child;
+    // pad to next power of two.
+    let base_rows = core::cmp::max(n_children, MIN_AGG_TRACE_ROWS);
+    let n_rows = base_rows.next_power_of_two();
+
     if base_rows == 0 {
         return Err(error::Error::InvalidInput(
             "AggTrace requires a positive total number of rows",
         ));
     }
-
-    let n_rows = base_rows.next_power_of_two();
 
     let mut trace = TraceTable::new(cols.width(), n_rows);
 
@@ -470,7 +468,6 @@ fn build_agg_trace_core(
     let mut child_start_rows = Vec::with_capacity(n_children);
 
     for (i, child) in children.iter().enumerate() {
-        let m = agg_pi.children_ms[i] as usize;
         let v_child_fe = BE::from(child.meta.v_units);
 
         // Decode per-child boundary state from ZlChildCompact.
@@ -607,91 +604,61 @@ fn build_agg_trace_core(
             }
         }
 
+        // One row per child:
+        // record its start row for FRI overlay.
         let child_start_row = row;
         child_start_rows.push(child_start_row);
 
-        for r in 0..m {
-            let cur_row = row + r;
-            let is_first = r == 0;
+        let cur_row = row;
 
-            // seg_first flag
-            trace.set(
-                cols.seg_first,
-                cur_row,
-                if is_first { BE::ONE } else { BE::ZERO },
-            );
+        // seg_first == 1 on the single row for this child
+        trace.set(cols.seg_first, cur_row, BE::ONE);
 
-            // v_units_child:
-            // only on the first row of the segment
-            if is_first {
-                trace.set(cols.v_units_child, cur_row, v_child_fe);
-                trace.set(cols.v_units_acc, cur_row, v_acc);
-                trace.set(cols.child_count_acc, cur_row, child_count_acc);
-                trace.set(cols.trace_root_err, cur_row, trace_root_err_fe);
-                trace.set(cols.constraint_root_err, cur_row, constraint_root_err_fe);
-                trace.set(cols.vm_chain_err, cur_row, vm_err);
-                trace.set(cols.ram_u_chain_err, cur_row, ram_u_err);
-                trace.set(cols.ram_s_chain_err, cur_row, ram_s_err);
-                trace.set(cols.rom_chain_err_0, cur_row, rom_err[0]);
-                trace.set(cols.rom_chain_err_1, cur_row, rom_err[1]);
-                trace.set(cols.rom_chain_err_2, cur_row, rom_err[2]);
+        // Per-child work units and accumulators BEFORE increment
+        trace.set(cols.v_units_child, cur_row, v_child_fe);
+        trace.set(cols.v_units_acc, cur_row, v_acc);
+        trace.set(cols.child_count_acc, cur_row, child_count_acc);
 
-                trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_vnext_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_alpha_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_x0_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_x1_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_q1_child, cur_row, BE::ZERO);
+        // Chain errors:
+        // must be zero for honest batch.
+        trace.set(cols.trace_root_err, cur_row, trace_root_err_fe);
+        trace.set(cols.constraint_root_err, cur_row, constraint_root_err_fe);
+        trace.set(cols.vm_chain_err, cur_row, vm_err);
+        trace.set(cols.ram_u_chain_err, cur_row, ram_u_err);
+        trace.set(cols.ram_s_chain_err, cur_row, ram_s_err);
+        trace.set(cols.rom_chain_err_0, cur_row, rom_err[0]);
+        trace.set(cols.rom_chain_err_1, cur_row, rom_err[1]);
+        trace.set(cols.rom_chain_err_2, cur_row, rom_err[2]);
 
-                trace.set(cols.v0_sum, cur_row, fri_v0_sum);
-                trace.set(cols.v1_sum, cur_row, fri_v1_sum);
-                trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
+        // FRI-related columns:
+        // keep reserved sums zero and child sample unset here.
+        trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
+        trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
+        trace.set(cols.fri_vnext_child, cur_row, BE::ZERO);
+        trace.set(cols.fri_alpha_child, cur_row, BE::ZERO);
+        trace.set(cols.fri_x0_child, cur_row, BE::ZERO);
+        trace.set(cols.fri_x1_child, cur_row, BE::ZERO);
+        trace.set(cols.fri_q1_child, cur_row, BE::ZERO);
 
-                v_acc += v_child_fe;
-                child_count_acc += BE::ONE;
-            } else {
-                trace.set(cols.v_units_child, cur_row, BE::ZERO);
-                trace.set(cols.v_units_acc, cur_row, v_acc);
-                trace.set(cols.child_count_acc, cur_row, child_count_acc);
-                trace.set(cols.trace_root_err, cur_row, BE::ZERO);
-                trace.set(cols.constraint_root_err, cur_row, BE::ZERO);
-                trace.set(cols.vm_chain_err, cur_row, vm_err);
-                trace.set(cols.ram_u_chain_err, cur_row, ram_u_err);
-                trace.set(cols.ram_s_chain_err, cur_row, ram_s_err);
-                trace.set(cols.rom_chain_err_0, cur_row, rom_err[0]);
-                trace.set(cols.rom_chain_err_1, cur_row, rom_err[1]);
-                trace.set(cols.rom_chain_err_2, cur_row, rom_err[2]);
+        trace.set(cols.v0_sum, cur_row, fri_v0_sum);
+        trace.set(cols.v1_sum, cur_row, fri_v1_sum);
+        trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
 
-                trace.set(cols.fri_v0_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_v1_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_vnext_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_alpha_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_x0_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_x1_child, cur_row, BE::ZERO);
-                trace.set(cols.fri_q1_child, cur_row, BE::ZERO);
+        // Advance global accumulators
+        // for the next child / row.
+        v_acc += v_child_fe;
+        child_count_acc += BE::ONE;
+        row += 1;
 
-                trace.set(cols.v0_sum, cur_row, fri_v0_sum);
-                trace.set(cols.v1_sum, cur_row, fri_v1_sum);
-                trace.set(cols.vnext_sum, cur_row, fri_vnext_sum);
-            }
-
-            // ok and composition-related columns were pre-filled
-            // with zeros for all rows; only override them on
-            // seg_first rows or when wiring explicit aggregates.
-        }
-
-        row += m;
-
-        // Update previous-boundary trackers for the next child.
+        // Update previous-boundary trackers
+        // for the next child.
         prev_vm_out = Some(vm_out_fe);
         prev_ram_u_out = Some(ram_u_out_fe);
         prev_ram_s_out = Some(ram_s_out_fe);
         prev_rom_out = Some(rom_out_fe);
     }
 
-    // Padding rows (if any): keep accumulator and chain error
-    // scalars constant and disable seg_first, v_units_child and
+    // Padding rows (if any)
     let pad_vm_err = BE::ZERO;
     let pad_ram_u_err = BE::ZERO;
     let pad_ram_s_err = BE::ZERO;
