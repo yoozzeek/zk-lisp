@@ -17,6 +17,10 @@ the Winterfell STARK prover and verified with its verifier.
 > This is free software, and you are welcome to
 > redistribute it under certain conditions;
 
+> [!NOTE]
+> ZK Lisp targets at least 128-bit conjectured
+> security in release, and 64-bit in debug builds.
+
 ## How it works
 
 Parse source > AST > IR > VM ops
@@ -27,23 +31,40 @@ Winterfell proves the trace satisfies AIR.
 
 ## Features
 
-* Backend-agnostic Lisp DSL compiler and virtual machine
-* Abstract traits for plugging in multiple STARK backends
-* Winterfell-based STARK implementation
-* Strict STARK-in-STARK recursion (aggregated proofs)
-* Dynamic segment layout and feature mask
-* zk-lisp CLI with run | prove | verify | repl commands
-* Interactive REPL with :prove and :verify built-ins
+* Small, Lisp-like DSL with typed functions, safe
+  arithmetic helpers, and explicit public/secret arguments.
+* Register-based VM with RAM, Merkle, Poseidon2 sponge,
+  ROM accumulator and schedule gates.
+* Backend-agnostic proof core with traits for
+  plugging in different STARK backends.
+* Production-style Winterfell-based backend with preflight
+  modes and detailed constraint tracing.
+* Multi-segment execution proofs: one program split into
+  true segments with per-segment VM/RAM/ROM boundaries.
+* Parallel step proving with bounded concurrency and
+  adaptive partitioning for large traces.
+* Strict STARK-in-STARK aggregation AIR that chains child proofs.
+* CLI with `run`, `prove`, `verify`, `repl` commands.
+* Interactive REPL with `:prove` / `:verify` built-ins.
 
 ## Roadmap
 
-* Property and fuzz test coverage
-* Complex types such as vectors and structs
-* Examples, templates and better code-docs
-* Website, documentation and online REPL
-* Incrementally verifiable computation (IVC)
-* Program events and logs
-* Cross-program invocations
+* Richer type system: vectors, structs and user-defined records,
+  with a stable ABI for host<->VM arguments.
+* Property-based and fuzz testing of the DSL, VM, AIR,
+  RAM/ROM gadgets and recursion pipeline.
+* More real-world examples and templates (rollup STFs,
+  Merkle-based apps, benchmarks) with step-by-step docs.
+* Documentation site with design notes and an online
+  REPL backed by a demo prover.
+* Incrementally verifiable computation (IVC) and folding
+  schemes built on top of the existing aggregation AIR.
+* Program events and structured logs bound into proofs
+  to make integration with external systems easier.
+* Cross-program invocations and composable proofs
+  between multiple zk-lisp programs.
+* Pluggable hash suites and additional STARK backends,
+  while keeping the core DSL and VM backend-agnostic.
 
 ## Quickstart
 
@@ -88,9 +109,23 @@ cargo run --bin zk-lisp --release -- \
 #### Simple state transition function (STF)
 
 ```lisp
-(def N_ACCOUNTS       3)
-(def N_TXS            10)
+(def N_ACCOUNTS       8)
+(def N_TXS            16)
 (def HASH_BALANCES_IV 12345)
+
+(def (init_state)
+  (loop :max N_ACCOUNTS ((i 0))
+    (begin
+      (store i 0))
+    (recur (+ i 1)))
+  (loop :max N_TXS ((i 0))
+    (let ((base (+ (tx_base) (* i 4))))
+      (begin
+        (store base       0)   ;; from
+        (store (+ base 1) 1)   ;; to
+        (store (+ base 2) 1)   ;; amount
+        (store (+ base 3) 0))) ;; fee
+    (recur (+ i 1))))
 
 (def (tx_base)
   N_ACCOUNTS)
@@ -128,13 +163,16 @@ cargo run --bin zk-lisp --release -- \
     h
     (recur (+ i 1) (hash2 h (load i)))))
 
+(typed-fn main ((let u64) (let u64)) -> u64)
 (def (main expected_fee_sum expected_root)
-  (let ((fee_sum (apply_batch))
-        (root    (hash_balances)))
-    (begin
-      (assert (= fee_sum expected_fee_sum))
-      (assert (= root expected_root))
-      root)))
+  (begin
+    (init_state)
+    (let ((fee_sum (apply_batch))
+          (root    (hash_balances)))
+      (begin
+        (assert (= fee_sum expected_fee_sum))
+        (assert (= root expected_root))
+        root))))
 ```
 
 ## Testing
