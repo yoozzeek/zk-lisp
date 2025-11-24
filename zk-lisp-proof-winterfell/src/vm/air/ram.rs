@@ -185,11 +185,14 @@ impl AirModule for RamAir {
         result[*ix] = s_on * (E::ONE - s_w) * (s_val - last);
         *ix += 1;
 
-        // Forbid read as FIRST event of an address group
+        // Forbid non-zero read as FIRST event of an
+        // address group. First event for a new address
+        // may be a read only if it reads ZERO.
         let s_on_n = next[ctx.cols.ram_sorted];
         let s_w_n = next[ctx.cols.ram_s_is_write];
+        let s_val_n = next[ctx.cols.ram_s_val];
 
-        result[*ix] = s_on * s_on_n * (E::ONE - same) * (E::ONE - s_w_n);
+        result[*ix] = s_on * s_on_n * (E::ONE - same) * (E::ONE - s_w_n) * s_val_n;
         *ix += 1;
 
         // same boolean check:
