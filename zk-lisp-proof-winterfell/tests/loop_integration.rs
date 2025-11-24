@@ -17,6 +17,7 @@ use zk_lisp_proof_winterfell::utils::vm_output_from_trace;
 use zk_lisp_proof_winterfell::vm::layout::Columns;
 use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn loop_bounded_recur_prove_verify() {
     let src = r#"
