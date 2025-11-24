@@ -1,0 +1,44 @@
+;; examples/fib-2pow16_v2.zlisp
+;;
+;; Compute Fib(2^16) using matrix squaring in O(log N) iterations.
+;;
+;; State transition for Fibonacci:
+;;   [a_{k+1}]   [0 1] [a_k]
+;;   [b_{k+1}] = [1 1] [b_k]
+;; with (a_0, b_0) = (0, 1), so a_k = Fib(k), b_k = Fib(k + 1).
+;; This is x_{k+1} = M * x_k, where M = [[0,1],[1,1]].
+;;
+;; Let M^n = [[m00 m01] [m10 m11]].
+;; Then for v0 = [0,1]^T we have:
+;;   M^n * v0 = [m01, m11]^T = [Fib(n), Fib(n+1)].
+;; So Fib(n) = m01.
+;;
+;; We maintain M^{2^i} in the loop state and on each iteration square it:
+;;   M^{2^{i+1}} = (M^{2^i})^2.
+;; After N_BITS iterations we have M^{2^N_BITS}, and m01 gives Fib(2^N_BITS).
+
+(def N_BITS 16)
+
+(def (fib_2pow16)
+  (loop :max N_BITS
+        ((i   0)
+         (m00 0) (m01 1)
+         (m10 1) (m11 1))
+    ;; Loop result for this iteration: nm01 = (m^2)_{0,1}.
+    ;; Given M^{2^i} in (m00..m11), this equals Fib(2^{i+1}).
+    (+ (* m00 m01) (* m01 m11))
+    ;; Next iteration state: nm = m * m = M^{2^{i+1}}.
+    (recur
+      (+ i 1)
+      ;; nm00 = m00*m00 + m01*m10
+      (+ (* m00 m00) (* m01 m10))
+      ;; nm01 = m00*m01 + m01*m11
+      (+ (* m00 m01) (* m01 m11))
+      ;; nm10 = m10*m00 + m11*m10
+      (+ (* m10 m00) (* m11 m10))
+      ;; nm11 = m10*m01 + m11*m11
+      (+ (* m10 m01) (* m11 m11)))))
+
+(typed-fn main () -> u128)
+(def (main)
+  (fib_2pow16))

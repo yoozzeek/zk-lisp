@@ -1,0 +1,26 @@
+;; We cannot use only ALU in this program,
+;; ROM and Poseidon2 modules are always
+;; active in ZK Lisp. If you run this now,
+;; it will take forever.
+
+;; Fibonacci benchmark for zk-lisp:
+;; - Run Fibonacci for N_STEPS = 2^16 iterations
+;; - Start from (a, b) = (0, 1)
+;; - Return a after N_STEPS iterations
+
+(def N_STEPS 65536)      ;; 2^16
+
+;; Plain iterative Fibonacci in registers only.
+;; (i, a, b) evolve as:
+;;   a_{k+1} = b_k
+;;   b_{k+1} = a_k + b_k
+;;
+;; Loop returns a after N_STEPS steps.
+(def (fib_2pow16)
+  (loop :max N_STEPS ((i 0) (a 0) (b 1))
+    a
+    (recur (+ i 1) b (+ a b))))
+
+(typed-fn main () -> u128)
+(def (main)
+  (fib_2pow16))
