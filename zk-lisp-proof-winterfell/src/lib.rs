@@ -281,7 +281,7 @@ impl RecursionBackend for WinterfellBackend {
             BatchingMethod::Linear,
         );
 
-        prove::verify_agg_air(proof, rc_pi, &wf_opts, min_bits)
+        prove::verify_agg_proof(proof, rc_pi, &wf_opts, min_bits)
     }
 }
 

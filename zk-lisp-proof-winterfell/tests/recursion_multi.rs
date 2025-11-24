@@ -83,23 +83,28 @@ fn recursion_two_step_chain_prev_digest_tamper_rejected() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
-        .expect("steps proofs must succeed");
+    let steps1 = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+        .expect("step1 proof must succeed");
+    let steps2 = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+        .expect("step2 proof must succeed");
 
-    let agg_pi1 = build_agg_pi_for_single_step(&steps[0]);
-    let agg_pi2 = build_agg_pi_for_single_step(&steps[1]);
+    let step1 = &steps1[0];
+    let step2 = &steps2[0];
+
+    let agg_pi1 = build_agg_pi_for_single_step(&step1);
+    let agg_pi2 = build_agg_pi_for_single_step(&step2);
 
     let (rc_proof1, rc_digest1) =
-        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&steps[0]), &agg_pi1, &opts)
+        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step1), &agg_pi1, &opts)
             .expect("recursion_prove must succeed for step1");
 
     let (rc_proof2, rc_digest2) =
-        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&steps[1]), &agg_pi2, &opts)
+        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step2), &agg_pi2, &opts)
             .expect("recursion_prove must succeed for step2");
 
     // Build a valid two-step recursion chain.
-    let rc_pub1 = build_recursion_public_single_step(&pi, &steps[0], &agg_pi1, [0u8; 32]);
-    let mut rc_pub2 = build_recursion_public_single_step(&pi, &steps[1], &agg_pi2, rc_digest1);
+    let rc_pub1 = build_recursion_public_single_step(&pi, &step1, &agg_pi1, [0u8; 32]);
+    let mut rc_pub2 = build_recursion_public_single_step(&pi, &step2, &agg_pi2, rc_digest1);
 
     // Enforce RAM/ROM chaining invariants at the DSL layer:
     // second step must start from the global boundary state
@@ -156,23 +161,28 @@ fn recursion_two_step_chain_aggregates_tamper_rejected() {
     let pi = build_public_inputs(&program);
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
-        .expect("steps proofs must succeed");
+    let steps1 = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+        .expect("step1 proof must succeed");
+    let steps2 = zk_lisp_proof_winterfell::prove::prove_program_steps(&program, &pi, &opts)
+        .expect("step2 proof must succeed");
 
-    let agg_pi1 = build_agg_pi_for_single_step(&steps[0]);
-    let agg_pi2 = build_agg_pi_for_single_step(&steps[1]);
+    let step1 = &steps1[0];
+    let step2 = &steps2[0];
+
+    let agg_pi1 = build_agg_pi_for_single_step(&step1);
+    let agg_pi2 = build_agg_pi_for_single_step(&step2);
 
     let (rc_proof1, rc_digest1) =
-        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&steps[0]), &agg_pi1, &opts)
+        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step1), &agg_pi1, &opts)
             .expect("recursion_prove must succeed for step1");
 
     let (rc_proof2, rc_digest2) =
-        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&steps[1]), &agg_pi2, &opts)
+        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step2), &agg_pi2, &opts)
             .expect("recursion_prove must succeed for step2");
 
     // Build a valid chain first.
-    let rc_pub1 = build_recursion_public_single_step(&pi, &steps[0], &agg_pi1, [0u8; 32]);
-    let mut rc_pub2 = build_recursion_public_single_step(&pi, &steps[1], &agg_pi2, rc_digest1);
+    let rc_pub1 = build_recursion_public_single_step(&pi, &step1, &agg_pi1, [0u8; 32]);
+    let mut rc_pub2 = build_recursion_public_single_step(&pi, &step2, &agg_pi2, rc_digest1);
 
     // Enforce RAM/ROM chaining invariants at the DSL layer
     // for the second step.
