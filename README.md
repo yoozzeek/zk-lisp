@@ -177,13 +177,20 @@ cargo run --bin zk-lisp --release -- \
 
 ### Performance Benchmarks
 
-Apple Silicon M3 Max Configuration: max_concurrent_segments=8 (Parallel Execution)
+<details>
+  <summary>Simple state transition function (STF)</summary>
 
-Stark Parameters: blowup=16, grind=16, q=64
+* Apple Silicon M3 Max Configuration: max_concurrent_segments=8
+* Stark Parameters: blowup=16, grind=16, q=64, rows=65536
+
+```bash
+cargo run -p zk-lisp-cli --release -- prove examples/rollup-bench.zlisp --arg u64:10 --arg u64:12345 --log-level info
+```
 
 Trace generation and proof aggregation times for multi-segment execution:
 
-<img src="./examples/rollup-bench-results.png" alt="Rollup bench results"/>
+  <img src="./examples/rollup-bench-results.png" alt="Rollup bench results"/>
+</details>
 
 ## Testing
 
