@@ -163,7 +163,7 @@ cargo run --bin zk-lisp --release -- \
     h
     (recur (+ i 1) (hash2 h (load i)))))
 
-(typed-fn main ((let u64) (let u64)) -> u64)
+(typed-fn main ((let u64) (let bytes32)) -> bytes32)
 (def (main expected_fee_sum expected_root)
   (begin
     (init_state)
@@ -180,11 +180,11 @@ cargo run --bin zk-lisp --release -- \
 <details>
   <summary>Simple state transition function (STF)</summary>
 
-* Apple Silicon M3 Max Configuration: max_concurrent_segments=8
-* Stark Parameters: blowup=16, grind=16, q=64, rows=65536
+* Apple Silicon M3 Max Configuration: `max_concurrent_segments=8`
+* Stark Parameters: `blowup=16`, `grind=16`, `q=64`, `rows=65536`
 
 ```bash
-cargo run -p zk-lisp-cli --release -- prove examples/rollup-bench.zlisp --arg u64:10 --arg u64:12345 --log-level info
+cargo run -p zk-lisp-cli --release -- prove examples/rollup-bench.zlisp --arg u64:10 --arg bytes32:0x01 --log-level info
 ```
 
 Trace generation and proof aggregation times for multi-segment execution:

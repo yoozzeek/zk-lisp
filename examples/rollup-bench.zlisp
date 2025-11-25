@@ -72,7 +72,7 @@
     h
     (recur (+ i 1) (hash2 h (load i)))))
 
-(typed-fn main ((let u64) (let u64)) -> u64)
+(typed-fn main ((let u64) (let bytes32)) -> bytes32)
 (def (main expected_fee_sum expected_root)
   (begin
     (init_state)
