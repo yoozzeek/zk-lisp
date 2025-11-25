@@ -31,7 +31,7 @@ Winterfell proves the trace satisfies AIR.
 
 ## Features
 
-* Small, Lisp-like DSL with typed functions, safe
+* Small, Lisp-like DSL with safe
   arithmetic helpers, and explicit public/secret arguments.
 * Register-based VM with RAM, Merkle, Poseidon2 sponge,
   ROM accumulator and schedule gates.
@@ -46,25 +46,6 @@ Winterfell proves the trace satisfies AIR.
 * Strict STARK-in-STARK aggregation AIR that chains child proofs.
 * CLI with `run`, `prove`, `verify`, `repl` commands.
 * Interactive REPL with `:prove` / `:verify` built-ins.
-
-## Roadmap
-
-* Richer type system: vectors, structs and user-defined records,
-  with a stable ABI for host<->VM arguments.
-* Property-based and fuzz testing of the DSL, VM, AIR,
-  RAM/ROM gadgets and recursion pipeline.
-* More real-world examples and templates (rollup STFs,
-  Merkle-based apps, benchmarks) with step-by-step docs.
-* Documentation site with design notes and an online
-  REPL backed by a demo prover.
-* Incrementally verifiable computation (IVC) and folding
-  schemes built on top of the existing aggregation AIR.
-* Program events and structured logs bound into proofs
-  to make integration with external systems easier.
-* Cross-program invocations and composable proofs
-  between multiple zk-lisp programs.
-* Pluggable hash suites and additional STARK backends,
-  while keeping the core DSL and VM backend-agnostic.
 
 ## Quickstart
 
