@@ -175,6 +175,16 @@ cargo run --bin zk-lisp --release -- \
         root))))
 ```
 
+### Performance Benchmarks
+
+Apple Silicon M3 Max Configuration: max_concurrent_segments=8 (Parallel Execution)
+
+Stark Parameters: blowup=16, grind=16, q=64
+
+Trace generation and proof aggregation times for multi-segment execution:
+
+<img src="./examples/rollup-bench-results.png" alt="Rollup bench results"/>
+
 ## Testing
 
 ```bash
