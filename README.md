@@ -165,7 +165,10 @@ cargo run --bin zk-lisp --release -- \
 * Stark Parameters: `blowup=16`, `grind=16`, `q=64`, `rows=65536`
 
 ```bash
-cargo run -p zk-lisp-cli --release -- prove examples/rollup-bench.zlisp --arg u64:10 --arg bytes32:0x01 --log-level info
+cargo run -p zk-lisp-cli --release -- \
+  prove examples/rollup-bench.zlisp \
+    --max-concurrent-segments 8 --log-level info \
+    --arg u64:10 --arg bytes32:0x01
 ```
 
 Trace generation and proof aggregation times for multi-segment execution:
