@@ -151,7 +151,7 @@ impl<'a> TraceModule for RamTraceBuilder<'a> {
 
         // Populate RAM delta_clk gadget
         // bits on sorted rows for same-addr pairs.
-        for row in 0..(trace.length().saturating_sub(1)) {
+        for row in 0..trace.length().saturating_sub(1) {
             if trace.get(ctx.cols.ram_sorted, row) == BE::ONE {
                 let s_addr = trace.get(ctx.cols.ram_s_addr, row);
                 let s_addr_n = trace.get(ctx.cols.ram_s_addr, row + 1);

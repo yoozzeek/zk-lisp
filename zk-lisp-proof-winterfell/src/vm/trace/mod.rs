@@ -361,46 +361,6 @@ pub fn build_segment_trace_with_state_without_full(
     Ok((trace, state_in_hash, state_out_hash))
 }
 
-/// Public helper to slice an already built full trace without computing
-/// state hashes. Provided for callers that only need the segment trace.
-#[tracing::instrument(level = "info", skip(full, segment))]
-pub fn build_segment_trace_without_full(
-    full: &TraceTable<BE>,
-    segment: &Segment,
-) -> error::Result<TraceTable<BE>> {
-    if segment.r_start >= segment.r_end {
-        return Err(error::Error::InvalidInput(
-            "build_segment_trace_without_full requires r_start < r_end",
-        ));
-    }
-
-    if segment.r_end > full.length() {
-        return Err(error::Error::InvalidInput(
-            "segment out of bounds for provided full trace",
-        ));
-    }
-
-    if segment.r_start % STEPS_PER_LEVEL_P2 != 0 || segment.r_end % STEPS_PER_LEVEL_P2 != 0 {
-        return Err(error::Error::InvalidInput(
-            "segment must be aligned to full levels",
-        ));
-    }
-
-    // Default to the baseline layout when callers do not
-    // provide an explicit segment configuration.
-    let full_cols = Columns::baseline();
-    let cfg = LayoutConfig {
-        vm: true,
-        ram: true,
-        sponge: true,
-        merkle: true,
-        rom: true,
-    };
-    let layout = SegmentLayout::from_full_columns(&full_cols, &cfg);
-
-    Ok(slice_trace_segment_with_layout(full, segment, &layout))
-}
-
 /// Slice `full` into a segment-local trace according to
 /// the provided `SegmentLayout`, using `seg_to_full` as a
 /// column mapping.
