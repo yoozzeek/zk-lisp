@@ -34,8 +34,9 @@ use zk_lisp_proof::pi as core_pi;
 use zk_lisp_proof::pi::PublicInputs;
 use zk_lisp_proof::segment::SegmentPlanner;
 
-use crate::agg::air::{AggAirPublicInputs, ZlAggAir};
+use crate::agg::air::ZlAggAir;
 use crate::agg::child::ZlChildTranscript;
+use crate::agg::pi::AggAirPublicInputs;
 use crate::agg::trace::build_agg_trace_from_transcripts;
 use crate::poseidon::hasher::PoseidonHasher;
 use crate::proof::step::{StepMeta, StepProof};

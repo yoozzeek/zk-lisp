@@ -15,7 +15,6 @@
 //! enforcing a global work accumulator consistent with
 //! `AggAirPublicInputs::v_units_total`.
 
-use crate::agg::air::{AggAirPublicInputs, AggFriProfile};
 use crate::agg::child::{
     ZlChildCompact, ZlChildTranscript, ZlFsChallenges, children_root_from_compact,
     fold_positions_usize, merkle_root_from_leaf,
@@ -24,6 +23,8 @@ use crate::agg::layout::AggColumns;
 use crate::poseidon::hasher::PoseidonHasher;
 use crate::utils;
 
+use crate::agg::pi::{AggAirPublicInputs, AggFriProfile};
+use crate::utils::fold_bytes32_to_fe;
 use winterfell::TraceTable;
 use winterfell::crypto::{DefaultRandomCoin, Digest as CryptoHashDigest, RandomCoin};
 use winterfell::math::FieldElement;
@@ -97,8 +98,8 @@ fn derive_agg_fs_weights(agg_pi: &AggAirPublicInputs) -> error::Result<AggFsWeig
     // dedicated Fiat–Shamir coin so that DEEP / FRI aggregates use
     let mut seed_elems = agg_pi.to_elements();
 
-    // Simple domain separator to make aggregation FS distinct from
-    // other transcripts using the same hasher.
+    // Simple domain separator to make aggregation FS distinct
+    // from other transcripts using the same hasher.
     seed_elems.push(BE::from(0xA9u64));
 
     let mut coin = DefaultRandomCoin::<PoseidonHasher<BE>>::new(&seed_elems);
@@ -124,8 +125,8 @@ fn derive_agg_fs_weights(agg_pi: &AggAirPublicInputs) -> error::Result<AggFsWeig
     })
 }
 
-/// Build an aggregation trace from compact child proofs
-/// and aggregation public inputs.
+/// Build an aggregation trace from compact child
+/// proofs and aggregation public inputs.
 ///
 /// Invariants enforced here:
 /// - `children` must be non-empty;
@@ -442,22 +443,22 @@ fn build_agg_trace_core(
 
     // Decode global boundary state from AggAirPublicInputs once
     // so that VM / RAM / ROM chain checks can be expressed as
-    let vm_initial_fe = utils::fold_bytes32_to_fe(&agg_pi.vm_state_initial);
-    let vm_final_fe = utils::fold_bytes32_to_fe(&agg_pi.vm_state_final);
-    let ram_u_initial_fe = utils::fold_bytes32_to_fe(&agg_pi.ram_gp_unsorted_initial);
-    let ram_u_final_fe = utils::fold_bytes32_to_fe(&agg_pi.ram_gp_unsorted_final);
-    let ram_s_initial_fe = utils::fold_bytes32_to_fe(&agg_pi.ram_gp_sorted_initial);
-    let ram_s_final_fe = utils::fold_bytes32_to_fe(&agg_pi.ram_gp_sorted_final);
+    let vm_initial_fe = fold_bytes32_to_fe(&agg_pi.vm_state_initial);
+    let vm_final_fe = fold_bytes32_to_fe(&agg_pi.vm_state_final);
+    let ram_u_initial_fe = fold_bytes32_to_fe(&agg_pi.ram_gp_unsorted_initial);
+    let ram_u_final_fe = fold_bytes32_to_fe(&agg_pi.ram_gp_unsorted_final);
+    let ram_s_initial_fe = fold_bytes32_to_fe(&agg_pi.ram_gp_sorted_initial);
+    let ram_s_final_fe = fold_bytes32_to_fe(&agg_pi.ram_gp_sorted_final);
 
     let rom_initial_fe: [BE; 3] = [
-        utils::fold_bytes32_to_fe(&agg_pi.rom_s_initial[0]),
-        utils::fold_bytes32_to_fe(&agg_pi.rom_s_initial[1]),
-        utils::fold_bytes32_to_fe(&agg_pi.rom_s_initial[2]),
+        fold_bytes32_to_fe(&agg_pi.rom_s_initial[0]),
+        fold_bytes32_to_fe(&agg_pi.rom_s_initial[1]),
+        fold_bytes32_to_fe(&agg_pi.rom_s_initial[2]),
     ];
     let rom_final_fe: [BE; 3] = [
-        utils::fold_bytes32_to_fe(&agg_pi.rom_s_final[0]),
-        utils::fold_bytes32_to_fe(&agg_pi.rom_s_final[1]),
-        utils::fold_bytes32_to_fe(&agg_pi.rom_s_final[2]),
+        fold_bytes32_to_fe(&agg_pi.rom_s_final[0]),
+        fold_bytes32_to_fe(&agg_pi.rom_s_final[1]),
+        fold_bytes32_to_fe(&agg_pi.rom_s_final[2]),
     ];
 
     let mut prev_vm_out: Option<BE> = None;
@@ -471,23 +472,23 @@ fn build_agg_trace_core(
         let v_child_fe = BE::from(child.meta.v_units);
 
         // Decode per-child boundary state from ZlChildCompact.
-        let vm_in_fe = utils::fold_bytes32_to_fe(&child.state_in_hash);
-        let vm_out_fe = utils::fold_bytes32_to_fe(&child.state_out_hash);
+        let vm_in_fe = fold_bytes32_to_fe(&child.state_in_hash);
+        let vm_out_fe = fold_bytes32_to_fe(&child.state_out_hash);
 
-        let ram_u_in_fe = utils::fold_bytes32_to_fe(&child.ram_gp_unsorted_in);
-        let ram_u_out_fe = utils::fold_bytes32_to_fe(&child.ram_gp_unsorted_out);
-        let ram_s_in_fe = utils::fold_bytes32_to_fe(&child.ram_gp_sorted_in);
-        let ram_s_out_fe = utils::fold_bytes32_to_fe(&child.ram_gp_sorted_out);
+        let ram_u_in_fe = fold_bytes32_to_fe(&child.ram_gp_unsorted_in);
+        let ram_u_out_fe = fold_bytes32_to_fe(&child.ram_gp_unsorted_out);
+        let ram_s_in_fe = fold_bytes32_to_fe(&child.ram_gp_sorted_in);
+        let ram_s_out_fe = fold_bytes32_to_fe(&child.ram_gp_sorted_out);
 
         let rom_in_fe: [BE; 3] = [
-            utils::fold_bytes32_to_fe(&child.rom_s_in[0]),
-            utils::fold_bytes32_to_fe(&child.rom_s_in[1]),
-            utils::fold_bytes32_to_fe(&child.rom_s_in[2]),
+            fold_bytes32_to_fe(&child.rom_s_in[0]),
+            fold_bytes32_to_fe(&child.rom_s_in[1]),
+            fold_bytes32_to_fe(&child.rom_s_in[2]),
         ];
         let rom_out_fe: [BE; 3] = [
-            utils::fold_bytes32_to_fe(&child.rom_s_out[0]),
-            utils::fold_bytes32_to_fe(&child.rom_s_out[1]),
-            utils::fold_bytes32_to_fe(&child.rom_s_out[2]),
+            fold_bytes32_to_fe(&child.rom_s_out[0]),
+            fold_bytes32_to_fe(&child.rom_s_out[1]),
+            fold_bytes32_to_fe(&child.rom_s_out[2]),
         ];
 
         // Compute chain errors for this child relative to the
@@ -572,8 +573,8 @@ fn build_agg_trace_core(
                     ));
                 }
 
-                let trace_root_expected_fe = utils::fold_bytes32_to_fe(&child.trace_roots[0]);
-                let constraint_root_expected_fe = utils::fold_bytes32_to_fe(&child.constraint_root);
+                let trace_root_expected_fe = fold_bytes32_to_fe(&child.trace_roots[0]);
+                let constraint_root_expected_fe = fold_bytes32_to_fe(&child.constraint_root);
 
                 let lde_domain_size = (child.meta.m as usize)
                     .checked_mul(child.meta.rho as usize)
@@ -595,8 +596,8 @@ fn build_agg_trace_core(
                     let t_root = merkle_root_from_leaf(&t_path.leaf, idx, &t_path.siblings);
                     let c_root = merkle_root_from_leaf(&c_path.leaf, idx, &c_path.siblings);
 
-                    let t_root_fe = utils::fold_bytes32_to_fe(&t_root.as_bytes());
-                    let c_root_fe = utils::fold_bytes32_to_fe(&c_root.as_bytes());
+                    let t_root_fe = fold_bytes32_to_fe(&t_root.as_bytes());
+                    let c_root_fe = fold_bytes32_to_fe(&c_root.as_bytes());
 
                     trace_root_err_fe += t_root_fe - trace_root_expected_fe;
                     constraint_root_err_fe += c_root_fe - constraint_root_expected_fe;

@@ -27,10 +27,10 @@ pub mod vm;
 
 use vm::trace::build_trace;
 
-use agg::air::AggAirPublicInputs;
 use agg::child::{
     ZlChildCompact, ZlChildTranscript, children_root_from_compact, verify_child_transcript,
 };
+use agg::pi::AggAirPublicInputs;
 use proof::step;
 use vm::layout;
 use winterfell::math::fields::f128::BaseElement as BE;
@@ -334,7 +334,7 @@ impl RecursionPublicBuilder for WinterfellBackend {
         let suite_id = first.suite_id;
         let children_ms = children.iter().map(|c| c.meta.m).collect::<Vec<_>>();
 
-        let profile_meta = agg::air::AggProfileMeta {
+        let profile_meta = agg::pi::AggProfileMeta {
             m: first.meta.m,
             rho: first.meta.rho,
             q: first.meta.q,
@@ -343,13 +343,13 @@ impl RecursionPublicBuilder for WinterfellBackend {
             pi_len: first.meta.pi_len,
             v_units: first.meta.v_units,
         };
-        let profile_fri = agg::air::AggFriProfile {
+        let profile_fri = agg::pi::AggFriProfile {
             lde_blowup: first.meta.rho as u32,
             folding_factor: 2,
             redundancy: 1,
             num_layers: 1,
         };
-        let profile_queries = agg::air::AggQueryProfile {
+        let profile_queries = agg::pi::AggQueryProfile {
             num_queries: first.meta.q,
             grinding_factor: 0,
         };
@@ -581,7 +581,7 @@ impl RecursionArtifactCodec for WinterfellBackend {
         i += 8;
 
         let v_units_meta = u64::from_le_bytes(u8b2);
-        let profile_meta = agg::air::AggProfileMeta {
+        let profile_meta = agg::pi::AggProfileMeta {
             m,
             rho,
             q,
@@ -594,7 +594,7 @@ impl RecursionArtifactCodec for WinterfellBackend {
         let folding_factor = read_u8(bytes, &mut i)?;
         let redundancy = read_u8(bytes, &mut i)?;
         let num_layers = read_u8(bytes, &mut i)?;
-        let profile_fri = agg::air::AggFriProfile {
+        let profile_fri = agg::pi::AggFriProfile {
             lde_blowup,
             folding_factor,
             redundancy,
@@ -602,7 +602,7 @@ impl RecursionArtifactCodec for WinterfellBackend {
         };
         let num_queries = read_u16(bytes, &mut i)?;
         let grinding_factor = read_u32(bytes, &mut i)?;
-        let profile_queries = agg::air::AggQueryProfile {
+        let profile_queries = agg::pi::AggQueryProfile {
             num_queries,
             grinding_factor,
         };

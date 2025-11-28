@@ -13,6 +13,7 @@ use crate::AirPublicInputs;
 use crate::agg::child::ZlFsChallenges;
 use crate::poseidon::hasher::PoseidonHasher;
 use crate::proof::step::StepProof;
+use crate::utils::fe_from_bytes_fold;
 use crate::vm::air::ZkLispAir;
 
 use winterfell::Air;
@@ -44,20 +45,20 @@ pub fn replay_fs_from_step(step: &StepProof) -> error::Result<ZlFsChallenges> {
         core: step.pi_core.clone(),
         segment_feature_mask: 0,
         rom_acc: step.rom_acc,
-        pc_init: crate::utils::fe_from_bytes_fold(&pi_zl1.pc_init),
-        ram_gp_unsorted_in: crate::utils::fe_from_bytes_fold(&pi_zl1.ram_gp_unsorted_in),
-        ram_gp_unsorted_out: crate::utils::fe_from_bytes_fold(&pi_zl1.ram_gp_unsorted_out),
-        ram_gp_sorted_in: crate::utils::fe_from_bytes_fold(&pi_zl1.ram_gp_sorted_in),
-        ram_gp_sorted_out: crate::utils::fe_from_bytes_fold(&pi_zl1.ram_gp_sorted_out),
+        pc_init: fe_from_bytes_fold(&pi_zl1.pc_init),
+        ram_gp_unsorted_in: fe_from_bytes_fold(&pi_zl1.ram_gp_unsorted_in),
+        ram_gp_unsorted_out: fe_from_bytes_fold(&pi_zl1.ram_gp_unsorted_out),
+        ram_gp_sorted_in: fe_from_bytes_fold(&pi_zl1.ram_gp_sorted_in),
+        ram_gp_sorted_out: fe_from_bytes_fold(&pi_zl1.ram_gp_sorted_out),
         rom_s_in: [
-            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_in_0),
-            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_in_1),
-            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_in_2),
+            fe_from_bytes_fold(&pi_zl1.rom_s_in_0),
+            fe_from_bytes_fold(&pi_zl1.rom_s_in_1),
+            fe_from_bytes_fold(&pi_zl1.rom_s_in_2),
         ],
         rom_s_out: [
-            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_0),
-            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_1),
-            crate::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_2),
+            fe_from_bytes_fold(&pi_zl1.rom_s_out_0),
+            fe_from_bytes_fold(&pi_zl1.rom_s_out_1),
+            fe_from_bytes_fold(&pi_zl1.rom_s_out_2),
         ],
     };
 

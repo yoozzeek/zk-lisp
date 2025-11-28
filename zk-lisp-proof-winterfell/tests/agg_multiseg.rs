@@ -7,16 +7,17 @@
 //   attribution in copies of this file or substantial
 //   portions of it. See the NOTICE file for details.
 
+use pi::AggAirPublicInputs;
 use winterfell::math::fields::f128::BaseElement as BE;
 use zk_lisp_compiler::Program;
 use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::agg::air::AggAirPublicInputs;
 use zk_lisp_proof_winterfell::agg::child::{ZlChildCompact, children_root_from_compact};
+use zk_lisp_proof_winterfell::agg::pi;
 use zk_lisp_proof_winterfell::agg::trace::build_agg_trace;
 use zk_lisp_proof_winterfell::poseidon::poseidon_hash_two_lanes;
-use zk_lisp_proof_winterfell::utils;
+use zk_lisp_proof_winterfell::{prove, utils};
 
 fn init_tracing() {
     static INIT: std::sync::Once = std::sync::Once::new();
@@ -134,7 +135,7 @@ fn agg_multiseg_positive_builds_trace() {
     let opts = make_opts();
 
     // Build multi-segment step proofs
-    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
+    let steps = prove::prove_program(&program, &pi, &opts)
         .expect("prove_program_steps must succeed and produce multiple segments");
     assert!(steps.len() > 1, "expected multi-segment output");
 
@@ -163,7 +164,7 @@ fn agg_multiseg_positive_builds_trace() {
         v_units_total: v_sum,
         children_count: children.len() as u32,
         batch_id: [0u8; 32],
-        profile_meta: zk_lisp_proof_winterfell::agg::air::AggProfileMeta {
+        profile_meta: pi::AggProfileMeta {
             m: first.meta.m,
             rho: first.meta.rho,
             q: first.meta.q,
@@ -172,8 +173,8 @@ fn agg_multiseg_positive_builds_trace() {
             pi_len: first.meta.pi_len,
             v_units: first.meta.v_units, // unused in checks beyond to_elements
         },
-        profile_fri: zk_lisp_proof_winterfell::agg::air::AggFriProfile::default(),
-        profile_queries: zk_lisp_proof_winterfell::agg::air::AggQueryProfile {
+        profile_fri: pi::AggFriProfile::default(),
+        profile_queries: pi::AggQueryProfile {
             num_queries: first.meta.q,
             grinding_factor: 0,
         },
@@ -207,8 +208,8 @@ fn agg_multiseg_negative_invalid_index_rejected() {
 
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
-        .expect("prove_program_steps must succeed");
+    let steps =
+        prove::prove_program(&program, &pi, &opts).expect("prove_program_steps must succeed");
     assert!(steps.len() > 1);
 
     let mut children: Vec<ZlChildCompact> = steps
@@ -268,8 +269,8 @@ fn agg_multiseg_negative_missing_segment_rejected() {
 
     let opts = make_opts();
 
-    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
-        .expect("prove_program_steps must succeed");
+    let steps =
+        prove::prove_program(&program, &pi, &opts).expect("prove_program_steps must succeed");
 
     let mut children: Vec<ZlChildCompact> = steps
         .iter()

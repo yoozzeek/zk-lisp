@@ -11,4 +11,5 @@ pub mod air;
 pub mod child;
 pub mod fs;
 pub mod layout;
+pub mod pi;
 pub mod trace;

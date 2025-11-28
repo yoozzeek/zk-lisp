@@ -26,11 +26,12 @@ use zk_lisp_compiler::builder::{Op, ProgramBuilder};
 use zk_lisp_proof::ProverOptions;
 use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
 use zk_lisp_proof::pi::PublicInputsBuilder;
-use zk_lisp_proof_winterfell::agg::air::{
-    AggAirPublicInputs, AggFriProfile, AggProfileMeta, AggQueryProfile, ZlAggAir,
-};
+use zk_lisp_proof_winterfell::agg::air::ZlAggAir;
 use zk_lisp_proof_winterfell::agg::child::{
     ZlChildCompact, ZlChildTranscript, children_root_from_compact,
+};
+use zk_lisp_proof_winterfell::agg::pi::{
+    AggAirPublicInputs, AggFriProfile, AggProfileMeta, AggQueryProfile,
 };
 use zk_lisp_proof_winterfell::agg::trace::{build_agg_trace, build_agg_trace_from_transcripts};
 use zk_lisp_proof_winterfell::poseidon::hasher::PoseidonHasher;
