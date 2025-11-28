@@ -112,3 +112,97 @@ fn transcript_commitments_match_zl1_root_trace() {
         assert_eq!(transcript.ood_quotient_next.len(), c_width);
     }
 }
+
+#[test]
+fn transcript_verify_rejects_tampered_trace_root() {
+    let program = build_tiny_program();
+    let pi = build_public_inputs(&program);
+    let opts = make_opts();
+
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let mut transcript =
+        ZlChildTranscript::from_step(&steps[0]).expect("child transcript extraction must succeed");
+
+    // Breaking one of trace_roots in transcript
+    if let Some(first_root) = transcript.trace_roots.first_mut() {
+        first_root[0] ^= 1;
+    }
+
+    let result = verify_child_transcript(&transcript);
+    assert!(
+        result.is_err(),
+        "verify_child_transcript must fail when transcript.trace_roots is inconsistent with compact.trace_root",
+    );
+}
+
+#[test]
+fn transcript_verify_rejects_tampered_compact_trace_root() {
+    let program = build_tiny_program();
+    let pi = build_public_inputs(&program);
+    let opts = make_opts();
+
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let mut transcript =
+        ZlChildTranscript::from_step(&steps[0]).expect("child transcript extraction must succeed");
+
+    // Breaking one of trace_roots in compact part
+    if !transcript.compact.trace_root.is_empty() {
+        transcript.compact.trace_root[0] ^= 1;
+    }
+
+    let result = verify_child_transcript(&transcript);
+    assert!(
+        result.is_err(),
+        "verify_child_transcript must fail when compact.trace_root is inconsistent with commitments",
+    );
+}
+
+#[test]
+fn transcript_verify_rejects_invalid_fri_degree() {
+    let program = build_tiny_program();
+    let pi = build_public_inputs(&program);
+    let opts = make_opts();
+
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let mut transcript =
+        ZlChildTranscript::from_step(&steps[0]).expect("child transcript extraction must succeed");
+
+    // Set degree higher than max allowed (len-1)
+    let len = transcript.fri_final.coeffs.len() as u16;
+    transcript.fri_final.deg = len; // should be > len-1
+
+    let result = verify_child_transcript(&transcript);
+    assert!(
+        result.is_err(),
+        "verify_child_transcript must fail when fri_final.deg > coeffs.len() - 1",
+    );
+}
+
+#[test]
+fn transcript_verify_rejects_num_queries_mismatch_openings() {
+    let program = build_tiny_program();
+    let pi = build_public_inputs(&program);
+    let opts = make_opts();
+
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let mut transcript =
+        ZlChildTranscript::from_step(&steps[0]).expect("child transcript extraction must succeed");
+
+    // Set num_queries without changing actual number of rows
+    transcript.num_queries = transcript.num_queries.saturating_add(1);
+
+    let result = verify_child_transcript(&transcript);
+
+    assert!(
+        result.is_err(),
+        "verify_child_transcript must fail when num_queries is inconsistent with openings",
+    );
+}

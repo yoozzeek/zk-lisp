@@ -224,3 +224,17 @@ fn recursion_chain_state_initial_mismatch_rejected() {
         }
     }
 }
+
+#[test]
+fn recursion_chain_empty_rejected() {
+    let opts = make_opts();
+    let err = verify_chain::<WinterfellBackend, _>(std::iter::empty(), &opts)
+        .expect_err("empty recursion chain must be rejected");
+
+    match err {
+        RecursionChainError::Invalid(msg) => {
+            assert_eq!(msg, "recursion chain must contain at least one step");
+        }
+        RecursionChainError::Backend(e) => panic!("expected Invalid, got Backend: {e:?}"),
+    }
+}

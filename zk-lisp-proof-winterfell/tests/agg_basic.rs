@@ -1194,3 +1194,304 @@ fn agg_merkle_binding_rejects_tampered_trace_path() {
         }
     }
 }
+
+fn build_initial_pi_for_tampering() -> (Vec<ZlChildCompact>, AggAirPublicInputs) {
+    let program = build_step_program();
+    let pi = build_step_public_inputs(&program);
+    let opts = make_step_opts();
+
+    let steps = zk_lisp_proof_winterfell::prove::prove_program(&program, &pi, &opts)
+        .expect("step proof must succeed");
+
+    let child = ZlChildCompact::from_step(&steps[0]).expect("compact child must build");
+    let children = vec![child.clone()];
+    let children_root = children_root_from_compact(&child.suite_id, &children);
+
+    let profile_meta = AggProfileMeta {
+        m: child.meta.m,
+        rho: child.meta.rho,
+        q: child.meta.q,
+        o: child.meta.o,
+        lambda: child.meta.lambda,
+        pi_len: child.meta.pi_len,
+        v_units: child.meta.v_units,
+    };
+
+    let profile_fri = AggFriProfile {
+        lde_blowup: 8,
+        folding_factor: 2,
+        redundancy: 1,
+        num_layers: 0,
+    };
+
+    let profile_queries = AggQueryProfile {
+        num_queries: child.meta.q,
+        grinding_factor: 0,
+    };
+
+    let agg_pi = AggAirPublicInputs {
+        program_id: child.pi_core.program_id,
+        program_commitment: child.pi_core.program_commitment,
+        pi_digest: child.pi_core.digest(),
+        children_root,
+        v_units_total: child.meta.v_units,
+        children_count: 1,
+        batch_id: [0u8; 32],
+        profile_meta,
+        profile_fri,
+        profile_queries,
+        suite_id: child.suite_id,
+        children_ms: vec![child.meta.m],
+        vm_state_initial: child.state_in_hash,
+        vm_state_final: child.state_out_hash,
+        ram_gp_unsorted_initial: child.ram_gp_unsorted_in,
+        ram_gp_unsorted_final: child.ram_gp_unsorted_out,
+        ram_gp_sorted_initial: child.ram_gp_sorted_in,
+        ram_gp_sorted_final: child.ram_gp_sorted_out,
+        rom_s_initial: child.rom_s_in,
+        rom_s_final: child.rom_s_out,
+    };
+
+    (children, agg_pi)
+}
+
+#[test]
+fn agg_vm_chain_rejects_tampered_vm_state_initial() {
+    let (children, mut agg_pi) = build_initial_pi_for_tampering();
+
+    // Breaking the global initial VM state
+    agg_pi.vm_state_initial[0] ^= 1;
+
+    let agg_trace = build_agg_trace(&agg_pi, &children)
+        .expect("agg trace build must succeed even for tampered boundaries");
+
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+
+    let result = panic::catch_unwind(|| prover.prove(agg_trace.trace.clone()));
+
+    match result {
+        // The check may have failed at the constraint calculation stage
+        Err(_) => {}
+        // Or return Err from the backend
+        Ok(Err(_)) => {}
+        // If somehow a proof is received, verify is bound to fail
+        Ok(Ok(proof)) => {
+            let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+            let v = winterfell::verify::<
+                ZlAggAir,
+                PoseidonHasher<BE>,
+                DefaultRandomCoin<PoseidonHasher<BE>>,
+                MerkleTree<PoseidonHasher<BE>>,
+            >(proof, agg_pi, &acceptable);
+            assert!(
+                v.is_err(),
+                "agg proof unexpectedly verified for tampered vm_state_initial",
+            );
+        }
+    }
+}
+
+#[test]
+fn agg_ram_chain_rejects_tampered_ram_unsorted_initial() {
+    let (children, mut agg_pi) = build_initial_pi_for_tampering();
+
+    // Breaking the global RAM unsorted boundary
+    agg_pi.ram_gp_unsorted_initial[0] ^= 1;
+
+    let agg_trace = build_agg_trace(&agg_pi, &children)
+        .expect("agg trace build must succeed even for tampered boundaries");
+
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+
+    let result = panic::catch_unwind(|| prover.prove(agg_trace.trace.clone()));
+
+    match result {
+        Err(_) => {}
+        Ok(Err(_)) => {}
+        Ok(Ok(proof)) => {
+            let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+            let v = winterfell::verify::<
+                ZlAggAir,
+                PoseidonHasher<BE>,
+                DefaultRandomCoin<PoseidonHasher<BE>>,
+                MerkleTree<PoseidonHasher<BE>>,
+            >(proof, agg_pi, &acceptable);
+            assert!(
+                v.is_err(),
+                "agg proof unexpectedly verified for tampered ram_gp_unsorted_initial",
+            );
+        }
+    }
+}
+
+#[test]
+fn agg_rom_chain_rejects_tampered_rom_initial() {
+    let (children, mut agg_pi) = build_initial_pi_for_tampering();
+
+    // Breaking the global initial ROM state
+    agg_pi.rom_s_initial[0][0] ^= 1;
+
+    let agg_trace = build_agg_trace(&agg_pi, &children)
+        .expect("agg trace build must succeed even for tampered boundaries");
+
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+
+    let result = panic::catch_unwind(|| prover.prove(agg_trace.trace.clone()));
+
+    match result {
+        Err(_) => {}
+        Ok(Err(_)) => {}
+        Ok(Ok(proof)) => {
+            let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+            let v = winterfell::verify::<
+                ZlAggAir,
+                PoseidonHasher<BE>,
+                DefaultRandomCoin<PoseidonHasher<BE>>,
+                MerkleTree<PoseidonHasher<BE>>,
+            >(proof, agg_pi, &acceptable);
+            assert!(
+                v.is_err(),
+                "agg proof unexpectedly verified for tampered rom_s_initial",
+            );
+        }
+    }
+}
+
+#[test]
+fn agg_rom_chain_rejects_tampered_vm_state_final() {
+    let (children, mut agg_pi) = build_initial_pi_for_tampering();
+
+    // Breaking the global vm state final
+    agg_pi.vm_state_final[0] ^= 1;
+
+    let agg_trace = build_agg_trace(&agg_pi, &children)
+        .expect("agg trace build must succeed even for tampered boundaries");
+
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+
+    let result = panic::catch_unwind(|| prover.prove(agg_trace.trace.clone()));
+
+    match result {
+        Err(_) => {}
+        Ok(Err(_)) => {}
+        Ok(Ok(proof)) => {
+            let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+            let v = winterfell::verify::<
+                ZlAggAir,
+                PoseidonHasher<BE>,
+                DefaultRandomCoin<PoseidonHasher<BE>>,
+                MerkleTree<PoseidonHasher<BE>>,
+            >(proof, agg_pi, &acceptable);
+            assert!(
+                v.is_err(),
+                "agg proof unexpectedly verified for tampered vm_state_final",
+            );
+        }
+    }
+}
+
+#[test]
+fn agg_rom_chain_rejects_tampered_rom_s_final() {
+    let (children, mut agg_pi) = build_initial_pi_for_tampering();
+
+    // Breaking the global rom s final
+    agg_pi.rom_s_final[0][0] ^= 1;
+
+    let agg_trace = build_agg_trace(&agg_pi, &children)
+        .expect("agg trace build must succeed even for tampered boundaries");
+
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+
+    let result = panic::catch_unwind(|| prover.prove(agg_trace.trace.clone()));
+
+    match result {
+        Err(_) => {}
+        Ok(Err(_)) => {}
+        Ok(Ok(proof)) => {
+            let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+            let v = winterfell::verify::<
+                ZlAggAir,
+                PoseidonHasher<BE>,
+                DefaultRandomCoin<PoseidonHasher<BE>>,
+                MerkleTree<PoseidonHasher<BE>>,
+            >(proof, agg_pi, &acceptable);
+            assert!(
+                v.is_err(),
+                "agg proof unexpectedly verified for tampered rom_s_final",
+            );
+        }
+    }
+}
+
+#[test]
+fn agg_rom_chain_rejects_tampered_ram_unsorted_final() {
+    let (children, mut agg_pi) = build_initial_pi_for_tampering();
+
+    // Breaking the final unsorted ram
+    agg_pi.ram_gp_unsorted_final[0] ^= 1;
+
+    let agg_trace = build_agg_trace(&agg_pi, &children)
+        .expect("agg trace build must succeed even for tampered boundaries");
+
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+
+    let result = panic::catch_unwind(|| prover.prove(agg_trace.trace.clone()));
+
+    match result {
+        Err(_) => {}
+        Ok(Err(_)) => {}
+        Ok(Ok(proof)) => {
+            let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+            let v = winterfell::verify::<
+                ZlAggAir,
+                PoseidonHasher<BE>,
+                DefaultRandomCoin<PoseidonHasher<BE>>,
+                MerkleTree<PoseidonHasher<BE>>,
+            >(proof, agg_pi, &acceptable);
+            assert!(
+                v.is_err(),
+                "agg proof unexpectedly verified for tampered ram_gp_unsorted_final",
+            );
+        }
+    }
+}
+
+#[test]
+fn agg_rom_chain_rejects_tampered_ram_sorted_final() {
+    let (children, mut agg_pi) = build_initial_pi_for_tampering();
+
+    // Breaking the final sorted ram
+    agg_pi.ram_gp_sorted_final[0] ^= 1;
+
+    let agg_trace = build_agg_trace(&agg_pi, &children)
+        .expect("agg trace build must succeed even for tampered boundaries");
+
+    let opts = make_wf_opts();
+    let prover = AggProver::new(opts.clone(), agg_pi.clone());
+
+    let result = panic::catch_unwind(|| prover.prove(agg_trace.trace.clone()));
+
+    match result {
+        Err(_) => {}
+        Ok(Err(_)) => {}
+        Ok(Ok(proof)) => {
+            let acceptable = AcceptableOptions::MinConjecturedSecurity(40);
+            let v = winterfell::verify::<
+                ZlAggAir,
+                PoseidonHasher<BE>,
+                DefaultRandomCoin<PoseidonHasher<BE>>,
+                MerkleTree<PoseidonHasher<BE>>,
+            >(proof, agg_pi, &acceptable);
+            assert!(
+                v.is_err(),
+                "agg proof unexpectedly verified for tampered ram_gp_sorted_final",
+            );
+        }
+    }
+}

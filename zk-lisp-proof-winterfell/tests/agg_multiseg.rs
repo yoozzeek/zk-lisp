@@ -315,3 +315,83 @@ fn agg_multiseg_negative_missing_segment_rejected() {
         }
     }
 }
+
+#[cfg_attr(debug_assertions, ignore)]
+#[test]
+fn agg_multiseg_negative_children_count_mismatch() {
+    init_tracing();
+
+    let program = build_large_program_for_multiseg();
+    let mut pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi build");
+    pi.merkle_root = merkle_root_for_multiseg(&program);
+
+    let opts = make_opts();
+
+    let steps =
+        prove::prove_program(&program, &pi, &opts).expect("prove_program_steps must succeed");
+    assert!(steps.len() > 1);
+
+    let children: Vec<ZlChildCompact> = steps
+        .iter()
+        .map(|s| ZlChildCompact::from_step(s).expect("child compact"))
+        .collect();
+
+    let suite_id = children[0].suite_id;
+    let children_root = children_root_from_compact(&suite_id, &children);
+
+    let first = &children[0];
+    let last = &children[children.len() - 1];
+
+    let v_sum: u64 = children.iter().map(|c| c.meta.v_units).sum();
+    let children_ms: Vec<u32> = children.iter().map(|c| c.meta.m).collect();
+
+    let mut agg_pi = AggAirPublicInputs {
+        program_id: pi.program_id,
+        program_commitment: pi.program_commitment,
+        pi_digest: pi.digest(),
+        children_root,
+        v_units_total: v_sum,
+        children_count: (children.len() as u32) + 1, // намеренно неверно
+        batch_id: [0u8; 32],
+        profile_meta: pi::AggProfileMeta {
+            m: first.meta.m,
+            rho: first.meta.rho,
+            q: first.meta.q,
+            o: first.meta.o,
+            lambda: first.meta.lambda,
+            pi_len: first.meta.pi_len,
+            v_units: first.meta.v_units,
+        },
+        profile_fri: pi::AggFriProfile::default(),
+        profile_queries: pi::AggQueryProfile {
+            num_queries: first.meta.q,
+            grinding_factor: 0,
+        },
+        suite_id,
+        children_ms,
+        vm_state_initial: first.state_in_hash,
+        vm_state_final: last.state_out_hash,
+        ram_gp_unsorted_initial: first.ram_gp_unsorted_in,
+        ram_gp_unsorted_final: last.ram_gp_unsorted_out,
+        ram_gp_sorted_initial: first.ram_gp_sorted_in,
+        ram_gp_sorted_final: last.ram_gp_sorted_out,
+        rom_s_initial: first.rom_s_in,
+        rom_s_final: last.rom_s_out,
+    };
+
+    let err = build_agg_trace(&agg_pi, &children)
+        .expect_err("agg trace must fail when children_count mismatches number of children");
+
+    match err {
+        zk_lisp_proof::error::Error::InvalidInput(msg) => {
+            assert!(
+                msg.contains("AggAirPublicInputs.children_count must match number of children"),
+                "unexpected error message: {msg}",
+            );
+        }
+    }
+
+    agg_pi.children_count = children.len() as u32;
+}
