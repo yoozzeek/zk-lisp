@@ -20,11 +20,10 @@ use crate::agg::child::{
     fold_positions_usize, merkle_root_from_leaf,
 };
 use crate::agg::layout::AggColumns;
-use crate::poseidon::hasher::PoseidonHasher;
-use crate::utils;
-
 use crate::agg::pi::{AggAirPublicInputs, AggFriProfile};
+use crate::poseidon::hasher::PoseidonHasher;
 use crate::utils::fold_bytes32_to_fe;
+
 use winterfell::TraceTable;
 use winterfell::crypto::{DefaultRandomCoin, Digest as CryptoHashDigest, RandomCoin};
 use winterfell::math::FieldElement;

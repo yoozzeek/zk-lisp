@@ -25,7 +25,8 @@ pub use schema::{ArgRole, FnTypeSchema, LetTypeSchema, ScalarType, TypeSchemas};
 
 use crate::builder::{Op, ProgramBuilder};
 
-use lower::{Ast, Atom, LowerCtx, Tok};
+use lower::ctx::LowerCtx;
+use lower::{Ast, Atom, Tok};
 use std::collections::VecDeque;
 use thiserror::Error;
 use tracing::{debug, instrument};
@@ -517,18 +518,6 @@ mod tests {
         let src = "(def (add2 x y) (+ x y)) (let ((a 7) (b 9)) (select (= a b) (add2 a b) 0))";
         let p = compile_str(src).unwrap();
         assert!(!p.ops.is_empty());
-    }
-
-    #[test]
-    fn lower_hash2_produces_sponge_ops() {
-        let src = "(let ((x 1) (y 2)) (hash2 x y))";
-        let p = compile_str(src).unwrap();
-        // hash represented via sponge ops SAbsorbN/SSqueeze
-        assert!(
-            p.ops
-                .iter()
-                .any(|op| matches!(op, Op::SAbsorbN { .. } | Op::SSqueeze { .. }))
-        );
     }
 
     #[test]

@@ -490,7 +490,7 @@ impl ProgramBuilder {
     }
 }
 
-pub fn encode_ops(ops: &[Op]) -> Vec<u8> {
+fn encode_ops(ops: &[Op]) -> Vec<u8> {
     let mut out = Vec::with_capacity(ops.len() * 8);
     for op in ops {
         use Op::*;
