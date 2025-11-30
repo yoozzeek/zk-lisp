@@ -7,13 +7,14 @@
 //   attribution in copies of this file or substantial
 //   portions of it. See the NOTICE file for details.
 
+use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{BatchingMethod, FieldExtension, ProofOptions};
-
 use zk_lisp_compiler::compile_entry;
 use zk_lisp_proof::frontend::PreflightMode;
 use zk_lisp_proof::pi::PublicInputsBuilder;
 use zk_lisp_proof_winterfell::preflight::run as run_preflight;
+use zk_lisp_proof_winterfell::romacc;
 use zk_lisp_proof_winterfell::utils::vm_output_from_trace;
 use zk_lisp_proof_winterfell::vm::layout::Columns;
 use zk_lisp_proof_winterfell::vm::trace::build_trace;
@@ -124,8 +125,23 @@ fn ram_perm_store_then_load_preflight_ok() {
     let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
     let trace = build_trace(&p, &pi).expect("trace");
     let opts = proof_opts();
+    let cols = Columns::baseline();
+    let rom_acc = if pi.program_commitment.iter().any(|b| *b != 0) {
+        romacc::rom_acc_from_program(&p)
+    } else {
+        [BE::ZERO; 3]
+    };
 
-    run_preflight(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
+    run_preflight(
+        PreflightMode::Console,
+        &opts,
+        &pi,
+        0,
+        rom_acc,
+        &cols,
+        &trace,
+    )
+    .expect("preflight ok");
 }
 
 #[test]
@@ -145,8 +161,23 @@ fn ram_perm_many_addresses_preflight_ok() {
     let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
     let trace = build_trace(&p, &pi).expect("trace");
     let opts = proof_opts();
+    let cols = Columns::baseline();
+    let rom_acc = if pi.program_commitment.iter().any(|b| *b != 0) {
+        romacc::rom_acc_from_program(&p)
+    } else {
+        [BE::ZERO; 3]
+    };
 
-    run_preflight(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
+    run_preflight(
+        PreflightMode::Console,
+        &opts,
+        &pi,
+        0,
+        rom_acc,
+        &cols,
+        &trace,
+    )
+    .expect("preflight ok");
 }
 
 #[test]
@@ -161,8 +192,23 @@ fn ram_perm_interleaved_preflight_ok() {
     let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
     let trace = build_trace(&p, &pi).expect("trace");
     let opts = proof_opts();
+    let cols = Columns::baseline();
+    let rom_acc = if pi.program_commitment.iter().any(|b| *b != 0) {
+        romacc::rom_acc_from_program(&p)
+    } else {
+        [BE::ZERO; 3]
+    };
 
-    run_preflight(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
+    run_preflight(
+        PreflightMode::Console,
+        &opts,
+        &pi,
+        0,
+        rom_acc,
+        &cols,
+        &trace,
+    )
+    .expect("preflight ok");
 }
 
 #[test]
@@ -176,8 +222,23 @@ fn ram_perm_double_store_then_load_preflight_ok() {
     let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
     let trace = build_trace(&p, &pi).expect("trace");
     let opts = proof_opts();
+    let cols = Columns::baseline();
+    let rom_acc = if pi.program_commitment.iter().any(|b| *b != 0) {
+        romacc::rom_acc_from_program(&p)
+    } else {
+        [BE::ZERO; 3]
+    };
 
-    run_preflight(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
+    run_preflight(
+        PreflightMode::Console,
+        &opts,
+        &pi,
+        0,
+        rom_acc,
+        &cols,
+        &trace,
+    )
+    .expect("preflight ok");
 }
 
 #[test]
@@ -196,8 +257,23 @@ fn ram_addr_zero_cross_level_preflight_ok() {
     let pi = PublicInputsBuilder::from_program(&p).build().expect("pi");
     let trace = build_trace(&p, &pi).expect("trace");
     let opts = proof_opts();
+    let cols = Columns::baseline();
+    let rom_acc = if pi.program_commitment.iter().any(|b| *b != 0) {
+        romacc::rom_acc_from_program(&p)
+    } else {
+        [BE::ZERO; 3]
+    };
 
-    run_preflight(PreflightMode::Console, &opts, &pi, &trace).expect("preflight ok");
+    run_preflight(
+        PreflightMode::Console,
+        &opts,
+        &pi,
+        0,
+        rom_acc,
+        &cols,
+        &trace,
+    )
+    .expect("preflight ok");
 }
 
 #[test]

@@ -18,6 +18,8 @@ use zk_lisp_proof::pi::{self, PublicInputs, PublicInputsBuilder};
 use zk_lisp_proof_winterfell::poseidon::get_poseidon_suite;
 use zk_lisp_proof_winterfell::preflight::run as run_preflight;
 use zk_lisp_proof_winterfell::prove::{self, ZkProver};
+use zk_lisp_proof_winterfell::romacc;
+use zk_lisp_proof_winterfell::vm::layout;
 use zk_lisp_proof_winterfell::vm::layout::{NR, STEPS_PER_LEVEL_P2};
 use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
@@ -269,9 +271,24 @@ fn schedule_preflight_ok() {
         .build()
         .expect("pi");
     let trace = build_trace(&program, &pi).expect("trace");
+    let cols = layout::Columns::baseline();
+    let rom_acc = if pi.program_commitment.iter().any(|b| *b != 0) {
+        romacc::rom_acc_from_program(&program)
+    } else {
+        [BE::ZERO; 3]
+    };
 
     // Run preflight explicitly
-    run_preflight(PreflightMode::Console, &opts(), &pi, &trace).expect("preflight ok");
+    run_preflight(
+        PreflightMode::Console,
+        &opts(),
+        &pi,
+        0,
+        rom_acc,
+        &cols,
+        &trace,
+    )
+    .expect("preflight ok");
 }
 
 #[test]

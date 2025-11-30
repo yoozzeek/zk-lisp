@@ -187,7 +187,21 @@ impl ZkProver {
         // Preflight timing
         if !matches!(self.preflight, PreflightMode::Off) {
             let t_pf = std::time::Instant::now();
-            run_preflight(self.preflight, &self.options, &self.pub_inputs, &trace)?;
+            let cols = if let Some(ref seg_cols) = self.segment_cols {
+                seg_cols.clone()
+            } else {
+                Columns::baseline()
+            };
+
+            run_preflight(
+                self.preflight,
+                &self.options,
+                &self.pub_inputs,
+                self.segment_feature_mask,
+                self.rom_acc,
+                &cols,
+                &trace,
+            )?;
 
             tracing::debug!(
                 target = "proof.prove",

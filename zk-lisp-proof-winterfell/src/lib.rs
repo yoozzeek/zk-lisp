@@ -194,8 +194,14 @@ impl PreflightBackend for WinterfellBackend {
         let (num_partitions, hash_rate) =
             utils::select_partitions_for_trace(trace.width(), trace.length());
         let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
+        let cols = layout::Columns::baseline();
+        let rom_acc = if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
+            romacc::rom_acc_from_program(program)
+        } else {
+            [BE::ZERO; 3]
+        };
 
-        preflight::run(mode, &wf_opts, pub_inputs, &trace)
+        preflight::run(mode, &wf_opts, pub_inputs, 0, rom_acc, &cols, &trace)
     }
 }
 

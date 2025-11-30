@@ -74,29 +74,23 @@ pub fn run(
     mode: PreflightMode,
     options: &ProofOptions,
     pub_inputs: &PublicInputs,
+    segment_feature_mask: u64,
+    rom_acc: [BE; 3],
+    cols: &layout::Columns,
     trace: &TraceTable<BE>,
 ) -> Result<(), Error> {
     if matches!(mode, PreflightMode::Off) {
         return Ok(());
     }
 
+    debug_assert_eq!(trace.width(), cols.width(0));
+
     let ti = TraceInfo::new(trace.width(), trace.length());
-
-    // Derive ROM accumulator lanes from the last
-    // row of the trace to mirror prover behaviour.
-    let mut rom_acc = [BE::ZERO; 3];
-    let cols = layout::Columns::baseline();
-    let last = trace.length().saturating_sub(1);
-
-    if pub_inputs.program_commitment.iter().any(|b| *b != 0) && last > 0 {
-        for (i, dst) in rom_acc.iter_mut().enumerate() {
-            *dst = trace.get(cols.rom_s_index(i), last);
-        }
-    }
+    let cols = cols.clone();
 
     let air_pi = AirPublicInputs {
         core: pub_inputs.clone(),
-        segment_feature_mask: 0,
+        segment_feature_mask,
         rom_acc,
         pc_init: BE::ZERO,
         ram_gp_unsorted_in: BE::ZERO,
@@ -141,8 +135,9 @@ pub fn run(
         let mut res0 = vec![BE::ZERO; res_len];
         air.evaluate_transition(&frame0, &periodic_poly_vals, &mut res0);
 
-        let cols_dbg = layout::Columns::baseline();
+        let cols_dbg = &cols;
         let sd0 = frame0.current()[cols_dbg.sel_dst0_index(0)];
+
         let p_map0 = periodic_poly_vals[0];
         let p_fin0 = periodic_poly_vals[1 + layout::POSEIDON_ROUNDS];
         let p_pad0 = periodic_poly_vals[1 + layout::POSEIDON_ROUNDS + 1];
@@ -183,7 +178,6 @@ pub fn run(
 
         if let Some((i, v)) = res.iter().enumerate().find(|&(_, &x)| x != BE::ZERO) {
             // Build report
-            let cols = layout::Columns::baseline();
             let pos = r % layout::STEPS_PER_LEVEL_P2;
             let g_map = b01(frame.current()[cols.g_map]);
             let g_final = b01(frame.current()[cols.g_final]);
@@ -235,7 +229,6 @@ pub fn run(
             };
 
             // RAM snapshot
-            let cols = layout::Columns::baseline();
             let ram_snap = if cols.ram_sorted < trace.width() {
                 Some(RamSnap {
                     sorted: frame.current()[cols.ram_sorted] == BE::ONE,
