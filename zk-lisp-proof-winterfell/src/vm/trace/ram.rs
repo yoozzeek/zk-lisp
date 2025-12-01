@@ -72,6 +72,7 @@ impl<'a> TraceModule for RamTraceBuilder<'a> {
                     trace.set(ctx.cols.ram_s_clk, row, ev.1);
                     trace.set(ctx.cols.ram_s_val, row, ev.2);
                     trace.set(ctx.cols.ram_s_is_write, row, ev.3);
+
                     event_rows.push(row);
                 } else {
                     trace.set(ctx.cols.ram_sorted, row, BE::ZERO);
