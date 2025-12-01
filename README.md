@@ -97,7 +97,7 @@ cargo run --bin zk-lisp --release -- \
 (def (init_state)
   (loop :max N_ACCOUNTS ((i 0))
     (begin
-      (store i 0))
+      (store i (if (= i 0) N_TXS 0)))
     (recur (+ i 1)))
   (loop :max N_TXS ((i 0))
     (let ((base (+ (tx_base) (* i 4))))
