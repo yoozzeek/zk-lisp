@@ -54,7 +54,10 @@ impl<'a> TraceModule for RamTraceBuilder<'a> {
             aa.cmp(&ba).then(ac.cmp(&bc))
         });
 
+        // Remember which physical row each sorted RAM event was placed at
+        let mut event_rows = Vec::with_capacity(self.ram_events.len());
         let mut it = self.ram_events.iter();
+
         for row in 0..trace.length() {
             // decide if row is a pad row
             let pos = row % STEPS_PER_LEVEL_P2;
@@ -69,6 +72,7 @@ impl<'a> TraceModule for RamTraceBuilder<'a> {
                     trace.set(ctx.cols.ram_s_clk, row, ev.1);
                     trace.set(ctx.cols.ram_s_val, row, ev.2);
                     trace.set(ctx.cols.ram_s_is_write, row, ev.3);
+                    event_rows.push(row);
                 } else {
                     trace.set(ctx.cols.ram_sorted, row, BE::ZERO);
                 }
@@ -77,8 +81,41 @@ impl<'a> TraceModule for RamTraceBuilder<'a> {
             }
         }
 
-        // Randomized compressor
-        // coefficients (match AIR).
+        // Mirror RAM witness between events with the SAME address so that
+        // AIR transition constraints over (cur,next) rows see a logically
+        // contiguous sorted table, even though RAM rows are embedded into
+        // the unified VM schedule.
+        //
+        // For each consecutive pair of events with the same addr, we copy
+        // (addr, clk, val, is_write) of the previous event into all rows
+        // between their physical rows where ram_sorted == 0.
+        for i in 0..self.ram_events.len().saturating_sub(1) {
+            let (addr_cur, clk_cur, val_cur, w_cur) = self.ram_events[i];
+            let (addr_next, _, _, _) = self.ram_events[i + 1];
+
+            if addr_cur != addr_next {
+                continue;
+            }
+
+            let row_cur = event_rows[i];
+            let row_next = event_rows[i + 1];
+
+            if row_next <= row_cur + 1 {
+                // No gap between events in the trace rows.
+                continue;
+            }
+
+            for row in (row_cur + 1)..row_next {
+                if trace.get(ctx.cols.ram_sorted, row) == BE::ZERO {
+                    trace.set(ctx.cols.ram_s_addr, row, addr_cur);
+                    trace.set(ctx.cols.ram_s_clk, row, clk_cur);
+                    trace.set(ctx.cols.ram_s_val, row, val_cur);
+                    trace.set(ctx.cols.ram_s_is_write, row, w_cur);
+                }
+            }
+        }
+
+        // Randomized compressor coefficients (match AIR)
         let fc = program_field_commitment(self.suite_id);
         let pi_be = fc[0];
         let pi2 = pi_be * pi_be;
@@ -93,16 +130,14 @@ impl<'a> TraceModule for RamTraceBuilder<'a> {
         let mut last_write_vals = vec![BE::ZERO; trace.length()];
 
         for row in 0..trace.length() {
-            // Carry gp_sorted from
-            // previous row by default
+            // Carry gp_sorted from previous row by default
             let mut gp_sorted_cur = if row > 0 {
                 gp_sorted_vals[row - 1]
             } else {
                 BE::ZERO
             };
 
-            // Apply previous row's
-            // sorted update into this row.
+            // Apply previous row's sorted update into this row
             if row > 0 && trace.get(ctx.cols.ram_sorted, row - 1) == BE::ONE {
                 let prev = row - 1;
                 let cur_addr = trace.get(ctx.cols.ram_s_addr, prev);
@@ -117,8 +152,7 @@ impl<'a> TraceModule for RamTraceBuilder<'a> {
             gp_sorted_vals[row] = gp_sorted_cur;
             trace.set(ctx.cols.ram_gp_sorted, row, gp_sorted_cur);
 
-            // Build last_write as next-state
-            // of previous sorted row.
+            // Build last_write as next-state of previous sorted row
             let mut last_cur = if row > 0 {
                 last_write_vals[row - 1]
             } else {
@@ -139,7 +173,7 @@ impl<'a> TraceModule for RamTraceBuilder<'a> {
                     last_cur = (BE::ONE - s_w) * last_cur + s_w * s_val;
                 } else {
                     // new addr:
-                    // must be write to seed;
+                    // must be written to seed;
                     // last_next = w * val
                     last_cur = s_w * s_val;
                 }
