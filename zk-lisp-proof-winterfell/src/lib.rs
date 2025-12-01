@@ -25,7 +25,10 @@ pub mod segment_planner;
 pub mod utils;
 pub mod vm;
 
-use vm::trace::build_trace;
+use crate::segment_planner::{
+    WinterfellSegmentPlanner, compute_segment_feature_mask, compute_segment_features_for_levels,
+};
+use crate::vm::trace;
 
 use agg::child::{
     ZlChildCompact, ZlChildTranscript, children_root_from_compact, verify_child_transcript,
@@ -33,16 +36,18 @@ use agg::child::{
 use agg::pi::AggAirPublicInputs;
 use proof::step;
 use vm::layout;
+use vm::trace::build_trace;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::math::{FieldElement, StarkField, ToElements};
 use winterfell::{BatchingMethod, FieldExtension, Proof, ProofOptions, Trace};
 use zk_lisp_compiler::Program;
 use zk_lisp_proof::frontend::{PreflightBackend, PreflightMode, VmBackend, VmRunResult};
-use zk_lisp_proof::pi::PublicInputs as CorePublicInputs;
+use zk_lisp_proof::pi::{FeaturesMap, PublicInputs as CorePublicInputs};
 use zk_lisp_proof::recursion::{
     RecursionArtifactCodec, RecursionBackend, RecursionDigest, RecursionPublicBuilder,
     RecursionStepProver,
 };
+use zk_lisp_proof::segment::SegmentPlanner;
 use zk_lisp_proof::{ProverOptions, ZkBackend, ZkField};
 
 #[derive(Clone, Debug)]
@@ -178,6 +183,7 @@ impl PreflightBackend for WinterfellBackend {
         program: &Self::Program,
         pub_inputs: &Self::PublicInputs,
     ) -> Result<(), Self::Error> {
+        // ProofOptions are the same as in prove_program
         let base_opts = ProofOptions::new(
             opts.queries as usize,
             opts.blowup as usize,
@@ -189,19 +195,95 @@ impl PreflightBackend for WinterfellBackend {
             BatchingMethod::Linear,
         );
 
-        let trace = build_trace(program, pub_inputs)?;
-
-        let (num_partitions, hash_rate) =
-            utils::select_partitions_for_trace(trace.width(), trace.length());
-        let wf_opts = base_opts.with_partitions(num_partitions, hash_rate);
-        let cols = layout::Columns::baseline();
+        // ROM accumulator from the program (common for all segments)
         let rom_acc = if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
             romacc::rom_acc_from_program(program)
         } else {
             [BE::ZERO; 3]
         };
 
-        preflight::run(mode, &wf_opts, pub_inputs, 0, rom_acc, &cols, &trace)
+        // Plan segments in the same way as in prove_program
+        let segments = WinterfellSegmentPlanner::plan_segments(program, pub_inputs, opts)?;
+        if segments.is_empty() {
+            return Err(prove::Error::PublicInputs(
+                zk_lisp_proof::error::Error::InvalidInput(
+                    "WinterfellSegmentPlanner returned no segments for preflight",
+                ),
+            ));
+        }
+
+        // Build the full trace once and then slice it
+        let full_trace = build_trace(program, pub_inputs)?;
+        let full_cols = layout::Columns::baseline();
+
+        for seg in &segments {
+            let lvl_start = seg.r_start / layout::STEPS_PER_LEVEL_P2;
+            let lvl_end = seg.r_end / layout::STEPS_PER_LEVEL_P2;
+            let seg_features = compute_segment_features_for_levels(program, lvl_start, lvl_end);
+
+            let base_mask = pub_inputs.feature_mask;
+            let seg_mask = compute_segment_feature_mask(pub_inputs, &seg_features);
+            let use_seg_mask = seg_mask != 0 && seg_mask != base_mask;
+            let eff_mask = if use_seg_mask { seg_mask } else { base_mask };
+
+            let features_map = FeaturesMap::from_mask(eff_mask);
+            let rom_enabled = pub_inputs.program_id.iter().any(|b| *b != 0);
+
+            // Exactly the same LayoutConfig as in prove_segment
+            let layout_cfg = if use_seg_mask {
+                layout::LayoutConfig {
+                    vm: true,
+                    ram: features_map.ram,
+                    sponge: features_map.sponge,
+                    merkle: features_map.merkle,
+                    rom: rom_enabled,
+                }
+            } else {
+                layout::LayoutConfig {
+                    vm: true,
+                    ram: true,
+                    sponge: true,
+                    merkle: true,
+                    rom: rom_enabled,
+                }
+            };
+
+            let seg_layout = trace::SegmentLayout::from_full_columns(&full_cols, &layout_cfg);
+
+            // Local segment trace (without prev_state‑chaining)
+            let (seg_trace, _state_in_hash, _state_out_hash) =
+                trace::build_segment_trace_with_state_without_full(
+                    &full_trace,
+                    seg,
+                    &seg_layout,
+                    None,
+                )?;
+
+            let seg_len = seg_trace.length();
+            let (num_partitions, hash_rate) =
+                utils::select_partitions_for_trace(seg_trace.width(), seg_len);
+            let wf_opts = base_opts.clone().with_partitions(num_partitions, hash_rate);
+
+            // Mask for AIR is the same as in prove_segment
+            let segment_feature_mask_for_air = if use_seg_mask { eff_mask } else { 0 };
+
+            // Preflight using the same AIR, layout
+            // and trace as the real prover.
+            preflight::run(
+                mode,
+                &wf_opts,
+                pub_inputs,
+                segment_feature_mask_for_air,
+                rom_acc,
+                &seg_layout.cols,
+                &seg_trace,
+                // the helper will calculate
+                // the boundaries from seg_trace.
+                None,
+            )?;
+        }
+
+        Ok(())
     }
 }
 

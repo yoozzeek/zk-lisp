@@ -13,12 +13,11 @@
 //! rich [`PreflightReport`] snapshots and renders them as
 //! console tables or JSON depending on [`PreflightMode`].
 
-use crate::AirPublicInputs;
 use crate::poseidon;
-use crate::prove::Error;
+use crate::prove::{Error, SegmentBoundariesFe, build_air_pi_for_trace};
 use crate::vm::air::ZkLispAir;
-
 use crate::vm::layout;
+
 use comfy_table::{Cell, CellAlignment, ContentArrangement, Table, presets::ASCII_BORDERS_ONLY};
 use serde::Serialize;
 use winterfell::math::fields::f128::BaseElement as BE;
@@ -70,6 +69,7 @@ pub struct VmSnap {
     pub lhs: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     mode: PreflightMode,
     options: &ProofOptions,
@@ -78,6 +78,7 @@ pub fn run(
     rom_acc: [BE; 3],
     cols: &layout::Columns,
     trace: &TraceTable<BE>,
+    segment_boundaries: Option<SegmentBoundariesFe>,
 ) -> Result<(), Error> {
     if matches!(mode, PreflightMode::Off) {
         return Ok(());
@@ -88,18 +89,17 @@ pub fn run(
     let ti = TraceInfo::new(trace.width(), trace.length());
     let cols = cols.clone();
 
-    let air_pi = AirPublicInputs {
-        core: pub_inputs.clone(),
+    // Build the same AirPublicInputs that the real
+    // prover uses for this trace/segment
+    // (including vm_out_* and bounds).
+    let air_pi = build_air_pi_for_trace(
+        pub_inputs.clone(),
         segment_feature_mask,
         rom_acc,
-        pc_init: BE::ZERO,
-        ram_gp_unsorted_in: BE::ZERO,
-        ram_gp_unsorted_out: BE::ZERO,
-        ram_gp_sorted_in: BE::ZERO,
-        ram_gp_sorted_out: BE::ZERO,
-        rom_s_in: [BE::ZERO; 3],
-        rom_s_out: [BE::ZERO; 3],
-    };
+        Some(cols.clone()),
+        segment_boundaries,
+        trace,
+    );
 
     let air = ZkLispAir::new(ti, air_pi, options.clone());
     let res_len = air.context().num_main_transition_constraints();

@@ -91,7 +91,7 @@ impl VerifyBoundaries {
 /// [`SegmentBoundaryBytes`] but using
 /// `BaseElement` values.
 #[derive(Clone, Debug)]
-pub(crate) struct SegmentBoundariesFe {
+pub struct SegmentBoundariesFe {
     pc_init: BE,
     ram_gp_unsorted_in: BE,
     ram_gp_unsorted_out: BE,
@@ -201,6 +201,7 @@ impl ZkProver {
                 self.rom_acc,
                 &cols,
                 &trace,
+                self.segment_boundaries.clone(),
             )?;
 
             tracing::debug!(
@@ -288,6 +289,121 @@ impl From<&SegmentBoundaryBytes> for SegmentBoundariesFe {
     }
 }
 
+pub fn build_air_pi_for_trace(
+    mut pi: PublicInputs,
+    segment_feature_mask: u64,
+    rom_acc: [BE; 3],
+    segment_cols: Option<Columns>,
+    segment_boundaries: Option<SegmentBoundariesFe>,
+    trace: &TraceTable<BE>,
+) -> crate::AirPublicInputs {
+    // Compute VM output location (last op level).
+    // For segment proofs rely on the segment-local
+    // layout when provided.
+    if (pi.feature_mask & core_pi::FM_VM) != 0 {
+        let has_explicit_loc = pi.vm_out_row != 0 || pi.vm_out_reg != 0;
+        if !has_explicit_loc {
+            if let Some(ref cols) = segment_cols {
+                let (r, row) = utils::vm_output_from_trace_with_layout(trace, cols);
+                pi.vm_out_reg = r;
+                pi.vm_out_row = row;
+            } else {
+                let (r, row) = utils::vm_output_from_trace(trace);
+                pi.vm_out_reg = r;
+                pi.vm_out_row = row;
+            }
+        }
+    }
+
+    let steps = STEPS_PER_LEVEL_P2;
+    let n_rows = trace.length();
+
+    // Segment boundaries: either pre-passed or derived from trace+layout
+    let boundaries = if let Some(b) = segment_boundaries {
+        b
+    } else {
+        let cols = if let Some(ref cols) = segment_cols {
+            cols.clone()
+        } else {
+            Columns::baseline()
+        };
+
+        debug_assert_eq!(trace.width(), cols.width(0));
+
+        let pc_init = if n_rows > 0 {
+            trace.get(cols.pc, schedule::pos_map())
+        } else {
+            BE::ZERO
+        };
+
+        let last = n_rows.saturating_sub(1);
+
+        let (ram_gp_unsorted_in, ram_gp_unsorted_out, ram_gp_sorted_in, ram_gp_sorted_out) =
+            if n_rows > 0 {
+                (
+                    trace.get(cols.ram_gp_unsorted, 0),
+                    trace.get(cols.ram_gp_unsorted, last),
+                    trace.get(cols.ram_gp_sorted, 0),
+                    trace.get(cols.ram_gp_sorted, last),
+                )
+            } else {
+                (BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO)
+            };
+
+        // ROM boundaries at the first map row and the final row of
+        // the last level present in this trace segment.
+        let (rom_s_in, rom_s_out) = if n_rows > 0 && steps > 0 {
+            let lvl_first = 0usize;
+            let lvl_last = last / steps;
+
+            let row_map_first = lvl_first * steps + schedule::pos_map();
+            let row_final_last = lvl_last * steps + schedule::pos_final();
+
+            if row_map_first < n_rows && row_final_last < n_rows {
+                let s_in = [
+                    trace.get(cols.rom_s_index(0), row_map_first),
+                    trace.get(cols.rom_s_index(1), row_map_first),
+                    trace.get(cols.rom_s_index(2), row_map_first),
+                ];
+                let s_out = [
+                    trace.get(cols.rom_s_index(0), row_final_last),
+                    trace.get(cols.rom_s_index(1), row_final_last),
+                    trace.get(cols.rom_s_index(2), row_final_last),
+                ];
+
+                (s_in, s_out)
+            } else {
+                ([BE::ZERO; 3], [BE::ZERO; 3])
+            }
+        } else {
+            ([BE::ZERO; 3], [BE::ZERO; 3])
+        };
+
+        SegmentBoundariesFe {
+            pc_init,
+            ram_gp_unsorted_in,
+            ram_gp_unsorted_out,
+            ram_gp_sorted_in,
+            ram_gp_sorted_out,
+            rom_s_in,
+            rom_s_out,
+        }
+    };
+
+    crate::AirPublicInputs {
+        core: pi,
+        segment_feature_mask,
+        rom_acc,
+        pc_init: boundaries.pc_init,
+        ram_gp_unsorted_in: boundaries.ram_gp_unsorted_in,
+        ram_gp_unsorted_out: boundaries.ram_gp_unsorted_out,
+        ram_gp_sorted_in: boundaries.ram_gp_sorted_in,
+        ram_gp_sorted_out: boundaries.ram_gp_sorted_out,
+        rom_s_in: boundaries.rom_s_in,
+        rom_s_out: boundaries.rom_s_out,
+    }
+}
+
 impl WProver for ZkWinterfellProver {
     type BaseField = BE;
     type Air = ZkLispAir;
@@ -303,112 +419,14 @@ impl WProver for ZkWinterfellProver {
         DefaultConstraintCommitment<E, Self::HashFn, Self::VC>;
 
     fn get_pub_inputs(&self, trace: &Self::Trace) -> <Self::Air as Air>::PublicInputs {
-        let mut pi = self.pub_inputs.clone();
-
-        // Compute VM output location (last op level).
-        // For segment proofs rely on the segment-local
-        // layout when provided.
-        if (pi.feature_mask & core_pi::FM_VM) != 0 {
-            let has_explicit_loc = pi.vm_out_row != 0 || pi.vm_out_reg != 0;
-            if !has_explicit_loc {
-                if let Some(cols) = &self.segment_cols {
-                    let (r, row) = utils::vm_output_from_trace_with_layout(trace, cols);
-                    pi.vm_out_reg = r;
-                    pi.vm_out_row = row;
-                } else {
-                    let (r, row) = utils::vm_output_from_trace(trace);
-                    pi.vm_out_reg = r;
-                    pi.vm_out_row = row;
-                }
-            }
-        }
-
-        let steps = STEPS_PER_LEVEL_P2;
-        let n_rows = trace.length();
-
-        let boundaries = if let Some(b) = &self.segment_boundaries {
-            b.clone()
-        } else {
-            let cols = if let Some(cols) = &self.segment_cols {
-                cols.clone()
-            } else {
-                Columns::baseline()
-            };
-
-            debug_assert_eq!(trace.width(), cols.width(0));
-
-            let pc_init = if n_rows > 0 {
-                trace.get(cols.pc, schedule::pos_map())
-            } else {
-                BE::ZERO
-            };
-
-            let last = n_rows.saturating_sub(1);
-
-            let (ram_gp_unsorted_in, ram_gp_unsorted_out, ram_gp_sorted_in, ram_gp_sorted_out) =
-                if n_rows > 0 {
-                    (
-                        trace.get(cols.ram_gp_unsorted, 0),
-                        trace.get(cols.ram_gp_unsorted, last),
-                        trace.get(cols.ram_gp_sorted, 0),
-                        trace.get(cols.ram_gp_sorted, last),
-                    )
-                } else {
-                    (BE::ZERO, BE::ZERO, BE::ZERO, BE::ZERO)
-                };
-
-            // ROM boundaries at the first map row and the final row of
-            // the last level present in this trace segment.
-            let (rom_s_in, rom_s_out) = if n_rows > 0 && steps > 0 {
-                let lvl_first = 0usize;
-                let lvl_last = last / steps;
-
-                let row_map_first = lvl_first * steps + schedule::pos_map();
-                let row_final_last = lvl_last * steps + schedule::pos_final();
-
-                if row_map_first < n_rows && row_final_last < n_rows {
-                    let s_in = [
-                        trace.get(cols.rom_s_index(0), row_map_first),
-                        trace.get(cols.rom_s_index(1), row_map_first),
-                        trace.get(cols.rom_s_index(2), row_map_first),
-                    ];
-                    let s_out = [
-                        trace.get(cols.rom_s_index(0), row_final_last),
-                        trace.get(cols.rom_s_index(1), row_final_last),
-                        trace.get(cols.rom_s_index(2), row_final_last),
-                    ];
-
-                    (s_in, s_out)
-                } else {
-                    ([BE::ZERO; 3], [BE::ZERO; 3])
-                }
-            } else {
-                ([BE::ZERO; 3], [BE::ZERO; 3])
-            };
-
-            SegmentBoundariesFe {
-                pc_init,
-                ram_gp_unsorted_in,
-                ram_gp_unsorted_out,
-                ram_gp_sorted_in,
-                ram_gp_sorted_out,
-                rom_s_in,
-                rom_s_out,
-            }
-        };
-
-        crate::AirPublicInputs {
-            core: pi,
-            segment_feature_mask: self.segment_feature_mask,
-            rom_acc: self.rom_acc,
-            pc_init: boundaries.pc_init,
-            ram_gp_unsorted_in: boundaries.ram_gp_unsorted_in,
-            ram_gp_unsorted_out: boundaries.ram_gp_unsorted_out,
-            ram_gp_sorted_in: boundaries.ram_gp_sorted_in,
-            ram_gp_sorted_out: boundaries.ram_gp_sorted_out,
-            rom_s_in: boundaries.rom_s_in,
-            rom_s_out: boundaries.rom_s_out,
-        }
+        build_air_pi_for_trace(
+            self.pub_inputs.clone(),
+            self.segment_feature_mask,
+            self.rom_acc,
+            self.segment_cols.clone(),
+            self.segment_boundaries.clone(),
+            trace,
+        )
     }
 
     fn options(&self) -> &ProofOptions {
@@ -1068,14 +1086,14 @@ fn prove_segment(
 
     let (trace, state_in_hash, state_out_hash) =
         trace::build_segment_trace_with_state_without_full(
-            &full_trace,
-            &seg,
+            full_trace,
+            seg,
             &seg_layout,
             prev_state,
         )?;
     let trace_len = trace.length();
 
-    let boundary_bytes = compute_segment_boundary_bytes(&full_trace, &seg)?;
+    let boundary_bytes = compute_segment_boundary_bytes(full_trace, seg)?;
     let boundaries_fe = SegmentBoundariesFe::from(&boundary_bytes);
     let segment_feature_mask_for_air = if use_seg_mask { eff_mask } else { 0 };
 

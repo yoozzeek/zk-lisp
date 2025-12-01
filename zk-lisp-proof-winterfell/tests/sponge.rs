@@ -287,6 +287,7 @@ fn schedule_preflight_ok() {
         rom_acc,
         &cols,
         &trace,
+        None,
     )
     .expect("preflight ok");
 }

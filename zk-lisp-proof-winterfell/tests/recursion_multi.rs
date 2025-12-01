@@ -92,20 +92,20 @@ fn recursion_two_step_chain_prev_digest_tamper_rejected() {
     let step1 = &steps1[0];
     let step2 = &steps2[0];
 
-    let agg_pi1 = build_agg_pi_for_single_step(&step1);
-    let agg_pi2 = build_agg_pi_for_single_step(&step2);
+    let agg_pi1 = build_agg_pi_for_single_step(step1);
+    let agg_pi2 = build_agg_pi_for_single_step(step2);
 
     let (rc_proof1, rc_digest1) =
-        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step1), &agg_pi1, &opts)
+        recursion_prove::<WinterfellBackend>(std::slice::from_ref(step1), &agg_pi1, &opts)
             .expect("recursion_prove must succeed for step1");
 
     let (rc_proof2, rc_digest2) =
-        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step2), &agg_pi2, &opts)
+        recursion_prove::<WinterfellBackend>(std::slice::from_ref(step2), &agg_pi2, &opts)
             .expect("recursion_prove must succeed for step2");
 
     // Build a valid two-step recursion chain.
-    let rc_pub1 = build_recursion_public_single_step(&pi, &step1, &agg_pi1, [0u8; 32]);
-    let mut rc_pub2 = build_recursion_public_single_step(&pi, &step2, &agg_pi2, rc_digest1);
+    let rc_pub1 = build_recursion_public_single_step(&pi, step1, &agg_pi1, [0u8; 32]);
+    let mut rc_pub2 = build_recursion_public_single_step(&pi, step2, &agg_pi2, rc_digest1);
 
     // Enforce RAM/ROM chaining invariants at the DSL layer:
     // second step must start from the global boundary state
@@ -170,20 +170,20 @@ fn recursion_two_step_chain_aggregates_tamper_rejected() {
     let step1 = &steps1[0];
     let step2 = &steps2[0];
 
-    let agg_pi1 = build_agg_pi_for_single_step(&step1);
-    let agg_pi2 = build_agg_pi_for_single_step(&step2);
+    let agg_pi1 = build_agg_pi_for_single_step(step1);
+    let agg_pi2 = build_agg_pi_for_single_step(step2);
 
     let (rc_proof1, rc_digest1) =
-        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step1), &agg_pi1, &opts)
+        recursion_prove::<WinterfellBackend>(std::slice::from_ref(step1), &agg_pi1, &opts)
             .expect("recursion_prove must succeed for step1");
 
     let (rc_proof2, rc_digest2) =
-        recursion_prove::<WinterfellBackend>(std::slice::from_ref(&step2), &agg_pi2, &opts)
+        recursion_prove::<WinterfellBackend>(std::slice::from_ref(step2), &agg_pi2, &opts)
             .expect("recursion_prove must succeed for step2");
 
     // Build a valid chain first.
-    let rc_pub1 = build_recursion_public_single_step(&pi, &step1, &agg_pi1, [0u8; 32]);
-    let mut rc_pub2 = build_recursion_public_single_step(&pi, &step2, &agg_pi2, rc_digest1);
+    let rc_pub1 = build_recursion_public_single_step(&pi, step1, &agg_pi1, [0u8; 32]);
+    let mut rc_pub2 = build_recursion_public_single_step(&pi, step2, &agg_pi2, rc_digest1);
 
     // Enforce RAM/ROM chaining invariants at the DSL layer
     // for the second step.

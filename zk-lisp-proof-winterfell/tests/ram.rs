@@ -140,6 +140,7 @@ fn ram_perm_store_then_load_preflight_ok() {
         rom_acc,
         &cols,
         &trace,
+        None,
     )
     .expect("preflight ok");
 }
@@ -176,6 +177,7 @@ fn ram_perm_many_addresses_preflight_ok() {
         rom_acc,
         &cols,
         &trace,
+        None,
     )
     .expect("preflight ok");
 }
@@ -207,6 +209,7 @@ fn ram_perm_interleaved_preflight_ok() {
         rom_acc,
         &cols,
         &trace,
+        None,
     )
     .expect("preflight ok");
 }
@@ -237,6 +240,7 @@ fn ram_perm_double_store_then_load_preflight_ok() {
         rom_acc,
         &cols,
         &trace,
+        None,
     )
     .expect("preflight ok");
 }
@@ -272,6 +276,7 @@ fn ram_addr_zero_cross_level_preflight_ok() {
         rom_acc,
         &cols,
         &trace,
+        None,
     )
     .expect("preflight ok");
 }
