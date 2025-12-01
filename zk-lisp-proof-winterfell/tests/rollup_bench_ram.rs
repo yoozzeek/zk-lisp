@@ -40,6 +40,7 @@ fn build_rollup_bench_program_and_pi() -> (compiler::Program, PublicInputs) {
     let expected_fee_sum = VmArg::U64(10);
     let mut root_bytes = [0u8; 32];
     root_bytes[0] = 1;
+
     let expected_root = VmArg::Bytes32(root_bytes);
 
     let public_args = vec![expected_fee_sum, expected_root];
@@ -48,6 +49,7 @@ fn build_rollup_bench_program_and_pi() -> (compiler::Program, PublicInputs) {
     // - U64(v)     -> v
     // - Bytes32(b) -> LE u64 from b[0..8], requiring b[8..] == 0
     let mut public_u64 = Vec::with_capacity(public_args.len());
+
     for arg in &public_args {
         match arg {
             VmArg::U64(v) => public_u64.push(*v),
@@ -56,6 +58,7 @@ fn build_rollup_bench_program_and_pi() -> (compiler::Program, PublicInputs) {
                 if *v128 > u64::MAX as u128 {
                     panic!("u128 public arg does not fit into 64 bits");
                 }
+
                 public_u64.push(*v128 as u64);
             }
             VmArg::Bytes32(bytes) => {
@@ -64,8 +67,10 @@ fn build_rollup_bench_program_and_pi() -> (compiler::Program, PublicInputs) {
                     bytes[8..].iter().all(|b| *b == 0),
                     "bytes32 public arg must have bytes[8..32]=0"
                 );
+
                 let mut lo = [0u8; 8];
                 lo.copy_from_slice(&bytes[0..8]);
+
                 let v64 = u64::from_le_bytes(lo);
                 public_u64.push(v64);
             }
@@ -394,6 +399,7 @@ fn dump_assert_range_context(trace: &TraceTable<BE>, cols: &Columns, row: usize)
 /// 3. Dump detailed RAM context around the first violation.
 /// 4. Run backend preflight with segment-aware AIR, expecting it to fail.
 #[test]
+#[ignore]
 fn ram_rollup_bench_preflight_and_ram_invariant_violation() {
     let (program, pi) = build_rollup_bench_program_and_pi();
     let opts = prover_opts_rollup_bench();

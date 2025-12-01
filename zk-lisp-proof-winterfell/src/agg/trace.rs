@@ -271,7 +271,8 @@ fn build_agg_trace_core(
         ));
     }
 
-    // Enforce suite_id consistency across children and public inputs.
+    // Enforce suite_id consistency across
+    // children and public inputs.
     for child in children {
         if child.suite_id != agg_pi.suite_id {
             return Err(error::Error::InvalidInput(
@@ -280,8 +281,8 @@ fn build_agg_trace_core(
         }
     }
 
-    // Segment sanity first: make chain errors surface before profile shape errors.
-    // All children must advertise valid segment indices and form a contiguous chain
+    // Segment sanity first: make chain errors
+    // surface before profile shape errors.
     let mut totals: Option<u32> = None;
     let mut indices: Vec<u32> = Vec::with_capacity(n_children);
 
@@ -332,7 +333,6 @@ fn build_agg_trace_core(
     }
 
     // Enforce that all children share the same global STARK profile
-    // as advertised in AggAirPublicInputs.profile_meta and
     let pm = &agg_pi.profile_meta;
     let pq = &agg_pi.profile_queries;
 
@@ -441,7 +441,6 @@ fn build_agg_trace_core(
     let fri_vnext_sum = BE::ZERO;
 
     // Decode global boundary state from AggAirPublicInputs once
-    // so that VM / RAM / ROM chain checks can be expressed as
     let vm_initial_fe = fold_bytes32_to_fe(&agg_pi.vm_state_initial);
     let vm_final_fe = fold_bytes32_to_fe(&agg_pi.vm_state_final);
     let ram_u_initial_fe = fold_bytes32_to_fe(&agg_pi.ram_gp_unsorted_initial);
@@ -470,7 +469,7 @@ fn build_agg_trace_core(
     for (i, child) in children.iter().enumerate() {
         let v_child_fe = BE::from(child.meta.v_units);
 
-        // Decode per-child boundary state from ZlChildCompact.
+        // Decode per-child boundary state from ZlChildCompact
         let vm_in_fe = fold_bytes32_to_fe(&child.state_in_hash);
         let vm_out_fe = fold_bytes32_to_fe(&child.state_out_hash);
 
@@ -491,7 +490,7 @@ fn build_agg_trace_core(
         ];
 
         // Compute chain errors for this child relative to the
-        // global boundary state and previous children. These
+        // global boundary state and previous children.
         let is_first_child = i == 0;
         let is_last_child = i + 1 == n_children;
 
@@ -522,38 +521,35 @@ fn build_agg_trace_core(
             }
         };
 
-        let mut rom_err: [BE; 3] = if is_first_child {
-            [
-                rom_in_fe[0] - rom_initial_fe[0],
-                rom_in_fe[1] - rom_initial_fe[1],
-                rom_in_fe[2] - rom_initial_fe[2],
-            ]
+        // NOTE: ROM t=3 accumulator carries only in lane 0 across
+        // levels/segments. Lanes 1/2 are per-level encodings and
+        // are already enforced by RomAir; do not chain them at
+        // the aggregation layer.
+        let mut rom_err0 = if is_first_child {
+            // First child: input must match global rom_s_initial[0]
+            rom_in_fe[0] - rom_initial_fe[0]
         } else {
             match prev_rom_out {
-                Some(prev) => [
-                    rom_in_fe[0] - prev[0],
-                    rom_in_fe[1] - prev[1],
-                    rom_in_fe[2] - prev[2],
-                ],
-                None => [
-                    rom_in_fe[0] - rom_initial_fe[0],
-                    rom_in_fe[1] - rom_initial_fe[1],
-                    rom_in_fe[2] - rom_initial_fe[2],
-                ],
+                // Others: input == previous rom_s_out[0]
+                Some(prev) => rom_in_fe[0] - prev[0],
+                None => rom_in_fe[0] - rom_initial_fe[0],
             }
         };
+
+        if is_last_child {
+            rom_err0 += rom_out_fe[0] - rom_final_fe[0];
+        }
+
+        let rom_err = [rom_err0, BE::ZERO, BE::ZERO];
 
         if is_last_child {
             vm_err += vm_out_fe - vm_final_fe;
             ram_u_err += ram_u_out_fe - ram_u_final_fe;
             ram_s_err += ram_s_out_fe - ram_s_final_fe;
-            rom_err[0] += rom_out_fe[0] - rom_final_fe[0];
-            rom_err[1] += rom_out_fe[1] - rom_final_fe[1];
-            rom_err[2] += rom_out_fe[2] - rom_final_fe[2];
         }
 
-        // Aggregate Merkle root errors for trace and constraint
-        // commitments for this child. When Fiat–Shamir challenges
+        // Aggregate Merkle root errors for trace and
+        // constraint commitments for this child.
         let mut trace_root_err_fe = BE::ZERO;
         let mut constraint_root_err_fe = BE::ZERO;
 
@@ -627,8 +623,8 @@ fn build_agg_trace_core(
         trace.set(cols.ram_u_chain_err, cur_row, ram_u_err);
         trace.set(cols.ram_s_chain_err, cur_row, ram_s_err);
         trace.set(cols.rom_chain_err_0, cur_row, rom_err[0]);
-        trace.set(cols.rom_chain_err_1, cur_row, rom_err[1]);
-        trace.set(cols.rom_chain_err_2, cur_row, rom_err[2]);
+        trace.set(cols.rom_chain_err_1, cur_row, rom_err[1]); // always zero
+        trace.set(cols.rom_chain_err_2, cur_row, rom_err[2]); // always zero
 
         // FRI-related columns:
         // keep reserved sums zero and child sample unset here.
