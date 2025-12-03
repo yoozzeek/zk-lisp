@@ -216,6 +216,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 0,
+            ram_delta_clk_bits: 0,
         };
 
         RomAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
@@ -276,6 +278,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 0,
+            ram_delta_clk_bits: 0,
         };
 
         RomAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
