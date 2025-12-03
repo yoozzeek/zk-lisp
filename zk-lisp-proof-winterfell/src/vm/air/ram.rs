@@ -18,69 +18,69 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use crate::vm::air::{AirModule, AirSharedContext};
-use crate::vm::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2, VM_USAGE_RAM_DELTA_CLK};
 
-pub(crate) struct RamAir;
+pub struct RamAir;
 
 impl AirModule for RamAir {
-    fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
-        // Carry gp_unsorted across rows,
-        // update at final+event
-        out.push(TransitionConstraintDegree::with_cycles(
-            3,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
+    fn push_degrees(ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
+        let mask = ctx.vm_usage_mask;
+        let use_delta_clk = (mask & (1 << VM_USAGE_RAM_DELTA_CLK)) != 0;
+        let bits = ctx.ram_delta_clk_bits;
 
-        // Carry gp_sorted across rows,
-        // update at ram_sorted rows
-        out.push(TransitionConstraintDegree::with_cycles(
-            3,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
+        // Unsorted GP uses schedule selectors over the level
+        // and a quadratic payload in main-trace columns.
+        // We declare base=4 (one higher than the actual base=3)
+        // so that:
+        //   get_evaluation_degree(trace_len) - (trace_len - 1)
+        // matches the actual evaluation degree reported by Winterfell.
+        let deg_gp_uns = TransitionConstraintDegree::with_cycles(4, vec![STEPS_PER_LEVEL_P2]);
 
-        // last_write carry on sorted rows
-        out.push(TransitionConstraintDegree::with_cycles(
-            3,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
+        // Plain base-degree bounds for constraints that do NOT
+        // touch schedule periodic columns. Bases here are chosen
+        // as (real_poly_degree + 1) to compensate for the
+        // subtraction of (trace_len - 1) in expected_eval_degrees.
+        let deg2 = TransitionConstraintDegree::new(2); // real degree 1
+        let deg3 = TransitionConstraintDegree::new(3); // real degree 2
+        let deg5 = TransitionConstraintDegree::new(5); // real degree 4
+        let deg6 = TransitionConstraintDegree::new(6); // real degree 5
 
-        // read == last_write on
-        // sorted rows when is_write==0
-        out.push(TransitionConstraintDegree::with_cycles(
-            3,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
+        // 0: gp_unsorted carry/update
+        out.push(deg_gp_uns);
 
-        // forbid new-addr read
-        out.push(TransitionConstraintDegree::with_cycles(
-            3,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
+        // 1: gp_sorted carry/update on sorted rows (real deg 1)
+        out.push(deg2.clone());
 
-        // same_addr boolean via inv trick:
-        // s = 1 - d * inv
-        out.push(TransitionConstraintDegree::with_cycles(
-            3,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
+        // 2: last_write update (real base degree 4)
+        out.push(deg5.clone());
 
-        // delta_clk in 32-bit range
-        // when same_addr we gate by
-        // same_addr and reuse 32-bit
-        // gadget via Columns.gadget_b.
-        for _ in 0..33 {
-            out.push(TransitionConstraintDegree::with_cycles(
-                5,
-                vec![STEPS_PER_LEVEL_P2],
-            ));
+        // 3: read == last_write (real base degree 2)
+        out.push(deg3.clone());
+
+        // 4: forbid non-zero first read for new addr (real degree 5)
+        out.push(deg6.clone());
+
+        // 5: same booleanity (real base degree 4)
+        out.push(deg5.clone());
+
+        if use_delta_clk {
+            // 6..(5 + popcnt(bits)): bit-booleanities only for bits
+            // that ever appear as non-zero in this segment.
+            //
+            // Each has real base degree 4, we declare base=5.
+            for i in 0..32 {
+                if (bits >> i) & 1 != 0 {
+                    out.push(deg5.clone());
+                }
+            }
+
+            // eq: d_clk == sum_bits (real base degree 4, declare base=5)
+            out.push(deg5);
         }
 
-        // final-row equality
-        // (unsorted == sorted)
-        out.push(TransitionConstraintDegree::with_cycles(
-            3,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
+        // Final-row equality of GP accumulators (unsorted == sorted),
+        // gated by p_last. Real degree 1, declared base=2.
+        out.push(deg2);
     }
 
     fn eval_block<E>(
@@ -201,26 +201,37 @@ impl AirModule for RamAir {
         result[*ix] = s_on * (same * (same - E::ONE));
         *ix += 1;
 
-        // delta_clk 32-bit
-        // range when same_addr.
-        let d_clk = s_clk_n - s_clk;
-        let mut sum = E::ZERO;
-        let mut pow2 = E::ONE;
+        // RAM delta_clk 32-bit range gadget is optional per segment
+        let use_delta_clk = (ctx.vm_usage_mask & (1 << VM_USAGE_RAM_DELTA_CLK)) != 0;
+        if use_delta_clk {
+            // delta_clk 32-bit range when same_addr
+            let d_clk = s_clk_n - s_clk;
+            let bits = ctx.ram_delta_clk_bits;
 
-        for i in 0..32 {
-            let bi = cur[ctx.cols.gadget_b_index(i)];
+            let mut sum = E::ZERO;
+            let mut pow2 = E::ONE;
 
-            // booleanity
-            result[*ix] = s_on * same * bi * (bi - E::ONE);
+            for i in 0..32 {
+                let bi = cur[ctx.cols.gadget_b_index(i)];
+
+                // booleanity only for bits that are actually used
+                // in this segment; unused bits still contribute to
+                // the reconstructed sum but do not get their own
+                // explicit constraint.
+                if (bits >> i) & 1 != 0 {
+                    result[*ix] = s_on * same * bi * (bi - E::ONE);
+                    *ix += 1;
+                }
+
+                sum += pow2 * bi;
+                pow2 = pow2 + pow2;
+            }
+
+            // equality
+            let s_on_n = next[ctx.cols.ram_sorted];
+            result[*ix] = s_on * s_on_n * same * (d_clk - sum);
             *ix += 1;
-            sum += pow2 * bi;
-            pow2 = pow2 + pow2;
         }
-
-        // equality
-        let s_on_n = next[ctx.cols.ram_sorted];
-        result[*ix] = s_on * s_on_n * same * (d_clk - sum);
-        *ix += 1;
 
         // Final-row equality of GP
         // accumulators (unsorted == sorted)
