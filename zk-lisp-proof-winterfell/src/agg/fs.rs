@@ -60,8 +60,8 @@ pub fn replay_fs_from_step(step: &StepProof) -> error::Result<ZlFsChallenges> {
             fe_from_bytes_fold(&pi_zl1.rom_s_out_1),
             fe_from_bytes_fold(&pi_zl1.rom_s_out_2),
         ],
-        vm_usage_mask: 0,
-        ram_delta_clk_bits: 0,
+        vm_usage_mask: step.vm_usage_mask,
+        ram_delta_clk_bits: step.ram_delta_clk_bits,
     };
 
     // Seed for the public coin:

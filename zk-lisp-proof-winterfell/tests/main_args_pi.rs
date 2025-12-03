@@ -34,9 +34,11 @@ fn air_public_inputs_encode_main_args_at_tail() {
 
     let els = api.to_elements();
 
-    // 5 base elements (feature+commit fields) + slots for main_args + 11 boundary elements
+    // 5 base elements (feature+commit fields)
+    // + slots for main_args
+    // + 13 boundary elements (pc/ram/rom + vm usage masks)
     let slots = encode_main_args_to_slots(&core.main_args);
-    assert_eq!(els.len(), 5 + slots.len() + 11);
+    assert_eq!(els.len(), 5 + slots.len() + 13);
 
     assert_eq!(els[5], BE::from(5u64));
     assert_eq!(els[6], BE::from(7u64));

@@ -24,30 +24,6 @@ use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
-// Layout of ALU constraints
-// =======================================
-// [0..NR)   : carry
-// [NR..2NR) : dst writes
-// [..]      : Eq ties
-// [..]      : DivMod
-// [..]      : Assert (c==1)
-// [..]      : AssertBit
-// [..]      : AssertRange bits (32)
-// [..]      : AssertRange eq
-// [..]      : MulWide eq
-// [..]      : Div128 (2)
-const OFF_CARRY: usize = 0;
-const OFF_WRITE: usize = OFF_CARRY + NR;
-const OFF_EQ_TIES: usize = OFF_WRITE + NR;
-const OFF_DIVMOD: usize = OFF_EQ_TIES + 2;
-const OFF_ASSERT: usize = OFF_DIVMOD + 2;
-const OFF_ASSERT_BIT: usize = OFF_ASSERT + 1;
-const OFF_ASSERT_RANGE_BITS: usize = OFF_ASSERT_BIT + 1;
-const OFF_ASSERT_RANGE_EQ: usize = OFF_ASSERT_RANGE_BITS + 32;
-const OFF_MULWIDE: usize = OFF_ASSERT_RANGE_EQ + 1;
-const OFF_DIV128: usize = OFF_MULWIDE + 1;
-const NUM_ALU_CONSTRAINTS: usize = OFF_DIV128 + 2;
-
 pub(crate) struct VmAluAir;
 
 impl AirModule for VmAluAir {

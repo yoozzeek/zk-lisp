@@ -25,9 +25,7 @@ mod schedule;
 
 use crate::poseidon::{derive_rom_mds_cauchy_3x3, derive_rom_round_constants_3};
 use crate::vm::air::{merkle::MerkleAir, poseidon::PoseidonAir, schedule::ScheduleAir};
-use crate::vm::layout::{
-    Columns, LayoutConfig, NR, POSEIDON_ROUNDS, SPONGE_IDX_BITS, STEPS_PER_LEVEL_P2,
-};
+use crate::vm::layout::{Columns, LayoutConfig, NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
 use crate::vm::schedule as schedule_core;
 use crate::{poseidon as poseidon_core, utils};
 
@@ -277,25 +275,27 @@ impl Air for ZkLispAir {
 
             // pi_prog binding is added only when
             // this trace starts from PC=0 and the
-            // program commitment is set .
+            // program commitment is set.
             if pub_inputs.pc_init == BE::from(0u32)
                 && core.program_commitment.iter().any(|b| *b != 0)
             {
                 num_assertions += 1;
             }
 
-            // Bind runtime public main_args slots to the
-            // tail of the register file at level 0 map row.
+            // Bind runtime public main_args slots to the tail of the
+            // register file only for the very first segment (PC == 0).
             let main_slots_len = utils::encode_main_args_to_slots(&core.main_args).len();
-            if main_slots_len > 0 {
+            if main_slots_len > 0 && pub_inputs.pc_init == BE::from(0u32) {
                 num_assertions += main_slots_len;
             }
         }
+
         if features.vm && features.vm_expect {
             // one assertion for expected
             // output at computed row.
             num_assertions += 1;
         }
+
         if num_assertions == 0 {
             num_assertions = 1;
         }
@@ -426,7 +426,12 @@ impl Air for ZkLispAir {
             // Bind runtime public main_args (already
             // flattened into base-field slots) to the
             // tail of the register file at level 0 map row.
-            if !ctx.main_args.is_empty() {
+            //
+            // Only do this for the segment that starts at PC = 0,
+            // i.e. the very first execution segment. Later segments
+            // resume from an intermediate VM state and must not
+            // re-bind main_args at their local map row.
+            if ctx.pc_init == BE::from(0u32) && !ctx.main_args.is_empty() {
                 let slots = ctx.main_args.len();
                 assert!(slots <= NR, "main_args must fit into NR registers");
 

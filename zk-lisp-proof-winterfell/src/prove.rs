@@ -1118,6 +1118,9 @@ fn prove_segment(
         &trace,
     );
     let pi_len = air_pi.to_elements().len() as u32;
+    let vm_usage_mask = air_pi.vm_usage_mask;
+    let ram_delta_clk_bits = air_pi.ram_delta_clk_bits;
+
     let meta = StepMeta::from_env(trace_len, &wf_opts, min_bits, pi_len);
 
     let prover = ZkProver::new(wf_opts, pub_inputs.clone(), rom_acc).with_segment_layout(
@@ -1153,6 +1156,8 @@ fn prove_segment(
         proof: zl1_proof,
         pi_core: pub_inputs.clone(),
         rom_acc,
+        vm_usage_mask,
+        ram_delta_clk_bits,
     };
 
     Ok((step_proof, state_out_hash))
@@ -1283,7 +1288,7 @@ fn compute_vm_usage_mask_for_trace(trace: &TraceTable<BE>, cols: &Columns) -> (u
 
     for row in 0..n {
         let pos = row % STEPS_PER_LEVEL_P2;
-        let at_map = pos == schedule::pos_map();
+        // let at_map = pos == schedule::pos_map();
         let at_final = pos == schedule::pos_final();
 
         let op_assert = trace.get(cols.op_assert, row);

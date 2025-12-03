@@ -9,6 +9,7 @@
 
 //! Step-level metadata and digest for zk-lisp STARK proofs.
 
+use crate::utils;
 use crate::{AirPublicInputs, proof};
 
 use winterfell::Proof as WProof;
@@ -19,28 +20,21 @@ use zk_lisp_proof::error;
 use zk_lisp_proof::pi::{PublicInputs as CorePublicInputs, VmArg};
 
 /// Minimal per-proof echo used for digest computation.
-///
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StepMeta {
     /// Base trace length m (number of rows before blowup).
     pub m: u32,
-
     /// Blowup factor rho used for this proof.
     pub rho: u16,
-
     /// Number of FRI queries q.
     pub q: u16,
-
     /// Number of committed oracles (trace + composition).
     pub o: u16,
-
     /// Target security level in bits.
     pub lambda: u16,
-
     /// Length of encoded public inputs vector
     /// (in field elements) as seen by the AIR.
     pub pi_len: u32,
-
     /// Coarse estimate of verifier work units.
     pub v_units: u64,
 }
@@ -50,11 +44,15 @@ pub struct StepMeta {
 #[derive(Clone, Debug)]
 pub struct StepProof {
     pub proof: proof::format::Proof,
-    /// Backend-agnostic public inputs used when building
-    /// this step trace.
+    /// Backend-agnostic public inputs used
+    /// when building this step trace.
     pub pi_core: zk_lisp_proof::pi::PublicInputs,
     /// Final ROM accumulator lanes for this step.
     pub rom_acc: [BE; 3],
+    /// VM usage mask used when building this step.
+    pub vm_usage_mask: u32,
+    /// RAM delta_clk usage bits for this step.
+    pub ram_delta_clk_bits: u32,
 }
 
 impl StepProof {
@@ -112,6 +110,15 @@ impl StepProof {
                     out.extend_from_slice(b);
                 }
             }
+        }
+
+        // Serialize vm_usage_mask and ram_delta_clk_bits
+        out.extend_from_slice(&self.vm_usage_mask.to_le_bytes());
+        out.extend_from_slice(&self.ram_delta_clk_bits.to_le_bytes());
+
+        for lane in &self.rom_acc {
+            let bytes32 = utils::fe_to_bytes_fold(*lane);
+            out.extend_from_slice(&bytes32);
         }
 
         // Segment indexing and pc_init
@@ -300,6 +307,43 @@ impl StepProof {
             }
         }
 
+        // vm_usage_mask
+        if bytes.len() < cursor + 4 {
+            return Err(error::Error::InvalidInput(
+                "step proof truncated before vm_usage_mask",
+            ));
+        }
+
+        let mut u32buf_vm = [0u8; 4];
+        u32buf_vm.copy_from_slice(&bytes[cursor..cursor + 4]);
+
+        let vm_usage_mask = u32::from_le_bytes(u32buf_vm);
+        cursor += 4;
+
+        // ram_delta_clk_bits
+        if bytes.len() < cursor + 4 {
+            return Err(error::Error::InvalidInput(
+                "step proof truncated before ram_delta_clk_bits",
+            ));
+        }
+
+        let mut u32buf_bits = [0u8; 4];
+        u32buf_bits.copy_from_slice(&bytes[cursor..cursor + 4]);
+
+        let ram_delta_clk_bits = u32::from_le_bytes(u32buf_bits);
+        cursor += 4;
+
+        // rom_acc lanes (3 * 32 bytes)
+        let rom_acc_0 = take_32(bytes, &mut cursor, "rom_acc_0")?;
+        let rom_acc_1 = take_32(bytes, &mut cursor, "rom_acc_1")?;
+        let rom_acc_2 = take_32(bytes, &mut cursor, "rom_acc_2")?;
+
+        let rom_acc = [
+            utils::fe_from_bytes_fold(&rom_acc_0),
+            utils::fe_from_bytes_fold(&rom_acc_1),
+            utils::fe_from_bytes_fold(&rom_acc_2),
+        ];
+
         // segment_index / segments_total / pc_init
         if bytes.len() < cursor + 4 {
             return Err(error::Error::InvalidInput(
@@ -380,7 +424,7 @@ impl StepProof {
         let air_pi = AirPublicInputs {
             core: core_pi.clone(),
             segment_feature_mask: 0,
-            rom_acc: [BE::ZERO; 3],
+            rom_acc,
             pc_init: BE::ZERO,
             ram_gp_unsorted_in: BE::ZERO,
             ram_gp_unsorted_out: BE::ZERO,
@@ -388,8 +432,8 @@ impl StepProof {
             ram_gp_sorted_out: BE::ZERO,
             rom_s_in: [BE::ZERO; 3],
             rom_s_out: [BE::ZERO; 3],
-            vm_usage_mask: 0,
-            ram_delta_clk_bits: 0,
+            vm_usage_mask,
+            ram_delta_clk_bits,
         };
         let pi_len = air_pi.to_elements().len() as u32;
 
@@ -444,7 +488,9 @@ impl StepProof {
         Ok(StepProof {
             proof: zl1_proof,
             pi_core: core_pi,
-            rom_acc: [BE::ZERO; 3],
+            rom_acc,
+            vm_usage_mask,
+            ram_delta_clk_bits,
         })
     }
 }

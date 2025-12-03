@@ -7,7 +7,7 @@
 //   attribution in copies of this file or substantial
 //   portions of it. See the NOTICE file for details.
 
-use crate::vm::layout::{NR, POSEIDON_ROUNDS, SPONGE_IDX_BITS, VM_USAGE_RAM_DELTA_CLK};
+use crate::vm::layout::VM_USAGE_RAM_DELTA_CLK;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{AirContext, TraceInfo, TransitionConstraintDegree};
 use zk_lisp_proof::pi::{FeaturesMap, PublicInputs as CorePublicInputs};
@@ -198,7 +198,6 @@ fn compute_deg_ranges_for_debug(
     if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
         let len = 3 * POSEIDON_ROUNDS + 3 + 2;
         ranges.push(("rom", ofs, ofs + len));
-        ofs += len;
     }
 
     ranges

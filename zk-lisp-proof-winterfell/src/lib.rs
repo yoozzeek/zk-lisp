@@ -115,11 +115,12 @@ impl Default for AirPublicInputs {
 
 impl ToElements<BE> for AirPublicInputs {
     fn to_elements(&self) -> Vec<BE> {
-        let mut out = Vec::with_capacity(16);
+        let main_slots = utils::encode_main_args_to_slots(&self.core.main_args);
 
-        // Keep the global feature mask as the public
-        // contract; segment_feature_mask is used only
-        // internally by the backend AIR.
+        // 5 base + slots + 13 boundary elements
+        let mut out = Vec::with_capacity(5 + main_slots.len() + 13);
+
+        // Global feature / commitment fields
         out.push(BE::from(self.core.feature_mask));
         out.push(utils::be_from_le8(&self.core.program_commitment));
         out.push(utils::be_from_le8(&self.core.merkle_root));
@@ -133,14 +134,10 @@ impl ToElements<BE> for AirPublicInputs {
             out.push(BE::ZERO);
         }
 
-        // Encode main_args as a flattened sequence of
-        // base-field elements using the same layout as
-        let main_slots = utils::encode_main_args_to_slots(&self.core.main_args);
-        out.reserve(main_slots.len() + 16);
+        // Runtime main_args slots
         out.extend_from_slice(&main_slots);
 
-        // Include segment-local boundary state into the
-        // public-element vector so that Fiat–Shamir
+        // Segment-local boundary state
         out.push(self.pc_init);
         out.push(self.ram_gp_unsorted_in);
         out.push(self.ram_gp_unsorted_out);
@@ -155,13 +152,7 @@ impl ToElements<BE> for AirPublicInputs {
             out.push(*lane);
         }
 
-        // Encode ALU/RAM usage mask so that AIR can
-        // derive per-segment constraint degrees.
         out.push(BE::from(self.vm_usage_mask as u64));
-
-        // Encode per-bit RAM delta_clk usage;
-        // this is used only for AIR degree layout,
-        // not for core semantics.
         out.push(BE::from(self.ram_delta_clk_bits as u64));
 
         out
