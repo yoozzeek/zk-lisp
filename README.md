@@ -15,10 +15,10 @@ the Winterfell STARK prover and verified with its verifier.
 > [!IMPORTANT]
 > This program comes with ABSOLUTELY NO WARRANTY;
 > This is free software, and you are welcome to
-> redistribute it under certain conditions;
+> redistribute it under certain conditions.
 
 > [!NOTE]
-> ZK Lisp targets at least 128-bit conjectured
+> ZK Lisp targets at >= 128-bit conjectured
 > security in release, and 64-bit in debug builds.
 
 ## How it works
