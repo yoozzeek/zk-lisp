@@ -13,94 +13,120 @@
 //! checks and division gadgets over the unified execution
 //! trace when VM features are enabled.
 
+use crate::vm::air::AirModule;
+use crate::vm::air::{AirSharedContext, mixers};
+use crate::vm::layout::{
+    NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2, VM_USAGE_ASSERT, VM_USAGE_ASSERT_BIT,
+    VM_USAGE_ASSERT_RANGE, VM_USAGE_DIV128, VM_USAGE_DIVMOD, VM_USAGE_EQ, VM_USAGE_MULWIDE,
+};
+
 use winterfell::math::FieldElement;
 use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
-use crate::vm::air::AirModule;
-use crate::vm::air::{AirSharedContext, mixers};
-use crate::vm::layout::{NR, POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+// Layout of ALU constraints
+// =======================================
+// [0..NR)   : carry
+// [NR..2NR) : dst writes
+// [..]      : Eq ties
+// [..]      : DivMod
+// [..]      : Assert (c==1)
+// [..]      : AssertBit
+// [..]      : AssertRange bits (32)
+// [..]      : AssertRange eq
+// [..]      : MulWide eq
+// [..]      : Div128 (2)
+const OFF_CARRY: usize = 0;
+const OFF_WRITE: usize = OFF_CARRY + NR;
+const OFF_EQ_TIES: usize = OFF_WRITE + NR;
+const OFF_DIVMOD: usize = OFF_EQ_TIES + 2;
+const OFF_ASSERT: usize = OFF_DIVMOD + 2;
+const OFF_ASSERT_BIT: usize = OFF_ASSERT + 1;
+const OFF_ASSERT_RANGE_BITS: usize = OFF_ASSERT_BIT + 1;
+const OFF_ASSERT_RANGE_EQ: usize = OFF_ASSERT_RANGE_BITS + 32;
+const OFF_MULWIDE: usize = OFF_ASSERT_RANGE_EQ + 1;
+const OFF_DIV128: usize = OFF_MULWIDE + 1;
+const NUM_ALU_CONSTRAINTS: usize = OFF_DIV128 + 2;
 
 pub(crate) struct VmAluAir;
 
 impl AirModule for VmAluAir {
-    fn push_degrees(_ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
+    fn push_degrees(ctx: &AirSharedContext, out: &mut Vec<TransitionConstraintDegree>) {
+        let mask = ctx.vm_usage_mask;
+
+        let use_eq = (mask & (1 << VM_USAGE_EQ)) != 0;
+        let use_divmod = (mask & (1 << VM_USAGE_DIVMOD)) != 0;
+        let use_mulwide = (mask & (1 << VM_USAGE_MULWIDE)) != 0;
+        let use_div128 = (mask & (1 << VM_USAGE_DIV128)) != 0;
+        let use_assert = (mask & (1 << VM_USAGE_ASSERT)) != 0;
+        let use_assert_bit = (mask & (1 << VM_USAGE_ASSERT_BIT)) != 0;
+        let use_assert_range = (mask & (1 << VM_USAGE_ASSERT_RANGE)) != 0;
+
+        let deg_carry = TransitionConstraintDegree::with_cycles(1, vec![STEPS_PER_LEVEL_P2]);
+
+        // Write path uses pi^6 mixer and p_final;
+        // keep the original 7 here.
+        let deg_write = TransitionConstraintDegree::with_cycles(7, vec![STEPS_PER_LEVEL_P2]);
+
+        // All high-degree gadgets (Eq ties, Div/Mod, MulWide,
+        // Div128 and assertions) share the same high-degree mixer
+        // family (pi^4 / pi^6), and in debug runs we observe base
+        // degree 5 for their polynomials. We keep 5 here and rely
+        // on vm_usage_mask to drop unused gadgets per segment.
+        let deg5 = TransitionConstraintDegree::with_cycles(5, vec![STEPS_PER_LEVEL_P2]);
+
         // carry registers on non-final rows
         for _ in 0..NR {
-            out.push(TransitionConstraintDegree::with_cycles(
-                1,
-                vec![STEPS_PER_LEVEL_P2],
-            ));
+            out.push(deg_carry.clone());
         }
 
         // write registers at final (op-gated)
         for _ in 0..NR {
-            out.push(TransitionConstraintDegree::with_cycles(
-                7,
-                vec![STEPS_PER_LEVEL_P2],
-            ));
+            out.push(deg_write.clone());
         }
 
-        // equality ties (dst reflects [a==b])
-        for _ in 0..2 {
-            out.push(TransitionConstraintDegree::with_cycles(
-                5,
-                vec![STEPS_PER_LEVEL_P2],
-            ));
+        // equality ties (dst reflects [a==b]) (2)
+        if use_eq {
+            for _ in 0..2 {
+                out.push(deg5.clone());
+            }
         }
 
-        // DivMod:
-        // a - b*q - r, and b*inv - 1
-        for _ in 0..2 {
-            out.push(TransitionConstraintDegree::with_cycles(
-                5,
-                vec![STEPS_PER_LEVEL_P2],
-            ));
+        // DivMod: a - b*q - r, and b*inv - 1 (2)
+        if use_divmod {
+            for _ in 0..2 {
+                out.push(deg5.clone());
+            }
         }
 
-        // assert enforcer (c==1 at final)
-        out.push(TransitionConstraintDegree::with_cycles(
-            5,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
-
-        // AssertBit:
-        // booleanity r(r-1)=0 at final
-        out.push(TransitionConstraintDegree::with_cycles(
-            5,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
-
-        // AssertRange (32-bit):
-        // 32 bit booleanities
-        //   + equality r - sum(2^i b_i) = 0
-        for _ in 0..32 {
-            out.push(TransitionConstraintDegree::with_cycles(
-                5,
-                vec![STEPS_PER_LEVEL_P2],
-            ));
+        // assert enforcer (c==1 at final) (1)
+        if use_assert {
+            out.push(deg5.clone());
         }
 
-        // equality term (1)
-        out.push(TransitionConstraintDegree::with_cycles(
-            5,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
+        // AssertBit: booleanity r(r-1)=0 at final (1)
+        if use_assert_bit {
+            out.push(deg5.clone());
+        }
 
-        // MulWide equality (1):
-        // a*b == lo + hi*2^64
-        out.push(TransitionConstraintDegree::with_cycles(
-            5,
-            vec![STEPS_PER_LEVEL_P2],
-        ));
+        // AssertRange (32-bit): 32 booleanities + 1 equality (33)
+        if use_assert_range {
+            for _ in 0..32 {
+                out.push(deg5.clone());
+            }
+            out.push(deg5.clone());
+        }
 
-        // Div128 constraints (2):
-        // a*2^64 + imm - b*q - r, and b*inv - 1
-        for _ in 0..2 {
-            out.push(TransitionConstraintDegree::with_cycles(
-                5,
-                vec![STEPS_PER_LEVEL_P2],
-            ));
+        // MulWide equality (1): a*b == lo + hi*2^64
+        if use_mulwide {
+            out.push(deg5.clone());
+        }
+
+        // Div128 constraints (2): num == b*q + r and b*inv - 1
+        if use_div128 {
+            for _ in 0..2 {
+                out.push(deg5.clone());
+            }
         }
     }
 
@@ -115,6 +141,16 @@ impl AirModule for VmAluAir {
     {
         let cur = frame.current();
         let next = frame.next();
+
+        // usage flags derived from per-segment alu_usage_mask
+        let mask = ctx.vm_usage_mask;
+        let use_eq = (mask & (1 << VM_USAGE_EQ)) != 0;
+        let use_divmod = (mask & (1 << VM_USAGE_DIVMOD)) != 0;
+        let use_mulwide = (mask & (1 << VM_USAGE_MULWIDE)) != 0;
+        let use_div128 = (mask & (1 << VM_USAGE_DIV128)) != 0;
+        let use_assert = (mask & (1 << VM_USAGE_ASSERT)) != 0;
+        let use_assert_bit = (mask & (1 << VM_USAGE_ASSERT_BIT)) != 0;
+        let use_assert_range = (mask & (1 << VM_USAGE_ASSERT_RANGE)) != 0;
 
         let p_map = periodic[0];
         let p_final = periodic[1 + POSEIDON_ROUNDS];
@@ -192,10 +228,7 @@ impl AirModule for VmAluAir {
             dst1_next += cur[ctx.cols.sel_dst1_index(i)] * next[ctx.cols.r_index(i)];
         }
 
-        // For range: stage=imm (0/1).
-        // On stage 0, write sum_lo;
-        // on stage 1, write 1.
-        // range_sum computed below.
+        // Base result for single-dst ops
         let mut res = b_const * imm
             + b_mov * a_val
             + b_add * (a_val + b_val)
@@ -204,9 +237,9 @@ impl AirModule for VmAluAir {
             + b_neg * (E::ZERO - a_val)
             + b_sel * (c_val * a_val + (E::ONE - c_val) * b_val)
             + b_sponge * cur[ctx.cols.lane_l]
-            + b_eq * dst0_next
-            + b_assert * E::ONE
-            + b_assert_bit * E::ONE
+            + if use_eq { b_eq * dst0_next } else { E::ZERO }
+            + if use_assert { b_assert * E::ONE } else { E::ZERO }
+            + if use_assert_bit { b_assert_bit * E::ONE } else { E::ZERO }
             // load: write value carried in imm
             + b_load * cur[ctx.cols.imm];
 
@@ -224,7 +257,9 @@ impl AirModule for VmAluAir {
         // range write behavior:
         // stage=0 -> write sum (lo);
         // stage=1 -> write 1
-        res += b_assert_range * ((E::ONE - imm) * sum + imm * E::ONE);
+        if use_assert_range {
+            res += b_assert_range * ((E::ONE - imm) * sum + imm * E::ONE);
+        }
 
         // write at final:
         // For most ops:
@@ -241,7 +276,13 @@ impl AirModule for VmAluAir {
             // and sd0 gates res; For two-dest
             // ops (divmod, mulwide, div128), sd0/sd1
             // gate lo/hi via dst0_next/dst1_next.
-            let b_two = b_divmod + b_mulwide + b_div128;
+            let uses_two = use_divmod || use_mulwide || use_div128;
+            let b_two = if uses_two {
+                b_divmod + b_mulwide + b_div128
+            } else {
+                E::ZERO
+            };
+
             let w0 = (E::ONE - b_two) * res + b_two * dst0_next;
             let w1 = b_two * dst1_next;
 
@@ -255,71 +296,86 @@ impl AirModule for VmAluAir {
         let diff = a_val - b_val;
         let inv = cur[ctx.cols.eq_inv];
 
-        // if dst0_next==1 => diff==0
-        result[*ix] = p_final * b_eq * (dst0_next * diff) + s_eq;
-        *ix += 1;
+        if use_eq {
+            // if dst0_next==1 => diff==0
+            result[*ix] = p_final * b_eq * (dst0_next * diff) + s_eq;
+            *ix += 1;
 
-        // if diff!=0 => dst0_next==0
-        // via (1 - dst0_next) - diff*inv == 0
-        result[*ix] = p_final * b_eq * ((E::ONE - dst0_next) - diff * inv) + s_eq;
-        *ix += 1;
+            // if diff!=0 => dst0_next==0
+            // via (1 - dst0_next) - diff*inv == 0
+            result[*ix] = p_final * b_eq * ((E::ONE - dst0_next) - diff * inv) + s_eq;
+            *ix += 1;
+        }
 
         // DivMod constraints after Eq ties
         // q = dst0_next, r = dst1_next;
         // inv_b stored in eq_inv on these rows.
-        let inv_b = cur[ctx.cols.eq_inv];
-        result[*ix] = p_final * b_divmod * (a_val - b_val * dst0_next - dst1_next) + s_eq;
-        *ix += 1;
-        result[*ix] = p_final * b_divmod * (b_val * inv_b - E::ONE) + s_eq;
-        *ix += 1;
+        if use_divmod {
+            let inv_b = cur[ctx.cols.eq_inv];
+            result[*ix] = p_final * b_divmod * (a_val - b_val * dst0_next - dst1_next) + s_eq;
+            *ix += 1;
+            result[*ix] = p_final * b_divmod * (b_val * inv_b - E::ONE) + s_eq;
+            *ix += 1;
+        }
 
         // MulWide: a*b == lo + hi*2^64,
         // where lo=dst0_next, hi=dst1_next
         let p2_64 = E::from(crate::utils::pow2_64());
-        result[*ix] =
-            p_final * b_mulwide * (a_val * b_val - (dst0_next + dst1_next * p2_64)) + s_eq;
-        *ix += 1;
+        if use_mulwide {
+            result[*ix] =
+                p_final * b_mulwide * (a_val * b_val - (dst0_next + dst1_next * p2_64)) + s_eq;
+            *ix += 1;
+        }
 
         // Div128: num = a*2^64 + imm;
         // enforce num == b*q + r and inv witness
         let num128 = a_val * p2_64 + imm;
-        result[*ix] = p_final * b_div128 * (num128 - (b_val * dst0_next + dst1_next)) + s_eq;
-        *ix += 1;
-        let inv_b = cur[ctx.cols.eq_inv];
-        result[*ix] = p_final * b_div128 * (b_val * inv_b - E::ONE) + s_eq;
-        *ix += 1;
+        if use_div128 {
+            result[*ix] = p_final * b_div128 * (num128 - (b_val * dst0_next + dst1_next)) + s_eq;
+            *ix += 1;
 
-        // assert: require c_val == 1 at final
-        // and enforce c booleanity for SELECT at final
-        result[*ix] =
-            p_final * (b_assert * (c_val - E::ONE) + b_sel * (c_val * (c_val - E::ONE))) + s_eq;
-        *ix += 1;
-
-        // AssertBit: c_val in {0,1}
-        result[*ix] = p_final * b_assert_bit * (c_val * (c_val - E::ONE)) + s_eq;
-        *ix += 1;
-
-        // Now emit booleanity for
-        // each bit (after write)
-        for i in 0..32 {
-            let bi = cur[ctx.cols.gadget_b_index(i)];
-            result[*ix] = p_final * b_assert_range * (bi * (bi - E::ONE)) + s_eq;
+            let inv_b = cur[ctx.cols.eq_inv];
+            result[*ix] = p_final * b_div128 * (b_val * inv_b - E::ONE) + s_eq;
             *ix += 1;
         }
 
-        // Equality on stage==1
-        // If mode64==0: c == sum (32-bit)
-        // If mode64==1: c == dst0_cur + (sum << 32)
-        let mut p2_32 = E::ONE;
-        for _ in 0..32 {
-            p2_32 = p2_32 + p2_32;
+        // assert: require c_val == 1 at final
+        // and enforce c booleanity for SELECT at final
+        if use_assert {
+            result[*ix] =
+                p_final * (b_assert * (c_val - E::ONE) + b_sel * (c_val * (c_val - E::ONE))) + s_eq;
+            *ix += 1;
         }
 
-        let eq32 = c_val - sum;
-        let eq64 = c_val - (dst0_cur + sum * p2_32);
-        let eq_term = imm * (mode64 * eq64 + (E::ONE - mode64) * eq32);
-        result[*ix] = p_final * b_assert_range * eq_term + s_eq;
-        *ix += 1;
+        // AssertBit: c_val in {0,1}
+        if use_assert_bit {
+            result[*ix] = p_final * b_assert_bit * (c_val * (c_val - E::ONE)) + s_eq;
+            *ix += 1;
+        }
+
+        // Now emit booleanity for
+        // each bit (after write)
+        if use_assert_range {
+            for i in 0..32 {
+                let bi = cur[ctx.cols.gadget_b_index(i)];
+                result[*ix] = p_final * b_assert_range * (bi * (bi - E::ONE)) + s_eq;
+                *ix += 1;
+            }
+
+            // Equality on stage==1
+            // If mode64==0: c == sum (32-bit)
+            // If mode64==1: c == dst0_cur + (sum << 32)
+            let mut p2_32 = E::ONE;
+            for _ in 0..32 {
+                p2_32 = p2_32 + p2_32;
+            }
+
+            let eq32 = c_val - sum;
+            let eq64 = c_val - (dst0_cur + sum * p2_32);
+            let eq_term = imm * (mode64 * eq64 + (E::ONE - mode64) * eq32);
+            result[*ix] = p_final * b_assert_range * eq_term + s_eq;
+            *ix += 1;
+        }
     }
 }
 
@@ -380,6 +436,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 1 << VM_USAGE_ASSERT,
+            ram_delta_clk_bits: 0,
         };
 
         VmAluAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
