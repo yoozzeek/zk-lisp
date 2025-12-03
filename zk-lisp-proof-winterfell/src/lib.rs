@@ -83,6 +83,15 @@ pub struct AirPublicInputs {
     pub ram_gp_sorted_out: BE,
     pub rom_s_in: [BE; 3],
     pub rom_s_out: [BE; 3],
+
+    /// Per-segment VM gadget usage bitset.
+    /// Bit layout is defined in vm::layout.
+    pub vm_usage_mask: u32,
+
+    /// Per-segment RAM delta_clk bit-usage mask.
+    /// Bit i is set iff gadget_b[i] is non-zero
+    /// on some row in this trace segment.
+    pub ram_delta_clk_bits: u32,
 }
 
 impl Default for AirPublicInputs {
@@ -98,6 +107,8 @@ impl Default for AirPublicInputs {
             ram_gp_sorted_out: BE::ZERO,
             rom_s_in: [BE::ZERO; 3],
             rom_s_out: [BE::ZERO; 3],
+            vm_usage_mask: 0,
+            ram_delta_clk_bits: 0,
         }
     }
 }
@@ -139,9 +150,19 @@ impl ToElements<BE> for AirPublicInputs {
         for lane in &self.rom_s_in {
             out.push(*lane);
         }
+
         for lane in &self.rom_s_out {
             out.push(*lane);
         }
+
+        // Encode ALU/RAM usage mask so that AIR can
+        // derive per-segment constraint degrees.
+        out.push(BE::from(self.vm_usage_mask as u64));
+
+        // Encode per-bit RAM delta_clk usage;
+        // this is used only for AIR degree layout,
+        // not for core semantics.
+        out.push(BE::from(self.ram_delta_clk_bits as u64));
 
         out
     }

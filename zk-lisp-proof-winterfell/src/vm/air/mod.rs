@@ -15,10 +15,11 @@
 
 mod alu;
 mod ctrl;
+mod debug;
 mod merkle;
 mod mixers;
 mod poseidon;
-mod ram;
+pub mod ram;
 mod rom;
 mod schedule;
 
@@ -92,6 +93,14 @@ struct AirSharedContext {
     /// Runtime public arguments to `main` flattened
     /// into base-field "slots".
     pub main_args: Vec<BaseElement>,
+
+    /// Per-segment VM gadget usage bitset.
+    /// Bit layout is defined in vm::layout.
+    pub vm_usage_mask: u32,
+
+    /// Per-segment RAM delta_clk bit-usage mask.
+    /// Bit i is set when gadget_b[i] != 0 on some row.
+    pub ram_delta_clk_bits: u32,
 }
 
 #[derive(Clone)]
@@ -222,6 +231,8 @@ impl Air for ZkLispAir {
             pc_init: pub_inputs.pc_init,
             program_fe,
             main_args: main_args_fe,
+            vm_usage_mask: pub_inputs.vm_usage_mask,
+            ram_delta_clk_bits: pub_inputs.ram_delta_clk_bits,
         });
 
         // Init AIR modules
@@ -298,7 +309,14 @@ impl Air for ZkLispAir {
             num_assertions += 6;
         }
 
-        print_evals_debug(&core, &info, &features, &degrees);
+        debug::print_evals_debug(
+            &core,
+            &info,
+            &features,
+            &degrees,
+            pub_inputs.vm_usage_mask,
+            pub_inputs.ram_delta_clk_bits,
+        );
 
         // Ensure at least one degree exists
         let degrees = if degrees.is_empty() {
@@ -308,7 +326,13 @@ impl Air for ZkLispAir {
         };
 
         let ctx = AirContext::new(info, degrees, num_assertions, options);
-        print_degrees_debug(&ctx, &core, &features);
+        debug::print_degrees_debug(
+            &ctx,
+            &core,
+            &features,
+            pub_inputs.vm_usage_mask,
+            pub_inputs.ram_delta_clk_bits,
+        );
 
         Self { ctx, shared_ctx }
     }
@@ -581,181 +605,4 @@ impl Air for ZkLispAir {
 
         values
     }
-}
-
-#[inline]
-#[allow(unused_assignments)]
-fn print_evals_debug(
-    pub_inputs: &CorePublicInputs,
-    info: &TraceInfo,
-    features: &FeaturesMap,
-    degrees: &[TransitionConstraintDegree],
-) {
-    let trace_len = info.length();
-    let evals: Vec<usize> = degrees
-        .iter()
-        .map(|d| d.get_evaluation_degree(trace_len) - (trace_len - 1))
-        .collect();
-
-    tracing::debug!(
-        target = "proof.air",
-        "expected_eval_degrees_len={} evals={:?}",
-        evals.len(),
-        evals
-    );
-
-    // print per-block slices for easier debugging
-    let mut ofs = 0usize;
-    let mut dbg: Vec<(&str, Vec<usize>)> = Vec::new();
-
-    if features.poseidon {
-        // Poseidon: per-round (12 lanes * R) + holds (12),
-        // plus optional VM->sponge lane bindings when
-        // both VM and sponge features are enabled.
-        let base_len = 12 * POSEIDON_ROUNDS + 12;
-        let extra = if features.vm && features.sponge {
-            10
-        } else {
-            0
-        };
-        let len = base_len + extra;
-
-        if ofs + len <= evals.len() {
-            dbg.push(("poseidon", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-        }
-    }
-
-    if features.vm {
-        // vm_ctrl dynamic length:
-        // 5*NR role booleans + 5 role sums + NR no-overlap
-        // + optional sponge: (10 lanes * SPONGE_IDX_BITS) bit booleans
-        //   + 10 lane-active booleans
-        // + 1 select-cond + 17 op booleans + 1 one-hot + 17 rom-op eq + 2 PC
-        let sponge_extra = if features.sponge {
-            10 * SPONGE_IDX_BITS + 10
-        } else {
-            0
-        };
-
-        let len = 5 * NR + 5 + NR + sponge_extra + 1 + 17 + 1 + 17 + 2;
-        if ofs + len <= evals.len() {
-            dbg.push(("vm_ctrl", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-        }
-
-        // vm_alu: carry (NR) + write (NR) + 42 misc
-        let len = 2 * NR + 42;
-        if ofs + len <= evals.len() {
-            dbg.push(("vm_alu", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-        }
-    }
-
-    if features.ram {
-        // ram block length:
-        // 6 base constraints
-        // + 33 (32 bit booleanities + equality)
-        // + 1 final-row GP equality
-        // = 40
-        let len = 40;
-        if ofs + len <= evals.len() {
-            dbg.push(("ram", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-        }
-    }
-
-    if features.merkle {
-        // merkle block: 7 constraints
-        let len = 7;
-        if ofs + len <= evals.len() {
-            dbg.push(("merkle", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-        }
-    }
-
-    // ROM block comes last in degree construction
-    if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-        let len = 3 * POSEIDON_ROUNDS + 3 + 2;
-        if ofs + len <= evals.len() {
-            dbg.push(("rom", evals[ofs..ofs + len].to_vec()));
-            ofs += len;
-        }
-    }
-
-    tracing::debug!(target = "proof.air", "per_block_evals: {:?}", dbg);
-}
-
-#[inline]
-#[allow(unused_assignments)]
-fn print_degrees_debug(
-    ctx: &AirContext<BE>,
-    pub_inputs: &CorePublicInputs,
-    features: &FeaturesMap,
-) {
-    let tl = ctx.trace_len();
-    let ce = ctx.ce_domain_size();
-    let lde = ctx.lde_domain_size();
-    let blow_ce = ce / tl;
-
-    tracing::debug!(
-        target = "proof.air",
-        "ctx: trace_len={} ce_domain_size={} lde_domain_size={} ce_blowup={} exemptions={}",
-        tl,
-        ce,
-        lde,
-        blow_ce,
-        ctx.num_transition_exemptions()
-    );
-
-    let mut ofs = 0usize;
-    let mut ranges = Vec::new();
-
-    if features.poseidon {
-        let base_len = 12 * POSEIDON_ROUNDS + 12;
-        let extra = if features.vm && features.sponge {
-            10
-        } else {
-            0
-        };
-        let len = base_len + extra;
-        ranges.push(("poseidon", ofs, ofs + len));
-        ofs += len;
-    }
-
-    if features.vm {
-        let sponge_extra = if features.sponge {
-            10 * SPONGE_IDX_BITS + 10
-        } else {
-            0
-        };
-        let len = 5 * NR + 5 + NR + sponge_extra + 1 + 17 + 1 + 17 + 2;
-        ranges.push(("vm_ctrl", ofs, ofs + len));
-        ofs += len;
-
-        let len2 = 2 * NR + 42;
-        ranges.push(("vm_alu", ofs, ofs + len2));
-        ofs += len2;
-    }
-
-    if features.ram {
-        let len = 40;
-        ranges.push(("ram", ofs, ofs + len));
-        ofs += len;
-    }
-
-    if features.merkle {
-        let len = 7;
-        ranges.push(("merkle", ofs, ofs + len));
-        ofs += len;
-    }
-
-    if pub_inputs.program_commitment.iter().any(|b| *b != 0) {
-        let len = 3 * POSEIDON_ROUNDS + 3 + 2;
-        ranges.push(("rom", ofs, ofs + len));
-        ofs += len;
-    }
-
-    tracing::debug!(target = "proof.air", "deg_ranges: {:?}", ranges);
-    tracing::debug!(target = "proof.air", "deg_len={} (computed)", ofs);
 }

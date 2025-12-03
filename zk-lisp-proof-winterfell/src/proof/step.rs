@@ -388,6 +388,8 @@ impl StepProof {
             ram_gp_sorted_out: BE::ZERO,
             rom_s_in: [BE::ZERO; 3],
             rom_s_out: [BE::ZERO; 3],
+            vm_usage_mask: 0,
+            ram_delta_clk_bits: 0,
         };
         let pi_len = air_pi.to_elements().len() as u32;
 

@@ -44,7 +44,7 @@ use crate::segment_planner::{
     WinterfellSegmentPlanner, compute_segment_feature_mask, compute_segment_features_for_levels,
 };
 use crate::vm::air::ZkLispAir;
-use crate::vm::layout::{Columns, LayoutConfig, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{Columns, LayoutConfig, STEPS_PER_LEVEL_P2, VM_USAGE_RAM_DELTA_CLK};
 use crate::vm::{schedule, trace};
 use crate::{preflight::run as run_preflight, utils};
 
@@ -318,18 +318,21 @@ pub fn build_air_pi_for_trace(
     let steps = STEPS_PER_LEVEL_P2;
     let n_rows = trace.length();
 
+    // Effective layout for this trace (segment-local or baseline)
+    let cols = if let Some(ref cols) = segment_cols {
+        cols.clone()
+    } else {
+        Columns::baseline()
+    };
+
+    debug_assert_eq!(trace.width(), cols.width(0));
+
+    let (vm_usage_mask, ram_delta_clk_bits) = compute_vm_usage_mask_for_trace(trace, &cols);
+
     // Segment boundaries: either pre-passed or derived from trace+layout
     let boundaries = if let Some(b) = segment_boundaries {
         b
     } else {
-        let cols = if let Some(ref cols) = segment_cols {
-            cols.clone()
-        } else {
-            Columns::baseline()
-        };
-
-        debug_assert_eq!(trace.width(), cols.width(0));
-
         let pc_init = if n_rows > 0 {
             trace.get(cols.pc, schedule::pos_map())
         } else {
@@ -401,6 +404,8 @@ pub fn build_air_pi_for_trace(
         ram_gp_sorted_out: boundaries.ram_gp_sorted_out,
         rom_s_in: boundaries.rom_s_in,
         rom_s_out: boundaries.rom_s_out,
+        vm_usage_mask,
+        ram_delta_clk_bits,
     }
 }
 
@@ -862,6 +867,8 @@ pub fn verify_proof(
         ([BE::ZERO; 3], [BE::ZERO; 3])
     };
 
+    let (vm_usage_mask, ram_delta_clk_bits) = compute_vm_usage_mask_for_trace(&trace, &cols);
+
     let t0 = std::time::Instant::now();
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         winterfell::verify::<
@@ -882,6 +889,8 @@ pub fn verify_proof(
                 ram_gp_sorted_out,
                 rom_s_in,
                 rom_s_out,
+                vm_usage_mask,
+                ram_delta_clk_bits,
             },
             &acceptable,
         )
@@ -1100,18 +1109,14 @@ fn prove_segment(
     let (num_partitions, hash_rate) = utils::select_partitions_for_trace(trace.width(), trace_len);
     let wf_opts = base_opts.clone().with_partitions(num_partitions, hash_rate);
 
-    let air_pi = crate::AirPublicInputs {
-        core: pub_inputs.clone(),
-        segment_feature_mask: segment_feature_mask_for_air,
+    let air_pi = build_air_pi_for_trace(
+        pub_inputs.clone(),
+        segment_feature_mask_for_air,
         rom_acc,
-        pc_init: boundaries_fe.pc_init,
-        ram_gp_unsorted_in: boundaries_fe.ram_gp_unsorted_in,
-        ram_gp_unsorted_out: boundaries_fe.ram_gp_unsorted_out,
-        ram_gp_sorted_in: boundaries_fe.ram_gp_sorted_in,
-        ram_gp_sorted_out: boundaries_fe.ram_gp_sorted_out,
-        rom_s_in: boundaries_fe.rom_s_in,
-        rom_s_out: boundaries_fe.rom_s_out,
-    };
+        Some(seg_layout.cols.clone()),
+        Some(boundaries_fe.clone()),
+        &trace,
+    );
     let pi_len = air_pi.to_elements().len() as u32;
     let meta = StepMeta::from_env(trace_len, &wf_opts, min_bits, pi_len);
 
@@ -1153,7 +1158,7 @@ fn prove_segment(
     Ok((step_proof, state_out_hash))
 }
 
-fn estimate_conjectured_security_bits(opts: &ProofOptions) -> u32 {
+pub fn estimate_conjectured_security_bits(opts: &ProofOptions) -> u32 {
     let base_field_bits = BE::MODULUS_BITS;
     let field_security = base_field_bits * opts.field_extension().degree();
 
@@ -1263,6 +1268,111 @@ fn compute_segment_boundary_bytes(
     );
 
     Ok(out)
+}
+
+fn compute_vm_usage_mask_for_trace(trace: &TraceTable<BE>, cols: &Columns) -> (u32, u32) {
+    use crate::vm::layout::{
+        VM_USAGE_ASSERT, VM_USAGE_ASSERT_BIT, VM_USAGE_ASSERT_RANGE, VM_USAGE_DIV128,
+        VM_USAGE_DIVMOD, VM_USAGE_EQ, VM_USAGE_MULWIDE, VM_USAGE_SPONGE,
+    };
+
+    let mut mask: u32 = 0;
+    let mut ram_bits: u32 = 0;
+
+    let n = trace.length();
+
+    for row in 0..n {
+        let pos = row % STEPS_PER_LEVEL_P2;
+        let at_map = pos == schedule::pos_map();
+        let at_final = pos == schedule::pos_final();
+
+        let op_assert = trace.get(cols.op_assert, row);
+        let op_select = trace.get(cols.op_select, row);
+        let op_assert_bit = trace.get(cols.op_assert_bit, row);
+        let op_assert_range = trace.get(cols.op_assert_range, row);
+        let op_divmod = trace.get(cols.op_divmod, row);
+        let op_mulwide = trace.get(cols.op_mulwide, row);
+        let op_div128 = trace.get(cols.op_div128, row);
+        let op_eq = trace.get(cols.op_eq, row);
+        let op_sponge = trace.get(cols.op_sponge, row);
+
+        // All ALU gadgets with enforcers only on the final
+        // line of the level are raised in the mask ONLY if
+        // we actually see an enable on final.
+        //
+        // ASSERT/SELECT booleanity (c==1 and c ∈ {0,1}) only live on final.
+        if at_final && (op_assert != BE::ZERO || op_select != BE::ZERO) {
+            mask |= 1 << VM_USAGE_ASSERT;
+        }
+
+        // ASSERT_BIT only on final
+        if at_final && op_assert_bit != BE::ZERO {
+            mask |= 1 << VM_USAGE_ASSERT_BIT;
+        }
+
+        // ASSERT_RANGE (32 booleanities + eq) only on final
+        if at_final && op_assert_range != BE::ZERO {
+            mask |= 1 << VM_USAGE_ASSERT_RANGE;
+        }
+
+        // DIVMOD / MULWIDE / DIV128 / EQ all their enforcers
+        // in the ALU are multiplied by p_final, so we only
+        // consider final lines.
+        if at_final && op_divmod != BE::ZERO {
+            mask |= 1 << VM_USAGE_DIVMOD;
+        }
+        if at_final && op_mulwide != BE::ZERO {
+            mask |= 1 << VM_USAGE_MULWIDE;
+        }
+        if at_final && op_div128 != BE::ZERO {
+            mask |= 1 << VM_USAGE_DIV128;
+        }
+        if at_final && op_eq != BE::ZERO {
+            mask |= 1 << VM_USAGE_EQ;
+        }
+
+        // Sponge selectors and VM→sponge-binding live on map
+        // strings, we only need to know that op_sponge appears
+        // somewhere in the segment.
+        if op_sponge != BE::ZERO {
+            mask |= 1 << VM_USAGE_SPONGE;
+        }
+
+        // RAM delta_clk gadget:
+        // - Raise VM_USAGE_RAM_DELTA_CLK if there is
+        //   at least one same-addr pair;
+        // - ram_bits collects all i for which gadget_b[i] != 0
+        //   on rows with such a pair.
+        if row + 1 < n {
+            let s_on = trace.get(cols.ram_sorted, row);
+            if s_on != BE::ZERO {
+                let s_on_n = trace.get(cols.ram_sorted, row + 1);
+                if s_on_n != BE::ZERO {
+                    let s_addr = trace.get(cols.ram_s_addr, row);
+                    let s_addr_n = trace.get(cols.ram_s_addr, row + 1);
+
+                    if s_addr_n == s_addr {
+                        // same-addr pair => delta_clk enabled
+                        mask |= 1 << VM_USAGE_RAM_DELTA_CLK;
+
+                        // mark the bits that are actually used
+                        for i in 0..32 {
+                            let bi = trace.get(cols.gadget_b_index(i), row);
+                            if bi != BE::ZERO {
+                                ram_bits |= 1 << i;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // When we introduce additional bits (RAM range, etc.)
+            // in the future, it would be better to raise them here
+            // as well, taking into account the schedule.
+        }
+    }
+
+    (mask, ram_bits)
 }
 
 #[cfg(test)]

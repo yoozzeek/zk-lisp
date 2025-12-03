@@ -28,6 +28,25 @@ pub const NR: usize = 8;
 /// lane register selection (NR=8 -> 3 bits)
 pub const SPONGE_IDX_BITS: usize = 3;
 
+/// Bit positions in [`AirPublicInputs::vm_usage_mask`]
+/// for optional VM gadgets whose constraints can be
+/// dropped when the corresponding opcode never occurs
+/// in a trace segment.
+pub const VM_USAGE_ASSERT: u32 = 0;
+pub const VM_USAGE_ASSERT_BIT: u32 = 1;
+pub const VM_USAGE_ASSERT_RANGE: u32 = 2;
+pub const VM_USAGE_DIVMOD: u32 = 3;
+pub const VM_USAGE_MULWIDE: u32 = 4;
+pub const VM_USAGE_DIV128: u32 = 5;
+pub const VM_USAGE_EQ: u32 = 6;
+pub const VM_USAGE_SPONGE: u32 = 7;
+
+/// RAM delta_clk range gadget;
+/// raised when there is at least
+/// one same-addr pair in the sorted
+/// RAM table for this segment.
+pub const VM_USAGE_RAM_DELTA_CLK: u32 = 8;
+
 /// Layout configuration for unified VM trace.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LayoutConfig {

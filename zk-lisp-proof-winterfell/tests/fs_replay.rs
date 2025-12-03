@@ -148,6 +148,8 @@ fn fs_replay_matches_reference_coin() {
             zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_1),
             zk_lisp_proof_winterfell::utils::fe_from_bytes_fold(&pi_zl1.rom_s_out_2),
         ],
+        vm_usage_mask: 0,
+        ram_delta_clk_bits: 0,
     };
 
     let mut seed_elems = wf_proof.context.to_elements();
