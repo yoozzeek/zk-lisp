@@ -18,7 +18,7 @@ use winterfell::math::fields::f128::BaseElement as BE;
 use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use super::{AirModule, AirSharedContext};
-use crate::vm::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{POSEIDON_ROUNDS, STEPS_PER_LEVEL_P2, VM_USAGE_SPONGE};
 
 pub(crate) struct PoseidonAir;
 
@@ -47,7 +47,8 @@ impl AirModule for PoseidonAir {
         // When VM is enabled AND sponge ops
         // are present enforce VM->lane bindings
         // on map rows of absorb operations.
-        if ctx.features.vm && ctx.features.sponge {
+        let sponge_used = (ctx.vm_usage_mask & (1 << VM_USAGE_SPONGE)) != 0;
+        if ctx.features.vm && ctx.features.sponge && sponge_used {
             // VM->lane binding at map row
             // for sponge absorb lanes (0..9).
             //
@@ -124,7 +125,8 @@ impl AirModule for PoseidonAir {
         // (0..9) to VM-selected inputs
         // when sponge ops are enabled;
         // gate by p_map, b_sponge and pose_active.
-        if ctx.features.vm && ctx.features.sponge {
+        let sponge_used = (ctx.vm_usage_mask & (1 << VM_USAGE_SPONGE)) != 0;
+        if ctx.features.vm && ctx.features.sponge && sponge_used {
             let b_sponge = cur[ctx.cols.op_sponge];
             let pa = cur[ctx.cols.pose_active];
 
@@ -238,6 +240,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 0,
+            ram_delta_clk_bits: 0,
         };
 
         PoseidonAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
@@ -288,6 +292,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 0,
+            ram_delta_clk_bits: 0,
         };
 
         PoseidonAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
@@ -344,6 +350,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 0,
+            ram_delta_clk_bits: 0,
         };
 
         PoseidonAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
@@ -416,6 +424,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 1 << VM_USAGE_SPONGE,
+            ram_delta_clk_bits: 0,
         };
 
         PoseidonAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
@@ -481,6 +491,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 1 << VM_USAGE_SPONGE,
+            ram_delta_clk_bits: 0,
         };
 
         PoseidonAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);

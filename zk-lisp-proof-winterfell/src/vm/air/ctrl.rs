@@ -19,7 +19,9 @@ use winterfell::{EvaluationFrame, TransitionConstraintDegree};
 
 use crate::vm::air::AirModule;
 use crate::vm::air::{AirSharedContext, mixers};
-use crate::vm::layout::{NR, POSEIDON_ROUNDS, SPONGE_IDX_BITS, STEPS_PER_LEVEL_P2};
+use crate::vm::layout::{
+    NR, POSEIDON_ROUNDS, SPONGE_IDX_BITS, STEPS_PER_LEVEL_P2, VM_USAGE_SPONGE,
+};
 
 pub(crate) struct VmCtrlAir;
 
@@ -52,7 +54,8 @@ impl AirModule for VmCtrlAir {
             ));
         }
 
-        if ctx.features.sponge {
+        let sponge_used = (ctx.vm_usage_mask & (1 << VM_USAGE_SPONGE)) != 0;
+        if ctx.features.sponge && sponge_used {
             // Sponge lane selectors booleanity for packed
             // index bits and per-lane active flags.
             //
@@ -266,12 +269,12 @@ impl AirModule for VmCtrlAir {
         }
 
         // Sponge selectors booleanity
-        // and per-lane sum constraints
-        // (only when sponge feature is enabled).
-        if ctx.features.sponge {
+        // and per-lane sum constraints.
+        let sponge_used = (ctx.vm_usage_mask & (1 << VM_USAGE_SPONGE)) != 0;
+        if ctx.features.sponge && sponge_used {
             for lane in 0..10 {
                 // Booleanity for packed bits and active at map
-                for b in 0..crate::layout::SPONGE_IDX_BITS {
+                for b in 0..SPONGE_IDX_BITS {
                     let bitv = cur[ctx.cols.sel_s_b_index(lane, b)];
                     result[*ix] = p_map * b_sponge * bitv * (bitv - E::ONE) + s_high;
                     *ix += 1;
@@ -456,6 +459,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 0,
+            ram_delta_clk_bits: 0,
         };
 
         let mut ra = vec![BE::ZERO; 256];
@@ -522,6 +527,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 1 << VM_USAGE_SPONGE,
+            ram_delta_clk_bits: 0,
         };
 
         let mut ra = vec![BE::ZERO; 256];
@@ -584,6 +591,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 0,
+            ram_delta_clk_bits: 0,
         };
 
         VmCtrlAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
@@ -642,6 +651,8 @@ mod tests {
             pc_init: BE::ZERO,
             program_fe: [BE::ZERO; 2],
             main_args: Vec::new(),
+            vm_usage_mask: 1 << VM_USAGE_SPONGE,
+            ram_delta_clk_bits: 0,
         };
 
         VmCtrlAir::eval_block(ctx, &frame, &periodic, &mut res, &mut ix);
