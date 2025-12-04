@@ -74,6 +74,8 @@ impl ZkField for WinterfellField {
 #[derive(Clone, Debug)]
 pub struct AirPublicInputs {
     pub core: CorePublicInputs,
+    /// Effective feature mask for this trace instance.
+    /// ZkLispAir derives its layout solely from this mask.
     pub segment_feature_mask: u64,
     pub rom_acc: [BE; 3],
     pub pc_init: BE,
@@ -83,11 +85,9 @@ pub struct AirPublicInputs {
     pub ram_gp_sorted_out: BE,
     pub rom_s_in: [BE; 3],
     pub rom_s_out: [BE; 3],
-
     /// Per-segment VM gadget usage bitset.
     /// Bit layout is defined in vm::layout.
     pub vm_usage_mask: u32,
-
     /// Per-segment RAM delta_clk bit-usage mask.
     /// Bit i is set iff gadget_b[i] is non-zero
     /// on some row in this trace segment.
@@ -241,23 +241,15 @@ impl PreflightBackend for WinterfellBackend {
             let features_map = FeaturesMap::from_mask(eff_mask);
             let rom_enabled = pub_inputs.program_id.iter().any(|b| *b != 0);
 
-            // Exactly the same LayoutConfig as in prove_segment
-            let layout_cfg = if use_seg_mask {
-                layout::LayoutConfig {
-                    vm: true,
-                    ram: features_map.ram,
-                    sponge: features_map.sponge,
-                    merkle: features_map.merkle,
-                    rom: rom_enabled,
-                }
-            } else {
-                layout::LayoutConfig {
-                    vm: true,
-                    ram: true,
-                    sponge: true,
-                    merkle: true,
-                    rom: rom_enabled,
-                }
+            // LayoutConfig for this segment must match
+            // what ZkLispAir::new will derive from `eff_mask`
+            // so that column indices align.
+            let layout_cfg = layout::LayoutConfig {
+                vm: features_map.vm,
+                ram: features_map.ram,
+                sponge: features_map.sponge,
+                merkle: features_map.merkle,
+                rom: rom_enabled,
             };
 
             let seg_layout = trace::SegmentLayout::from_full_columns(&full_cols, &layout_cfg);
@@ -276,8 +268,9 @@ impl PreflightBackend for WinterfellBackend {
                 utils::select_partitions_for_trace(seg_trace.width(), seg_len);
             let wf_opts = base_opts.clone().with_partitions(num_partitions, hash_rate);
 
-            // Mask for AIR is the same as in prove_segment
-            let segment_feature_mask_for_air = if use_seg_mask { eff_mask } else { 0 };
+            // For preflight, always use eff_mask so that AIR layout
+            // matches the segment trace layout exactly.
+            let segment_feature_mask_for_air = eff_mask;
 
             // Preflight using the same AIR, layout
             // and trace as the real prover.

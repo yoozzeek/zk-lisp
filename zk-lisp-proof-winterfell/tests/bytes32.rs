@@ -79,7 +79,6 @@ fn prove_verify_fail(src: &str) {
     }
 }
 
-#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn bytes32_eq_ok() {
     let src = r#"

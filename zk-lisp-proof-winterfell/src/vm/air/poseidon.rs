@@ -49,17 +49,12 @@ impl AirModule for PoseidonAir {
         // on map rows of absorb operations.
         let sponge_used = (ctx.vm_usage_mask & (1 << VM_USAGE_SPONGE)) != 0;
         if ctx.features.vm && ctx.features.sponge && sponge_used {
-            // VM->lane binding at map row
-            // for sponge absorb lanes (0..9).
-            //
-            // The binding constraints have different effective
-            // algebraic degrees per lane due to the way packed
-            // index bits and the active flag are wired in the
-            // trace builder:
-            //   - lane 0:   base degree 4
-            //   - lanes 1–2: base degree 5
-            //   - lanes 3–9: base degree 3
-            let lane_bases: [usize; 10] = [4, 5, 5, 3, 3, 3, 3, 3, 3, 3];
+            // VM->lane binding degrees per absorb lane:
+            // lane 0:   base 6
+            // lane 1:   base 6
+            // lane 2:   base 3
+            // lanes 3–9: base 3
+            let lane_bases: [usize; 10] = [6, 6, 3, 3, 3, 3, 3, 3, 3, 3];
             for &base in lane_bases.iter() {
                 out.push(TransitionConstraintDegree::with_cycles(
                     base,

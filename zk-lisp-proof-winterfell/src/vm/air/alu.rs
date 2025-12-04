@@ -47,8 +47,7 @@ impl AirModule for VmAluAir {
         // All high-degree gadgets (Eq ties, Div/Mod, MulWide,
         // Div128 and assertions) share the same high-degree mixer
         // family (pi^4 / pi^6), and in debug runs we observe base
-        // degree 5 for their polynomials. We keep 5 here and rely
-        // on vm_usage_mask to drop unused gadgets per segment.
+        // degree 5 for their polynomials.
         let deg5 = TransitionConstraintDegree::with_cycles(5, vec![STEPS_PER_LEVEL_P2]);
 
         // carry registers on non-final rows

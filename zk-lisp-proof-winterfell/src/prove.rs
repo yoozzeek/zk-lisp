@@ -329,6 +329,19 @@ pub fn build_air_pi_for_trace(
 
     let (vm_usage_mask, ram_delta_clk_bits) = compute_vm_usage_mask_for_trace(trace, &cols);
 
+    // Decide effective per-segment feature mask once.
+    // - For multi-segment runs (segment_cols.is_some()) trust the planner
+    //   and use segment_feature_mask as-is, including 0 for "no features".
+    // - For single-segment runs fall back to pi.feature_mask when the
+    //   caller did not override segment_feature_mask.
+    let effective_segment_mask = if segment_cols.is_some() {
+        segment_feature_mask
+    } else if segment_feature_mask != 0 {
+        segment_feature_mask
+    } else {
+        pi.feature_mask
+    };
+
     // Segment boundaries: either pre-passed or derived from trace+layout
     let boundaries = if let Some(b) = segment_boundaries {
         b
@@ -395,7 +408,7 @@ pub fn build_air_pi_for_trace(
 
     crate::AirPublicInputs {
         core: pi,
-        segment_feature_mask,
+        segment_feature_mask: effective_segment_mask,
         rom_acc,
         pc_init: boundaries.pc_init,
         ram_gp_unsorted_in: boundaries.ram_gp_unsorted_in,
@@ -870,6 +883,7 @@ pub fn verify_proof(
     let (vm_usage_mask, ram_delta_clk_bits) = compute_vm_usage_mask_for_trace(&trace, &cols);
 
     let t0 = std::time::Instant::now();
+    let segment_feature_mask = pi.feature_mask;
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         winterfell::verify::<
             ZkLispAir,
@@ -880,7 +894,7 @@ pub fn verify_proof(
             proof,
             crate::AirPublicInputs {
                 core: pi,
-                segment_feature_mask: 0,
+                segment_feature_mask,
                 rom_acc,
                 pc_init,
                 ram_gp_unsorted_in,
@@ -1072,22 +1086,15 @@ fn prove_segment(
     let features_map = zk_lisp_proof::pi::FeaturesMap::from_mask(eff_mask);
     let rom_enabled = pub_inputs.program_id.iter().any(|b| *b != 0);
 
-    let layout_cfg = if use_seg_mask {
-        LayoutConfig {
-            vm: true,
-            ram: features_map.ram,
-            sponge: features_map.sponge,
-            merkle: features_map.merkle,
-            rom: rom_enabled,
-        }
-    } else {
-        LayoutConfig {
-            vm: true,
-            ram: true,
-            sponge: true,
-            merkle: true,
-            rom: rom_enabled,
-        }
+    // LayoutConfig for this segment must exactly match
+    // what ZkLispAir::new will derive from `eff_mask`,
+    // so that column indices stay aligned.
+    let layout_cfg = LayoutConfig {
+        vm: features_map.vm,
+        ram: features_map.ram,
+        sponge: features_map.sponge,
+        merkle: features_map.merkle,
+        rom: rom_enabled,
     };
 
     let full_cols = Columns::baseline();
@@ -1104,7 +1111,11 @@ fn prove_segment(
 
     let boundary_bytes = compute_segment_boundary_bytes(full_trace, seg)?;
     let boundaries_fe = SegmentBoundariesFe::from(&boundary_bytes);
-    let segment_feature_mask_for_air = if use_seg_mask { eff_mask } else { 0 };
+
+    // Effective feature mask actually used by the AIR
+    // for this segment. Must match `layout_cfg` so that
+    // column layout is consistent with the trace.
+    let segment_feature_mask_for_air = eff_mask;
 
     let (num_partitions, hash_rate) = utils::select_partitions_for_trace(trace.width(), trace_len);
     let wf_opts = base_opts.clone().with_partitions(num_partitions, hash_rate);

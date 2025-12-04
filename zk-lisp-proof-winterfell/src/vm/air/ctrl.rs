@@ -58,36 +58,23 @@ impl AirModule for VmCtrlAir {
         if ctx.features.sponge && sponge_used {
             // Sponge lane selectors booleanity for packed
             // index bits and per-lane active flags.
-            //
-            // The debug trace shows eval-degree offset 3038 (base=3) only for
-            // local_block_idx in {3, 4, 7, 9, 11}; all other sponge constraints
-            // have offset 2015 (base=2). Hard-code this split here so that
-            // expected and actual degrees coincide.
-            const SPONGE_BASE3_LOCAL: [usize; 5] = [3, 4, 7, 9, 11];
-
             let deg2 = TransitionConstraintDegree::with_cycles(2, vec![STEPS_PER_LEVEL_P2]);
             let deg3 = TransitionConstraintDegree::with_cycles(3, vec![STEPS_PER_LEVEL_P2]);
 
             for lane in 0..10 {
-                for b in 0..SPONGE_IDX_BITS {
-                    let local_idx = lane * (SPONGE_IDX_BITS + 1) + b;
-                    let deg = if SPONGE_BASE3_LOCAL.contains(&local_idx) {
-                        &deg3
-                    } else {
-                        &deg2
+                // positions:
+                // 0..SPONGE_IDX_BITS-1 => bits,
+                // SPONGE_IDX_BITS => active
+                for pos in 0..=SPONGE_IDX_BITS {
+                    let use_deg3 = match lane {
+                        0 => true,    // lane 0: all selectors at base 3
+                        1 => pos > 0, // lane 1: bit1, bit2, active at base 3
+                        _ => false,   // lanes 2..9: all selectors at base 2
                     };
 
+                    let deg = if use_deg3 { &deg3 } else { &deg2 };
                     out.push(deg.clone());
                 }
-
-                let local_idx = lane * (SPONGE_IDX_BITS + 1) + SPONGE_IDX_BITS; // active flag
-                let deg = if SPONGE_BASE3_LOCAL.contains(&local_idx) {
-                    &deg3
-                } else {
-                    &deg2
-                };
-
-                out.push(deg.clone());
             }
         }
 

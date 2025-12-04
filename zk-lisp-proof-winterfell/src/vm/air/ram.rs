@@ -30,10 +30,6 @@ impl AirModule for RamAir {
 
         // Unsorted GP uses schedule selectors over the level
         // and a quadratic payload in main-trace columns.
-        // We declare base=4 (one higher than the actual base=3)
-        // so that:
-        //   get_evaluation_degree(trace_len) - (trace_len - 1)
-        // matches the actual evaluation degree reported by Winterfell.
         let deg_gp_uns = TransitionConstraintDegree::with_cycles(4, vec![STEPS_PER_LEVEL_P2]);
 
         // Plain base-degree bounds for constraints that do NOT

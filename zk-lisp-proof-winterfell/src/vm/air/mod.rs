@@ -116,13 +116,15 @@ impl Air for ZkLispAir {
 
         let core = pub_inputs.core;
 
-        // Select effective feature mask
-        // for this trace instance.
+        // Effective feature mask for this trace instance
         let eff_mask = if pub_inputs.segment_feature_mask != 0 {
             pub_inputs.segment_feature_mask
         } else {
             core.feature_mask
         };
+
+        let features = FeaturesMap::from_mask(eff_mask);
+        let rom_enabled = core.program_id.iter().any(|b| *b != 0);
 
         let suite_id = &core.program_id;
         let ps = poseidon_core::get_poseidon_suite(suite_id);
@@ -135,18 +137,25 @@ impl Air for ZkLispAir {
         let mds = ps.mds;
         let dom = ps.dom;
 
-        let features = FeaturesMap::from_mask(eff_mask);
-        let rom_enabled = core.program_id.iter().any(|b| *b != 0);
-        let layout_cfg = if pub_inputs.segment_feature_mask != 0 {
+        // Layout for full traces must match the unified trace builder
+        // (`Columns::baseline`) so that column indices (especially ROM
+        // and gadget columns) stay aligned. Segment-local traces use a
+        // shrunk layout driven by the per-segment feature mask.
+        let baseline_width = Columns::baseline().width(0);
+        let layout_cfg = if info.width() < baseline_width {
+            // Narrow trace: this is a segment trace projected
+            // via SegmentLayout, so mirror its feature set.
             LayoutConfig {
-                vm: true,
+                vm: features.vm,
                 ram: features.ram,
                 sponge: features.sponge,
                 merkle: features.merkle,
                 rom: rom_enabled,
             }
         } else {
-            // Fallback to the conservative baseline layout
+            // Full unified trace: keep all blocks enabled in the
+            // layout so that column indices match `Columns::baseline`,
+            // while individual modules are still gated by `features`.
             LayoutConfig {
                 vm: true,
                 ram: true,
@@ -166,39 +175,10 @@ impl Air for ZkLispAir {
 
         let rom_mds_arr = derive_rom_mds_cauchy_3x3(suite_id);
 
-        // Precompute ROM encoding weights
-        // W_k = g^k, k=1..59 for seeds
-        // ROM_W_SEED_0 and ROM_W_SEED_1.
-        let compute_weights = |seed: u32| -> [BaseElement; 59] {
-            let g = BaseElement::from(3u64);
-
-            // compute g^seed via exp
-            let mut acc = BaseElement::ONE;
-            let mut base = g;
-            let mut e = seed as u64;
-
-            while e > 0 {
-                if (e & 1) == 1 {
-                    acc *= base;
-                }
-
-                base *= base;
-                e >>= 1;
-            }
-
-            let mut out = [BaseElement::ZERO; 59];
-            let mut cur = acc * g; // g^(seed+1)
-
-            for item in out.iter_mut() {
-                *item = cur;
-                cur *= g;
-            }
-
-            out
-        };
-
-        let rom_w_enc0 = compute_weights(utils::ROM_W_SEED_0);
-        let rom_w_enc1 = compute_weights(utils::ROM_W_SEED_1);
+        // Precompute ROM encoding weights using
+        // the same helper as RomTraceBuilder.
+        let rom_w_enc0 = utils::rom_weights_for_seed(utils::ROM_W_SEED_0);
+        let rom_w_enc1 = utils::rom_weights_for_seed(utils::ROM_W_SEED_1);
 
         // Derive field-level
         // program commitment once.
