@@ -13,7 +13,7 @@ the Winterfell STARK prover and verified with its verifier.
 > **STATUS: RESEARCH PREVIEW (Alpha)**
 >
 > `zk-lisp` is an architectural Proof-of-Concept implementing
-> **Streamed Trace Generation** ($O(S)$) on Winterfell.
+> **Streamed Trace Generation** (O(S)) on Winterfell.
 >
 > **Current State:**
 > * **Core VM:** Stable for single-segment execution.
@@ -24,9 +24,6 @@ the Winterfell STARK prover and verified with its verifier.
 > * and subject to breaking changes without notice.
 >
 > **Target Audience:** Protocol Architects and ZK Researchers. Not intended for production integration yet.
-
-> [!WARNING]
-> Experimental and unaudited; not production-ready.
 
 > [!IMPORTANT]
 > This program comes with ABSOLUTELY NO WARRANTY;
