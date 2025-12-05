@@ -23,6 +23,17 @@ use zk_lisp_proof_winterfell::vm::layout;
 use zk_lisp_proof_winterfell::vm::layout::{NR, STEPS_PER_LEVEL_P2};
 use zk_lisp_proof_winterfell::vm::trace::build_trace;
 
+fn init_tracing() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .try_init();
+    });
+}
+
 fn opts() -> ProofOptions {
     ProofOptions::new(
         1, // queries
@@ -166,7 +177,7 @@ fn sponge_aggregation_multiple_absorbs_then_squeeze_expect_ok() {
 
     // Build trace
     let trace = build_trace(&program, &pi).expect("trace");
-    let rom_acc = zk_lisp_proof_winterfell::romacc::rom_acc_from_program(&program);
+    let rom_acc = romacc::rom_acc_from_program(&program);
     let prover = ZkProver::new(opts(), pi.clone(), rom_acc);
     let proof = prover.prove(trace).expect("prove");
 
@@ -343,4 +354,78 @@ fn negative_vm_expected_mismatch() {
     pi_bad.feature_mask = pi::FM_VM | pi::FM_POSEIDON | pi::FM_VM_EXPECT;
 
     prove::verify_proof(proof, &program, pi_bad, &opts(), 64).expect_err("verify must fail");
+}
+
+/// Degree debug for Poseidon VM→sponge binding on a single full trace.
+///
+/// Builds a synthetic program with many SAbsorbN/SSqueeze pairs that exercise
+/// all 10 absorb lanes and vary the selected register index across levels.
+/// We then run a single-segment Winterfell proof (no segmentation) so that
+/// `validate_transition_degrees` reports the actual degrees for the Poseidon
+/// binding constraints. This test is ignored by default in debug builds and
+/// is intended to be run manually when calibrating lane base degrees.
+#[cfg_attr(debug_assertions, ignore)]
+#[test]
+fn deg_sponge_poseidon_binding_fulltrace() {
+    init_tracing();
+
+    // Build a program that seeds r0..r7 with distinct constants and then
+    // performs multiple SAbsorbN/SSqueeze rounds. Each squeeze consumes
+    // up to 10 pending registers, so all sponge lanes 0..9 are exercised.
+    let metrics = CompilerMetrics::default();
+    let mut b = ProgramBuilder::new();
+
+    // Seed NR registers with distinct values
+    for r in 0u8..NR as u8 {
+        b.push(Op::Const {
+            dst: r,
+            imm: (r as u64) + 1,
+        });
+    }
+
+    // Use several absorb/squeeze rounds to vary lane selectors. For each
+    // round k, we build a length-10 `regs` vector where lane i selects
+    // register (k + i) mod NR, so that all three index bits (b0,b1,b2)
+    // toggle across levels.
+    let rounds: usize = 8;
+    for k in 0..rounds {
+        let mut regs_vec = Vec::<u8>::with_capacity(10);
+        for lane in 0u8..10 {
+            let idx = ((k + lane as usize) % NR) as u8;
+            regs_vec.push(idx);
+        }
+
+        b.push(Op::SAbsorbN { regs: regs_vec });
+
+        // Squeeze into a rotating destination register
+        // to keep VM state changing across levels.
+        let dst = (k % NR) as u8;
+        b.push(Op::SSqueeze { dst });
+    }
+
+    b.push(Op::End);
+    let program = b.finalize(metrics).expect("finalize must succeed");
+
+    // Infer features (VM + Poseidon + Sponge) from the program
+    let pi = PublicInputsBuilder::from_program(&program)
+        .build()
+        .expect("pi");
+
+    assert_ne!(pi.feature_mask & pi::FM_VM, 0);
+    assert_ne!(pi.feature_mask & pi::FM_POSEIDON, 0);
+    assert_ne!(pi.feature_mask & pi::FM_SPONGE, 0);
+
+    // Single full trace (no segmentation)
+    let trace = build_trace(&program, &pi).expect("trace");
+    let rom_acc = romacc::rom_acc_from_program(&program);
+
+    // Disable preflight so we hit the real
+    // Winterfell prove() path and trigger
+    // validate_transition_degrees() on
+    // this single-segment trace.
+    let prover = ZkProver::new(opts(), pi.clone(), rom_acc).with_preflight_mode(PreflightMode::Off);
+
+    let _proof = prover
+        .prove(trace)
+        .expect("prove (deg_sponge_poseidon_binding_fulltrace)");
 }
