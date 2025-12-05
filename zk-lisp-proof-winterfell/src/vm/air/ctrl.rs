@@ -56,24 +56,17 @@ impl AirModule for VmCtrlAir {
 
         let sponge_used = (ctx.vm_usage_mask & (1 << VM_USAGE_SPONGE)) != 0;
         if ctx.features.sponge && sponge_used {
-            // Sponge lane selectors booleanity for packed
-            // index bits and per-lane active flags.
-            let deg2 = TransitionConstraintDegree::with_cycles(2, vec![STEPS_PER_LEVEL_P2]);
-            let deg3 = TransitionConstraintDegree::with_cycles(3, vec![STEPS_PER_LEVEL_P2]);
-
-            for lane in 0..10 {
-                // positions:
-                // 0..SPONGE_IDX_BITS-1 => bits,
-                // SPONGE_IDX_BITS => active
-                for pos in 0..=SPONGE_IDX_BITS {
-                    let use_deg3 = match lane {
-                        0 => true,    // lane 0: all selectors at base 3
-                        1 => pos > 0, // lane 1: bit1, bit2, active at base 3
-                        _ => false,   // lanes 2..9: all selectors at base 2
-                    };
-
-                    let deg = if use_deg3 { &deg3 } else { &deg2 };
-                    out.push(deg.clone());
+            // Sponge lane selector booleanity for packed
+            // index bits and per-lane "active" flags.
+            for _lane in 0..10 {
+                for _pos in 0..=SPONGE_IDX_BITS {
+                    // Positions:
+                    // 0..SPONGE_IDX_BITS-1 => index bits
+                    // SPONGE_IDX_BITS      => active flag
+                    out.push(TransitionConstraintDegree::with_cycles(
+                        2,
+                        vec![STEPS_PER_LEVEL_P2],
+                    ));
                 }
             }
         }
@@ -220,11 +213,11 @@ impl AirModule for VmCtrlAir {
             + b_assert
             + b_assert_bit
             + b_assert_range
-            + b_divmod;
+            + b_divmod
+            + b_div128
+            + b_mulwide;
 
-        // dst0 required for all
-        // write ops except sponge
-        // (1 for most, 1 for divmod as well)
+        // dst0 required for all write ops except sponge
         let uses_dst0 = op_any - b_sponge + b_load;
 
         // dst1 required for two-dest ops
@@ -260,15 +253,22 @@ impl AirModule for VmCtrlAir {
         let sponge_used = (ctx.vm_usage_mask & (1 << VM_USAGE_SPONGE)) != 0;
         if ctx.features.sponge && sponge_used {
             for lane in 0..10 {
-                // Booleanity for packed bits and active at map
+                // Enforce booleanity for packed index bits and the
+                // per-lane "active" flag on map rows.
+                //
+                // Trace builder is expected to always write 0/1 into
+                // sel_s_b_index / sel_s_active on map rows, regardless
+                // of whether op_sponge is set on this level.
                 for b in 0..SPONGE_IDX_BITS {
                     let bitv = cur[ctx.cols.sel_s_b_index(lane, b)];
-                    result[*ix] = p_map * b_sponge * bitv * (bitv - E::ONE) + s_high;
+                    // bitv must be in {0, 1} on map rows
+                    result[*ix] = p_map * bitv * (bitv - E::ONE) + s_high;
                     *ix += 1;
                 }
 
                 let act = cur[ctx.cols.sel_s_active_index(lane)];
-                result[*ix] = p_map * b_sponge * act * (act - E::ONE) + s_high;
+                // active flag must be in {0, 1} on map rows
+                result[*ix] = p_map * act * (act - E::ONE) + s_high;
                 *ix += 1;
             }
         }
