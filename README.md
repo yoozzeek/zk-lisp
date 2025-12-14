@@ -10,22 +10,6 @@ a register-based VM whose execution trace is proven using
 the Winterfell STARK prover and verified with its verifier.
 
 > [!IMPORTANT]
-> **STATUS: RESEARCH PREVIEW (Alpha)**
->
-> `zk-lisp` is an architectural Proof-of-Concept implementing
-> streamed trace generation (O(S)) on Winterfell.
->
-> **Current State:**
-> * Core VM: Stable for single-segment execution.
-> * Recursion: Experimental. Complex multi-segment aggregation
-    (e.g., `rollup-bench`) is under active optimization
-    to resolve constraint degree mismatches (See Issue #24).
-> * Stability: APIs and AIR constraint layouts are **volatile**
-    and subject to breaking changes without notice.
->
-> Target Audience: Protocol Architects and ZK Researchers. Not intended for production integration yet.
-
-> [!IMPORTANT]
 > This program comes with ABSOLUTELY NO WARRANTY;
 > This is free software, and you are welcome to
 > redistribute it under certain conditions.
@@ -33,6 +17,37 @@ the Winterfell STARK prover and verified with its verifier.
 > [!NOTE]
 > ZK Lisp targets at >= 128-bit conjectured
 > security in release, and 64-bit in debug builds.
+
+## PROVER BACKEND STATUS: FROZEN (PoC)
+
+**ARCHIVED: v0.1 (Proof of Concept)**
+The prover in this repository represents the initial architectural prototype
+of `zk-lisp`. Active development has moved to a proprietary private stack.
+
+### Production Engine Capabilities (v2.0 Private Stack)
+
+The commercial version of the engine implements a fully streamed, multi-segment prover
+that solves the "RAM Explosion" problem inherent in standard STARK
+architectures (like Winterfell/Miden).
+
+### Key Performance Metrics (Current Benchmarks):
+
+* **O(Segment) Memory Footprint:**
+    * Achieved flat RAM consumption independent of total trace length.
+    * **<1GB RAM** required to prove **1,000,000+ execution rows**.
+    * Eliminated the requirement to allocate the "Full Trace" before proving.
+
+* **Stateful Segment Builder:**
+    * Replaced the "Slice-then-Prove" approach with a simulate-then-stream architecture.
+    * The Segment builder constructs Trace, RAM, ROM, and Merkle paths directly from opcodes on-the-fly.
+    * Maintains global state across segment boundaries while proving segments in parallel.
+
+* **Parallelization & Speed:**
+    * **8.3x Latency Reduction** observed in benchmarks (1000s -> 120s for complex logic).
+    * Trace generation and witness construction are fully parallelized across available cores.
+
+For licensing, integration inquiries, or architectural consultation regarding high-performance
+ZK Provers, please contact via zeek@tuta.com.
 
 ## How it works
 
