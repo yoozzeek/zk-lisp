@@ -38,7 +38,7 @@ architectures (like Winterfell/Miden).
     * Eliminated the requirement to allocate the "Full Trace" before proving.
 
 * **Stateful Segment Builder:**
-    * Replaced the "Slice-then-Prove" approach with a simulate-then-stream architecture.
+    * Replaced the "Slice-then-Prove" approach with a "Simulate-then-Stream" architecture.
     * The Segment builder constructs Trace, RAM, ROM, and Merkle paths directly from opcodes on-the-fly.
     * Maintains global state across segment boundaries while proving segments in parallel.
 
